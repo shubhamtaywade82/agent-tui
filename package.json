@@ -1,0 +1,21 @@
+{
+  "name": "my-agent",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@nemesis-oss/agentic-runtime": "^0.2.0",
+    "@nemesis-oss/ollama-sdk": "^1.3.0",
+    "dotenv": "^17.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2"
+  }
+}
