@@ -10,6 +10,7 @@ import { OllamaClient } from '@nemesis-oss/ollama-sdk';
 import { Message } from '@nemesis-oss/ollama-sdk';
 import { Select } from './ui/select';
 import { ToastStack, useToast } from './ui/toast';
+import { Markdown } from './ui/markdown';
 import { useFocusManager } from './ui/hooks';
 
 interface ChatMessage extends Message {
@@ -212,7 +213,11 @@ const Chat: React.FC<ChatProps> = ({
                   </Box>
                 ) : null}
                 <Box paddingLeft={2}>
-                  <Text>{message.content}</Text>
+                  {message.role === 'assistant' ? (
+                    <Markdown content={message.content} theme={theme} />
+                  ) : (
+                    <Text>{message.content}</Text>
+                  )}
                 </Box>
               </Box>
             ))}
