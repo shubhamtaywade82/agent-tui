@@ -32,15 +32,25 @@ const App: React.FC = () => {
     }
   }, [client]);
 
-  const handleSendMessage = (message: string) => {
-    setMessages((prev) => [
-      ...prev,
-      {
-        role: 'user',
-        content: message,
-        timestamp: Date.now(),
-      },
-    ]);
+  const handleSendMessage = (userMessage: string, assistantMessage?: string) => {
+    setMessages((prev) => {
+      const next: Message[] = [
+        ...prev,
+        {
+          role: 'user',
+          content: userMessage,
+          timestamp: Date.now(),
+        },
+      ];
+      if (assistantMessage) {
+        next.push({
+          role: 'assistant',
+          content: assistantMessage,
+          timestamp: Date.now(),
+        });
+      }
+      return next;
+    });
   };
 
   const calculateTokenCount = () => {
@@ -52,31 +62,48 @@ const App: React.FC = () => {
 
   if (isLoading) {
     return (
-      <Box>
-        <Header title="Ollama TUI Harness" version="1.0.0" />
-        <StatusIndicator status="loading" label="Initializing Ollama client..." />
+      <Box flexDirection="column">
+        <Header
+          title="Ollama TUI Harness"
+          version="1.0.0"
+          subtitle="Terminal AI Agent & LLM Playground"
+          theme={myTheme}
+        />
+        <Box marginTop={1} paddingX={1}>
+          <StatusIndicator
+            status="loading"
+            label="Initializing Ollama client..."
+            theme={myTheme}
+          />
+        </Box>
       </Box>
     );
   }
 
   return (
-    <Box flexDirection="column" height="100%">
+    <Box flexDirection="column">
       <Header
         title="Ollama TUI Harness"
         version="1.0.0"
+        subtitle="Terminal AI Agent & LLM Playground"
         theme={myTheme}
       />
 
-      {/* Connection Status */}
-      <Box marginY={1}>
-        <StatusIndicator
-          status={isConnected ? 'online' : 'offline'}
-          label={isConnected ? 'Connected' : 'Disconnected'}
-          theme={myTheme}
-        />
-        <Badge variant={isConnected ? 'success' : 'error'}>
-          {isConnected ? 'Online' : 'Offline'}
-        </Badge>
+      <Box marginTop={0} marginBottom={1} paddingX={1} flexDirection="row" justifyContent="space-between" alignItems="center">
+        <Box flexDirection="row" gap={1} alignItems="center">
+          <StatusIndicator
+            status={isConnected ? 'online' : 'offline'}
+            label={isConnected ? 'Connected to Ollama' : 'Disconnected from Ollama'}
+            theme={myTheme}
+          />
+          <Badge variant={isConnected ? 'success' : 'error'}>
+            {isConnected ? 'ONLINE' : 'OFFLINE'}
+          </Badge>
+        </Box>
+        <Box flexDirection="row" gap={1} alignItems="center">
+          <Text color="gray">Installed Models: </Text>
+          <Badge variant="info">{String(models.length || 0)}</Badge>
+        </Box>
       </Box>
 
       {/* Main Chat Interface */}
@@ -84,6 +111,7 @@ const App: React.FC = () => {
         client={client}
         messages={messages}
         onSendMessage={handleSendMessage}
+        models={models}
         theme={myTheme}
       />
 

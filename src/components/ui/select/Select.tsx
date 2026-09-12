@@ -18,6 +18,8 @@ export interface SelectProps<T = string> {
   focus?: boolean;
   /** Theme override — defaults to darkTheme */
   theme?: InkUITheme;
+  /** Maximum visible items before scrolling */
+  maxVisible?: number;
 }
 
 // ─── shared list display ─────────────────────────────────────────────────────
@@ -27,6 +29,7 @@ interface ListDisplayProps<T> {
   activeIndex: number;
   isFocused: boolean;
   theme: InkUITheme;
+  maxVisible?: number;
 }
 
 function ListDisplay<T>({
@@ -34,11 +37,24 @@ function ListDisplay<T>({
   activeIndex,
   isFocused,
   theme,
+  maxVisible = 6,
 }: ListDisplayProps<T>) {
+  const needsScroll = items.length > maxVisible;
+  let start = 0;
+  if (needsScroll) {
+    const half = Math.floor(maxVisible / 2);
+    start = Math.max(0, Math.min(activeIndex - half, items.length - maxVisible));
+  }
+  const slice = needsScroll ? items.slice(start, start + maxVisible) : items;
+
   return (
     <Box flexDirection="column">
-      {items.map((item, i) => {
-        const isActive   = i === activeIndex;
+      {start > 0 ? (
+        <Text color={theme.colors.muted} dimColor>  ▲ {start} more above</Text>
+      ) : null}
+      {slice.map((item, i) => {
+        const itemIndex  = start + i;
+        const isActive   = itemIndex === activeIndex;
         const isDisabled = item.disabled === true;
 
         let labelColor: string;
@@ -66,6 +82,9 @@ function ListDisplay<T>({
           </Box>
         );
       })}
+      {needsScroll && start + maxVisible < items.length ? (
+        <Text color={theme.colors.muted} dimColor>  ▼ {items.length - (start + maxVisible)} more below</Text>
+      ) : null}
     </Box>
   );
 }
@@ -76,9 +95,10 @@ interface FocusedSelectProps<T> {
   items: SelectItem<T>[];
   onSelect: (item: SelectItem<T>) => void;
   theme: InkUITheme;
+  maxVisible?: number;
 }
 
-function FocusedSelect<T>({ items, onSelect, theme }: FocusedSelectProps<T>) {
+function FocusedSelect<T>({ items, onSelect, theme, maxVisible }: FocusedSelectProps<T>) {
   const { exit } = useApp();
 
   // Start on the first non-disabled item
@@ -109,7 +129,7 @@ function FocusedSelect<T>({ items, onSelect, theme }: FocusedSelectProps<T>) {
     }
   });
 
-  return <ListDisplay items={items} activeIndex={index} isFocused theme={theme} />;
+  return <ListDisplay items={items} activeIndex={index} isFocused theme={theme} maxVisible={maxVisible} />;
 }
 
 // ─── public component ─────────────────────────────────────────────────────────
@@ -119,12 +139,13 @@ export function Select<T = string>({
   onSelect,
   focus = true,
   theme = darkTheme,
+  maxVisible,
 }: SelectProps<T>) {
   const { isRawModeSupported } = useStdin();
   const canFocus = focus && isRawModeSupported;
 
   if (canFocus) {
-    return <FocusedSelect items={items} onSelect={onSelect} theme={theme} />;
+    return <FocusedSelect items={items} onSelect={onSelect} theme={theme} maxVisible={maxVisible} />;
   }
 
   const firstEnabled = Math.max(0, items.findIndex((it) => !it.disabled));
@@ -134,6 +155,7 @@ export function Select<T = string>({
       activeIndex={firstEnabled}
       isFocused={false}
       theme={theme}
+      maxVisible={maxVisible}
     />
   );
 }

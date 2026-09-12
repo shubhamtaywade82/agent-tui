@@ -37,7 +37,8 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
   const percentSuffix = showPercent ? ` ${String(Math.round(pct)).padStart(3)}%` : '';
   const labelPrefix = label ? `${label} ` : '';
   const overhead = labelPrefix.length + percentSuffix.length;
-  const barWidth = width ?? Math.max(8, termWidth - overhead);
+  // Account for container border/padding (4 cols) when width is not specified
+  const barWidth = width ?? Math.max(8, termWidth - overhead - 4);
 
   const filled = Math.round((pct / 100) * barWidth);
   const empty = barWidth - filled;

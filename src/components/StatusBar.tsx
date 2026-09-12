@@ -17,24 +17,42 @@ const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme }) => {
   const [quotaUsed, setQuotaUsed] = useState(0);
 
   useEffect(() => {
-    if (client) {
-      // Monitor memory usage
-      const interval = setInterval(async () => {
-        const ps = await client.ps();
-        const totalMemory = ps.models.reduce((acc, model) => acc + (model.size_vram ?? 0), 0);
-        setMemoryUsage(totalMemory / 1024 / 1024); // Convert to MB
-      }, 5000);
+    if (!client) return;
 
-      return () => clearInterval(interval);
-    }
+    const checkMetrics = async () => {
+      try {
+        const ps = await client.ps();
+        const totalMemory = ps.models.reduce(
+          (acc, model) => acc + (model.size_vram ?? 0),
+          0,
+        );
+        setMemoryUsage(totalMemory / 1024 / 1024);
+      } catch {
+        // Suppress transient poll error when client is unready
+      }
+    };
+
+    void checkMetrics();
+    const interval = setInterval(checkMetrics, 5000);
+    return () => clearInterval(interval);
   }, [client]);
 
+  // Dynamically scale max VRAM label to 8GB if usage exceeds 4GB
+  const maxVramGB = memoryUsage > 4096 ? 8 : 4;
+  const vramPercent = Math.min(100, (memoryUsage / (maxVramGB * 1024)) * 100);
+
   return (
-    <Box borderStyle="round" padding={1} marginY={1}>
-      <Box flexDirection="row" justifyContent="space-between">
-        <Box>
-          <Text bold color="cyan">
-            Status:
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme?.colors?.border ?? 'gray'}
+      paddingX={1}
+      marginTop={1}
+    >
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+        <Box flexDirection="row" gap={1} alignItems="center">
+          <Text bold color={theme?.colors?.primary ?? 'cyan'}>
+            Ollama Node:
           </Text>
           <StatusIndicator
             status={client ? 'online' : 'offline'}
@@ -45,30 +63,29 @@ const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme }) => {
 
         <Box>
           <Text color="gray">
-            Tokens: <Text color="white">{tokenCount}</Text>
+            Tokens Processed: <Text color="white" bold>{tokenCount}</Text>
           </Text>
         </Box>
 
         <Box>
           <Text color="gray">
-            Memory: <Text color="white">{memoryUsage.toFixed(2)}MB</Text>
+            VRAM: <Text color="white" bold>{memoryUsage.toFixed(1)} MB</Text>
           </Text>
         </Box>
       </Box>
 
-      <Box marginTop={1}>
+      <Box marginTop={1} flexDirection="row" justifyContent="space-between" alignItems="center">
         <ProgressBar
-          value={(memoryUsage / 4096) * 100}
-          label="Memory Usage"
+          value={vramPercent}
+          label={`VRAM (${maxVramGB}GB):`}
+          width={20}
           theme={theme}
         />
-      </Box>
-
-      <Box marginTop={1}>
         <Gauge
           value={quotaUsed}
           max={100}
-          label="Quota Used"
+          label="Quota:"
+          width={12}
           theme={theme}
         />
       </Box>

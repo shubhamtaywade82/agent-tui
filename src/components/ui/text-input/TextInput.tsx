@@ -112,7 +112,8 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
     }
 
     if (key.return) { onSubmit?.(value); return; }
-    if (key.ctrl || key.meta || key.escape) return;
+    // Do not insert tab or control characters into the text input
+    if (key.tab || key.ctrl || key.meta || key.escape) return;
 
     onChange(value.slice(0, cursor) + input + value.slice(cursor));
     setCursor((c) => c + input.length);
