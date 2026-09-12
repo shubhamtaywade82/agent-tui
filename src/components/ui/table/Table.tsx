@@ -23,6 +23,12 @@ export interface TableProps<T extends Record<string, unknown> = Record<string, u
   theme?: InkUITheme;
 }
 
+export interface RenderTableLinesOptions {
+  borderStyle?: BorderStyle;
+  theme?: InkUITheme;
+  maxWidth?: number;
+}
+
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 const ELLIPSIS = '…';
@@ -33,12 +39,11 @@ function truncate(text: string, maxWidth: number): string {
 }
 
 function pad(text: string, width: number, align: 'left' | 'right' | 'center'): string {
-  if (align === 'right')  return text.padStart(width);
+  if (align === 'right') return text.padStart(width);
   if (align === 'center') {
     const total = width - text.length;
-    const left  = Math.floor(total / 2);
-    const right = total - left;
-    return ' '.repeat(left) + text + ' '.repeat(right);
+    const left = Math.floor(total / 2);
+    return ' '.repeat(left) + text + ' '.repeat(total - left);
   }
   return text.padEnd(width);
 }
@@ -55,46 +60,45 @@ function resolveWidths<T extends Record<string, unknown>>(
   data: T[],
   termWidth: number,
 ): number[] {
-  // Natural width = max of header and all cell values (inner, no padding)
   const natural = columns.map((col) => {
     if (col.width !== undefined) return col.width;
-    const headerLen = col.header.length;
-    const maxCell   = data.reduce((max, row) => {
-      return Math.max(max, cellStr(row[col.key]).length);
-    }, 0);
-    return Math.max(headerLen, maxCell);
+    const maxCell = data.reduce((max, row) => Math.max(max, cellStr(row[col.key]).length), 0);
+    return Math.max(col.header.length, maxCell);
   });
 
-  // Each column occupies: 1 space + content + 1 space + 1 border = width + 3
-  // Plus the leading border char: total = 1 + sum(w + 3)
-  const overhead = 1 + columns.length * 3; // leading │ + (space + content + space + │) per col
+  const overhead = 1 + columns.length * 3;
   const totalNatural = natural.reduce((s, w) => s + w, 0) + overhead;
-
   if (totalNatural <= termWidth) return natural;
 
-  // Distribute available space proportionally among non-fixed columns
-  const fixedTotal   = columns.reduce((s, col, i) =>
-    col.width !== undefined ? s + natural[i]! : s, 0);
-  const fixedOverhead = overhead;
-  const available    = Math.max(termWidth - fixedOverhead - fixedTotal, columns.length * 3);
-  const flexCount    = columns.filter((c) => c.width === undefined).length;
-  const flexBudget   = Math.floor(available / Math.max(flexCount, 1));
+  const fixedTotal = columns.reduce((s, col, i) => col.width !== undefined ? s + natural[i]! : s, 0);
+  const available = Math.max(termWidth - overhead - fixedTotal, columns.length * 3);
+  const flexCount = columns.filter((c) => c.width === undefined).length;
+  const flexBudget = Math.floor(available / Math.max(flexCount, 1));
 
   return columns.map((col, i) =>
-    col.width !== undefined ? natural[i]! : Math.max(3, flexBudget),
+    col.width !== undefined ? natural[i]! : Math.max(3, Math.min(natural[i]!, flexBudget)),
   );
 }
 
 // ─── border line builders ─────────────────────────────────────────────────────
 
-function buildBorderLine(
-  left: string,
-  fill: string,
-  join: string,
-  right: string,
-  widths: number[],
-): string {
-  return left + widths.map((w) => fill.repeat(w + 2)).join(join) + right;
+interface BorderParts {
+  left: string;
+  fill: string;
+  join: string;
+  right: string;
+}
+
+function buildBorderLine(parts: BorderParts, widths: number[]): string {
+  return parts.left + widths.map((w) => parts.fill.repeat(w + 2)).join(parts.join) + parts.right;
+}
+
+function buildTableBorderLines(b: typeof borderStyles[BorderStyle], widths: number[]) {
+  return {
+    topLine: buildBorderLine({ left: b.topLeft, fill: b.top, join: b.topT, right: b.topRight }, widths),
+    midLine: buildBorderLine({ left: b.leftT, fill: b.top, join: b.cross, right: b.rightT }, widths),
+    botLine: buildBorderLine({ left: b.bottomLeft, fill: b.top, join: b.bottomT, right: b.bottomRight }, widths),
+  };
 }
 
 // ─── row renderer ─────────────────────────────────────────────────────────────
@@ -107,7 +111,6 @@ interface RowProps {
   borderColor: string;
   textColor: string;
   bold?: boolean;
-  dimColor?: boolean;
 }
 
 const Row: React.FC<RowProps> = ({
@@ -118,25 +121,48 @@ const Row: React.FC<RowProps> = ({
   borderColor,
   textColor,
   bold = false,
-  dimColor = false,
 }) => (
   <Box>
-    {cells.map((cell, i) => {
-      const content = pad(truncate(cell, widths[i]!), widths[i]!, aligns[i]!);
-      return (
-        <Box key={i}>
-          <Text color={borderColor}>{borderChar}</Text>
-          <Text> </Text>
-          <Text color={textColor} bold={bold} dimColor={dimColor}>
-            {content}
-          </Text>
-          <Text> </Text>
-        </Box>
-      );
-    })}
+    {cells.map((cell, i) => (
+      <Box key={i}>
+        <Text color={borderColor}>{borderChar}</Text>
+        <Text> </Text>
+        <Text color={textColor} bold={bold}>
+          {pad(truncate(cell, widths[i]!), widths[i]!, aligns[i]!)}
+        </Text>
+        <Text> </Text>
+      </Box>
+    ))}
     <Text color={borderColor}>{borderChar}</Text>
   </Box>
 );
+
+// ─── line renderer (for scroll-safe flattening) ──────────────────────────────
+
+export function renderTableLines<T extends Record<string, unknown> = Record<string, unknown>>(
+  columns: TableColumn<T>[],
+  data: T[],
+  options: RenderTableLinesOptions = {},
+): React.ReactElement[] {
+  const { borderStyle = 'single', theme = darkTheme, maxWidth = 80 } = options;
+  const b = borderStyles[borderStyle];
+  const widths = resolveWidths(columns, data, maxWidth);
+  const aligns = columns.map((c) => c.align ?? 'left');
+  const { topLine, midLine, botLine } = buildTableBorderLines(b, widths);
+
+  const headerCells = columns.map((c) => c.header);
+  const { border: borderColor, text: textColor, primary } = theme.colors;
+
+  return [
+    <Text key="tbl-top" color={borderColor}>{topLine}</Text>,
+    <Row key="tbl-hdr" cells={headerCells} widths={widths} aligns={aligns} borderChar={b.left} borderColor={borderColor} textColor={primary} bold />,
+    <Text key="tbl-mid" color={borderColor}>{midLine}</Text>,
+    ...data.map((row, ri) => (
+      <Row key={`tbl-row-${ri}`} cells={columns.map((c) => cellStr(row[c.key]))} widths={widths} aligns={aligns} borderChar={b.left} borderColor={borderColor} textColor={textColor} />
+    )),
+    <Text key="tbl-bot" color={borderColor}>{botLine}</Text>,
+  ];
+}
 
 // ─── public component ─────────────────────────────────────────────────────────
 
@@ -148,53 +174,9 @@ export function Table<T extends Record<string, unknown> = Record<string, unknown
 }: TableProps<T>) {
   const { stdout } = useStdout();
   const termWidth = stdout?.columns ?? 80;
-
-  const b       = borderStyles[borderStyle];
-  const widths  = resolveWidths(columns, data, termWidth);
-  const aligns  = columns.map((c) => c.align ?? 'left');
-
-  const topLine = buildBorderLine(b.topLeft,    b.top, b.topT,    b.topRight,    widths);
-  const midLine = buildBorderLine(b.leftT,      b.top, b.cross,   b.rightT,      widths);
-  const botLine = buildBorderLine(b.bottomLeft, b.top, b.bottomT, b.bottomRight, widths);
-
-  const headerCells = columns.map((c) => c.header);
-  const borderColor = theme.colors.border;
-  const textColor   = theme.colors.text;
-
   return (
     <Box flexDirection="column">
-      {/* Top border */}
-      <Text color={borderColor}>{topLine}</Text>
-
-      {/* Header */}
-      <Row
-        cells={headerCells}
-        widths={widths}
-        aligns={aligns}
-        borderChar={b.left}
-        borderColor={borderColor}
-        textColor={theme.colors.primary}
-        bold
-      />
-
-      {/* Header/body separator */}
-      <Text color={borderColor}>{midLine}</Text>
-
-      {/* Data rows */}
-      {data.map((row, ri) => (
-        <Row
-          key={ri}
-          cells={columns.map((c) => cellStr(row[c.key]))}
-          widths={widths}
-          aligns={aligns}
-          borderChar={b.left}
-          borderColor={borderColor}
-          textColor={textColor}
-        />
-      ))}
-
-      {/* Bottom border */}
-      <Text color={borderColor}>{botLine}</Text>
+      {renderTableLines(columns, data, { borderStyle, theme, maxWidth: termWidth })}
     </Box>
   );
 }

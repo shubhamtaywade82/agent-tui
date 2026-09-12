@@ -1,2 +1,3 @@
-export type { TableColumn, TableProps } from './Table.js';
-export { Table } from './Table.js';
+export type { TableColumn, TableProps, RenderTableLinesOptions } from './Table.js';
+export { Table, renderTableLines } from './Table.js';
+

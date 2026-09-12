@@ -1,6 +1,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
-import { darkTheme } from '../_core.js';
+import { renderTableLines } from '../table/index.js';
+import { borderStyles, darkTheme } from '../_core.js';
 import type { InkUITheme } from '../_core.js';
 
 export interface MarkdownProps {
@@ -19,76 +20,24 @@ interface InlineToken {
 
 function parseInline(line: string): InlineToken[] {
   const tokens: InlineToken[] = [];
-  let i = 0;
+  const regex = /(\*\*(.*?)\*\*|~~(.*?)~~|\*(.*?)\*|`([^`]+)`|\[(.*?)\]\((.*?)\))/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
 
-  while (i < line.length) {
-    // Bold
-    if (line.startsWith('**', i)) {
-      const end = line.indexOf('**', i + 2);
-      if (end !== -1) {
-        tokens.push({ type: 'bold', text: line.slice(i + 2, end) });
-        i = end + 2;
-        continue;
-      }
+  while ((match = regex.exec(line)) !== null) {
+    if (match.index > lastIndex) {
+      tokens.push({ type: 'text', text: line.slice(lastIndex, match.index) });
     }
-    // Strikethrough
-    if (line.startsWith('~~', i)) {
-      const end = line.indexOf('~~', i + 2);
-      if (end !== -1) {
-        tokens.push({ type: 'strikethrough', text: line.slice(i + 2, end) });
-        i = end + 2;
-        continue;
-      }
-    }
-    // Italic
-    if (line[i] === '*' && line[i + 1] !== '*') {
-      const end = line.indexOf('*', i + 1);
-      if (end !== -1) {
-        tokens.push({ type: 'italic', text: line.slice(i + 1, end) });
-        i = end + 1;
-        continue;
-      }
-    }
-    // Inline code
-    if (line[i] === '`') {
-      const end = line.indexOf('`', i + 1);
-      if (end !== -1) {
-        tokens.push({ type: 'code', text: line.slice(i + 1, end) });
-        i = end + 1;
-        continue;
-      }
-    }
-    // Link [text](url)
-    if (line[i] === '[') {
-      const textEnd = line.indexOf(']', i);
-      if (textEnd !== -1 && line[textEnd + 1] === '(') {
-        const urlEnd = line.indexOf(')', textEnd + 2);
-        if (urlEnd !== -1) {
-          tokens.push({
-            type: 'link',
-            text: line.slice(i + 1, textEnd),
-            url: line.slice(textEnd + 2, urlEnd),
-          });
-          i = urlEnd + 1;
-          continue;
-        }
-      }
-    }
-    // Regular text: accumulate
-    const start = i;
-    while (
-      i < line.length &&
-      line[i] !== '*' &&
-      line[i] !== '`' &&
-      line[i] !== '[' &&
-      !line.startsWith('~~', i)
-    ) {
-      i++;
-    }
-    if (i > start) tokens.push({ type: 'text', text: line.slice(start, i) });
-    else i++; // safety
+    if (match[2] !== undefined) tokens.push({ type: 'bold', text: match[2] });
+    else if (match[3] !== undefined) tokens.push({ type: 'strikethrough', text: match[3] });
+    else if (match[4] !== undefined) tokens.push({ type: 'italic', text: match[4] });
+    else if (match[5] !== undefined) tokens.push({ type: 'code', text: match[5] });
+    else if (match[6] !== undefined) tokens.push({ type: 'link', text: match[6], url: match[7] });
+    lastIndex = regex.lastIndex;
   }
-
+  if (lastIndex < line.length) {
+    tokens.push({ type: 'text', text: line.slice(lastIndex) });
+  }
   return tokens;
 }
 
@@ -96,148 +45,198 @@ function renderInline(tokens: InlineToken[], theme: InkUITheme): React.ReactElem
   return (
     <>
       {tokens.map((tok, i) => {
-        switch (tok.type) {
-          case 'bold':
-            return <Text key={i} bold>{tok.text}</Text>;
-          case 'italic':
-            return <Text key={i} italic>{tok.text}</Text>;
-          case 'strikethrough':
-            return <Text key={i} strikethrough>{tok.text}</Text>;
-          case 'code':
-            return <Text key={i} color={theme.colors.info} inverse>{tok.text}</Text>;
-          case 'link':
-            return (
-              <Text key={i}>
-                <Text key={`${i}t`} underline color={theme.colors.primary}>{tok.text}</Text>
-                <Text key={`${i}u`} color={theme.colors.muted} dimColor>{` (${tok.url})`}</Text>
-              </Text>
-            );
-          default:
-            return <Text key={i}>{tok.text}</Text>;
+        if (tok.type === 'bold') return <Text key={i} bold>{tok.text}</Text>;
+        if (tok.type === 'italic') return <Text key={i} italic>{tok.text}</Text>;
+        if (tok.type === 'strikethrough') return <Text key={i} strikethrough>{tok.text}</Text>;
+        if (tok.type === 'code') return <Text key={i} color={theme.colors.info} inverse>{tok.text}</Text>;
+        if (tok.type === 'link') {
+          return (
+            <Text key={i}>
+              <Text underline color={theme.colors.primary}>{tok.text}</Text>
+              <Text color={theme.colors.muted} dimColor>{` (${tok.url})`}</Text>
+            </Text>
+          );
         }
+        return <Text key={i}>{tok.text}</Text>;
       })}
     </>
   );
+}
+
+function isTableSeparator(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed.includes('-')) return false;
+  const parts = trimmed.replace(/^\|/, '').replace(/\|$/, '').split('|');
+  return parts.length >= 2 && parts.every((p) => /^[\s:]*-+[\s:]*$/.test(p.trim()));
+}
+
+function parseTableAlign(sep: string): 'left' | 'right' | 'center' {
+  const s = sep.trim();
+  if (s.startsWith(':') && s.endsWith(':')) return 'center';
+  if (s.endsWith(':')) return 'right';
+  return 'left';
+}
+
+interface BlockResult {
+  elements: React.ReactElement[];
+  nextIdx: number;
+}
+
+function renderCodeBlockLines(
+  codeLines: string[],
+  lang: string,
+  theme: InkUITheme,
+  maxWidth: number,
+): React.ReactElement[] {
+  const b = borderStyles.rounded;
+  const innerWidth = Math.max(10, Math.min(maxWidth - 4, 76));
+  const title = lang ? ` ${lang} ` : '';
+  const topFill = b.top.repeat(Math.max(0, innerWidth - title.length));
+  const botFill = b.top.repeat(innerWidth);
+
+  const lines: React.ReactElement[] = [
+    <Text key="code-top" color={theme.colors.border}>{`${b.topLeft}${title}${topFill}${b.topRight}`}</Text>,
+  ];
+
+  codeLines.forEach((cl, ci) => {
+    const truncated = cl.length > innerWidth ? cl.slice(0, innerWidth - 1) + '…' : cl;
+    lines.push(
+      <Box key={`code-${ci}`} flexDirection="row">
+        <Text color={theme.colors.border}>{`${b.left} `}</Text>
+        <Text color={theme.colors.text}>{truncated.padEnd(innerWidth)}</Text>
+        <Text color={theme.colors.border}>{` ${b.right}`}</Text>
+      </Box>
+    );
+  });
+
+  lines.push(
+    <Text key="code-bot" color={theme.colors.border}>{`${b.bottomLeft}${botFill}${b.bottomRight}`}</Text>
+  );
+
+  return lines;
+}
+
+function parseCodeBlock(
+  lines: string[],
+  startIdx: number,
+  theme: InkUITheme,
+  maxWidth: number,
+): BlockResult {
+  const lang = lines[startIdx]!.slice(3).trim();
+  const codeLines: string[] = [];
+  let i = startIdx + 1;
+  while (i < lines.length && !lines[i]!.startsWith('```')) {
+    codeLines.push(lines[i]!);
+    i++;
+  }
+  const elements = renderCodeBlockLines(codeLines, lang, theme, maxWidth);
+  return { elements, nextIdx: i < lines.length ? i + 1 : i };
+}
+
+function parseTableBlock(
+  lines: string[],
+  startIdx: number,
+  theme: InkUITheme,
+  maxWidth: number,
+): BlockResult {
+  const headers = lines[startIdx]!.replace(/^\|/, '').replace(/\|$/, '').split('|').map((h) => h.trim());
+  const aligns = lines[startIdx + 1]!.replace(/^\|/, '').replace(/\|$/, '').split('|').map(parseTableAlign);
+  const columns = headers.map((header, ci) => ({
+    key: `col_${ci}`,
+    header,
+    align: aligns[ci] || 'left',
+  }));
+
+  const data: Record<string, string>[] = [];
+  let i = startIdx + 2;
+  while (i < lines.length && lines[i]!.trim().length > 0 && lines[i]!.includes('|')) {
+    const cells = lines[i]!.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+    const row: Record<string, string> = {};
+    columns.forEach((col, ci) => { row[col.key] = cells[ci] ?? ''; });
+    data.push(row);
+    i++;
+  }
+
+  const elements = renderTableLines(columns, data, { borderStyle: 'rounded', theme, maxWidth });
+  return { elements, nextIdx: i };
+}
+
+function renderLineBlock(line: string, idx: number, theme: InkUITheme): React.ReactElement {
+  if (/^---+$/.test(line.trim())) {
+    return <Text key={idx} color={theme.colors.border}>{'─'.repeat(40)}</Text>;
+  }
+  if (line.startsWith('# ')) {
+    return <Text key={idx} bold color={theme.colors.primary}>{line.slice(2)}</Text>;
+  }
+  if (line.startsWith('## ')) {
+    return <Text key={idx} bold color={theme.colors.secondary}>{line.slice(3)}</Text>;
+  }
+  if (line.startsWith('### ')) {
+    return <Text key={idx} bold>{line.slice(4)}</Text>;
+  }
+  if (line.startsWith('> ')) {
+    return (
+      <Box key={idx} flexDirection="row">
+        <Text color={theme.colors.muted}>{'│ '}</Text>
+        <Text italic color={theme.colors.muted}>{line.slice(2)}</Text>
+      </Box>
+    );
+  }
+  if (line.startsWith('- ') || line.startsWith('* ')) {
+    return (
+      <Box key={idx} flexDirection="row">
+        <Text color={theme.colors.primary}>{'  • '}</Text>
+        <Text>{renderInline(parseInline(line.slice(2)), theme)}</Text>
+      </Box>
+    );
+  }
+  const olMatch = line.match(/^(\d+)\.\s(.*)/);
+  if (olMatch) {
+    return (
+      <Box key={idx} flexDirection="row">
+        <Text color={theme.colors.primary}>{`  ${olMatch[1]}. `}</Text>
+        <Text>{renderInline(parseInline(olMatch[2]!), theme)}</Text>
+      </Box>
+    );
+  }
+  if (line.trim() === '') {
+    return <Text key={idx}>{' '}</Text>;
+  }
+  return <Text key={idx}>{renderInline(parseInline(line), theme)}</Text>;
+}
+
+export function parseMarkdownBlocks(
+  content: string,
+  theme: InkUITheme = darkTheme,
+  maxWidth: number = 80,
+): React.ReactElement[] {
+  const lines = content.split('\n');
+  const elements: React.ReactElement[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    if (lines[i]!.startsWith('```')) {
+      const block = parseCodeBlock(lines, i, theme, maxWidth);
+      elements.push(...block.elements);
+      i = block.nextIdx;
+      continue;
+    }
+    if (lines[i]!.includes('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1]!)) {
+      const block = parseTableBlock(lines, i, theme, maxWidth);
+      elements.push(...block.elements);
+      i = block.nextIdx;
+      continue;
+    }
+    elements.push(renderLineBlock(lines[i]!, i, theme));
+    i++;
+  }
+
+  return elements;
 }
 
 export const Markdown: React.FC<MarkdownProps> = ({
   content,
   theme = darkTheme,
 }) => {
-  const lines = content.split('\n');
-  const elements: React.ReactElement[] = [];
-  let i = 0;
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    // Fenced code block
-    if (line.startsWith('```')) {
-      const lang = line.slice(3).trim();
-      const codeLines: string[] = [];
-      i++;
-      while (i < lines.length && !lines[i].startsWith('```')) {
-        codeLines.push(lines[i]);
-        i++;
-      }
-      elements.push(
-        <Box key={i} flexDirection="column" borderStyle="single" borderColor={theme.colors.border} paddingX={1} marginY={0}>
-          {lang && <Text color={theme.colors.muted} dimColor>{lang}</Text>}
-          {codeLines.map((cl, ci) => (
-            <Text key={ci} color={theme.colors.text}>{cl}</Text>
-          ))}
-        </Box>
-      );
-      i++;
-      continue;
-    }
-
-    // HR
-    if (/^---+$/.test(line.trim())) {
-      elements.push(
-        <Text key={i} color={theme.colors.border}>{'─'.repeat(40)}</Text>
-      );
-      i++;
-      continue;
-    }
-
-    // H1
-    if (line.startsWith('# ')) {
-      elements.push(
-        <Text key={i} bold color={theme.colors.primary}>{line.slice(2)}</Text>
-      );
-      i++;
-      continue;
-    }
-
-    // H2
-    if (line.startsWith('## ')) {
-      elements.push(
-        <Text key={i} bold color={theme.colors.secondary}>{line.slice(3)}</Text>
-      );
-      i++;
-      continue;
-    }
-
-    // H3
-    if (line.startsWith('### ')) {
-      elements.push(
-        <Text key={i} bold>{line.slice(4)}</Text>
-      );
-      i++;
-      continue;
-    }
-
-    // Blockquote
-    if (line.startsWith('> ')) {
-      elements.push(
-        <Box key={i} flexDirection="row">
-          <Text color={theme.colors.muted}>{'│ '}</Text>
-          <Text italic color={theme.colors.muted}>{line.slice(2)}</Text>
-        </Box>
-      );
-      i++;
-      continue;
-    }
-
-    // Unordered list
-    if (/^[\s-*]\s/.test(line) && (line.startsWith('- ') || line.startsWith('* '))) {
-      elements.push(
-        <Box key={i} flexDirection="row">
-          <Text color={theme.colors.primary}>{'  • '}</Text>
-          <Text>{renderInline(parseInline(line.slice(2)), theme)}</Text>
-        </Box>
-      );
-      i++;
-      continue;
-    }
-
-    // Ordered list
-    const olMatch = line.match(/^(\d+)\.\s(.*)/);
-    if (olMatch) {
-      elements.push(
-        <Box key={i} flexDirection="row">
-          <Text color={theme.colors.primary}>{`  ${olMatch[1]}. `}</Text>
-          <Text>{renderInline(parseInline(olMatch[2]), theme)}</Text>
-        </Box>
-      );
-      i++;
-      continue;
-    }
-
-    // Empty line
-    if (line.trim() === '') {
-      elements.push(<Text key={i}>{' '}</Text>);
-      i++;
-      continue;
-    }
-
-    // Regular paragraph
-    elements.push(
-      <Text key={i}>{renderInline(parseInline(line), theme)}</Text>
-    );
-    i++;
-  }
-
-  return <Box flexDirection="column">{elements}</Box>;
+  return <Box flexDirection="column">{parseMarkdownBlocks(content, theme)}</Box>;
 };

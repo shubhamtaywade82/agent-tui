@@ -8,7 +8,7 @@ import { Typewriter } from '../components/ui/typewriter';
 import { OllamaClient, Message } from '@nemesis-oss/ollama-sdk';
 import { Select } from './ui/select';
 import { ToastStack, useToast } from './ui/toast';
-import { Markdown } from './ui/markdown';
+import { Markdown, parseMarkdownBlocks } from './ui/markdown';
 import { ScrollArea } from './ui/scroll-area';
 import { useFocusManager, useTerminalSize } from './ui/hooks';
 
@@ -36,7 +36,7 @@ const Chat: React.FC<ChatProps> = ({
   const [selectedModel, setSelectedModel] = useState(models[0] || 'qwen3:8b');
   const { toasts, show, dismiss } = useToast();
 
-  const { rows } = useTerminalSize();
+  const { rows, columns } = useTerminalSize();
   const { isFocused, setFocus } = useFocusManager({
     count: 3,
     initialIndex: 0, // Start focus on chat input
@@ -70,6 +70,7 @@ const Chat: React.FC<ChatProps> = ({
     if (!message.trim() || !client || streamPhase !== 'idle') return;
 
     setInput('');
+    onSendMessage(message); // Immediately display user prompt in conversation
     setStreamPhase('thinking');
     setStreamedThinking('');
     setStreamedContent('');
@@ -98,11 +99,11 @@ const Chat: React.FC<ChatProps> = ({
 
       const finalResponse = await stream.finalResult;
       const assistantText = finalResponse.message?.content || accumulatedContent;
-      onSendMessage(message, assistantText, accumulatedThinking || undefined);
+      onSendMessage(undefined, assistantText, accumulatedThinking || undefined);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       show(`Error: ${errorMsg}`, 'error', 4000);
-      onSendMessage(message, `⚠️ Error: ${errorMsg}`);
+      onSendMessage(undefined, `⚠️ Error: ${errorMsg}`);
     } finally {
       setStreamPhase('idle');
       setStreamedThinking('');
@@ -132,16 +133,48 @@ const Chat: React.FC<ChatProps> = ({
         );
       }
 
-      msg.content.split('\n').forEach((line, li) => {
+      const contentNodes = msg.role === 'user'
+        ? msg.content.split('\n').map((line, li) => <Text key={li}>{line}</Text>)
+        : parseMarkdownBlocks(msg.content, theme, Math.max(20, columns - 6));
+
+      contentNodes.forEach((node, bi) => {
+        rows.push(<Box key={`c-${mi}-${bi}`} paddingLeft={2}>{node}</Box>);
+      });
+    });
+
+    if (streamPhase === 'thinking') {
+      rows.push(
+        <Box key="stream-think" flexDirection="row" gap={1} alignItems="center" paddingLeft={2}>
+          <Spinner type="dots" />
+          <Text color="yellow"> {selectedModel} is thinking...</Text>
+          {streamedThinking.length > 0 && (
+            <Text color="gray" dimColor>({Math.ceil(streamedThinking.length / 4)} tokens)</Text>
+          )}
+        </Box>
+      );
+    } else if (streamPhase === 'responding') {
+      rows.push(
+        <Box key="stream-header" flexDirection="row" gap={1} alignItems="center">
+          <Badge variant="success">AI</Badge>
+          <Text color="green" dimColor>streaming</Text>
+        </Box>
+      );
+      const streamLines = streamedContent.split('\n');
+      streamLines.forEach((line, sli) => {
+        const isLast = sli === streamLines.length - 1;
         rows.push(
-          <Box key={`c-${mi}-${li}`} paddingLeft={2}>
-            {msg.role === 'assistant' ? <Markdown content={line} theme={theme} /> : <Text>{line}</Text>}
+          <Box key={`stream-line-${sli}`} paddingLeft={2}>
+            <Text>
+              {line}
+              {isLast && <Text color={theme?.colors?.primary ?? 'cyan'}>█</Text>}
+            </Text>
           </Box>
         );
       });
-    });
+    }
+
     return rows;
-  }, [messages, theme]);
+  }, [messages, streamPhase, streamedThinking, streamedContent, selectedModel, theme, columns]);
 
   return (
     <Box flexDirection="column">
@@ -219,38 +252,6 @@ const Chat: React.FC<ChatProps> = ({
           <ScrollArea height={chatHeight} focus={isChatFocused} autoScroll={true} theme={theme}>
             {messageRows}
           </ScrollArea>
-        )}
-
-        {/* Streaming indicator: Phase 1 (Reasoning) */}
-        {streamPhase === 'thinking' && (
-          <Box flexDirection="row" gap={1} alignItems="center">
-            <Spinner type="dots" />
-            <Text color="yellow"> {selectedModel} is thinking...</Text>
-            {streamedThinking.length > 0 && (
-              <Text color="gray" dimColor>
-                ({Math.ceil(streamedThinking.length / 4)} tokens)
-              </Text>
-            )}
-          </Box>
-        )}
-
-        {/* Streaming indicator: Phase 2 (Proper Token Streaming) */}
-        {streamPhase === 'responding' && (
-          <Box flexDirection="column">
-            <Box flexDirection="row" gap={1} alignItems="center">
-              <Badge variant="success">AI</Badge>
-              <Text color="green" dimColor>streaming</Text>
-            </Box>
-            <Box paddingLeft={2}>
-              <StreamingText
-                text={streamedContent.split('\n').slice(-4).join('\n')}
-                streaming={true}
-                cursor="█"
-                cursorBlinkSpeed={530}
-                theme={theme}
-              />
-            </Box>
-          </Box>
         )}
       </Box>
 
