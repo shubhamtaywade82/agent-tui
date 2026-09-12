@@ -5,19 +5,26 @@ import { Spinner } from '../components/ui/spinner';
 import { Badge } from '../components/ui/badge';
 import { StatusIndicator } from '../components/ui/status-indicator';
 import { StreamingText } from '../components/ui/streaming-text';
+import { Typewriter } from '../components/ui/typewriter';
 import { OllamaClient } from '@nemesis-oss/ollama-sdk';
 import { Message } from '@nemesis-oss/ollama-sdk';
 import { Select } from './ui/select';
+import { ToastStack, useToast } from './ui/toast';
 import { useFocusManager } from './ui/hooks';
 
 interface ChatMessage extends Message {
   timestamp?: number;
+  thinking?: string;
 }
 
 interface ChatProps {
   client: OllamaClient | null;
   messages: ChatMessage[];
-  onSendMessage: (userMessage: string, assistantMessage?: string) => void;
+  onSendMessage: (
+    userMessage: string,
+    assistantMessage?: string,
+    thinking?: string,
+  ) => void;
   models?: string[];
   isConnected?: boolean;
   theme?: any;
@@ -32,9 +39,11 @@ const Chat: React.FC<ChatProps> = ({
   theme,
 }) => {
   const [input, setInput] = useState('');
-  const [isThinking, setIsThinking] = useState(false);
-  const [streamingTokens, setStreamingTokens] = useState<string[]>([]);
+  const [streamPhase, setStreamPhase] = useState<'idle' | 'thinking' | 'responding'>('idle');
+  const [streamedThinking, setStreamedThinking] = useState('');
+  const [streamedContent, setStreamedContent] = useState('');
   const [selectedModel, setSelectedModel] = useState(models[0] || 'qwen3:8b');
+  const { toasts, show, dismiss } = useToast();
 
   const { isFocused, setFocus } = useFocusManager({
     count: 2,
@@ -60,11 +69,12 @@ const Chat: React.FC<ChatProps> = ({
   );
 
   const handleSendMessage = async (message: string) => {
-    if (!message.trim() || !client || isThinking) return;
+    if (!message.trim() || !client || streamPhase !== 'idle') return;
 
     setInput('');
-    setIsThinking(true);
-    setStreamingTokens([]);
+    setStreamPhase('thinking');
+    setStreamedThinking('');
+    setStreamedContent('');
 
     try {
       const stream = await client.chatStream({
@@ -74,21 +84,31 @@ const Chat: React.FC<ChatProps> = ({
         options: { temperature: 0.7 },
       });
 
+      let accumulatedThinking = '';
+      let accumulatedContent = '';
+
       for await (const event of stream) {
-        if (event.type === 'thinking' || event.type === 'token') {
-          setStreamingTokens((prev) => [...prev, event.data.delta]);
+        if (event.type === 'thinking') {
+          accumulatedThinking += event.data.delta;
+          setStreamedThinking((prev) => prev + event.data.delta);
+        } else if (event.type === 'token') {
+          setStreamPhase('responding');
+          accumulatedContent += event.data.delta;
+          setStreamedContent((prev) => prev + event.data.delta);
         }
       }
 
       const finalResponse = await stream.finalResult;
-      const assistantText = finalResponse.message?.content || streamingTokens.join('');
-      onSendMessage(message, assistantText);
+      const assistantText = finalResponse.message?.content || accumulatedContent;
+      onSendMessage(message, assistantText, accumulatedThinking || undefined);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
+      show(`Error: ${errorMsg}`, 'error', 4000);
       onSendMessage(message, `⚠️ Error: ${errorMsg}`);
     } finally {
-      setIsThinking(false);
-      setStreamingTokens([]);
+      setStreamPhase('idle');
+      setStreamedThinking('');
+      setStreamedContent('');
     }
   };
 
@@ -135,6 +155,7 @@ const Chat: React.FC<ChatProps> = ({
               items={modelItems}
               onSelect={(item) => {
                 setSelectedModel(item.value);
+                show(`Model switched to ${item.value}`, 'info', 2500);
                 setFocus(1);
               }}
               focus={isModelFocused}
@@ -155,7 +176,12 @@ const Chat: React.FC<ChatProps> = ({
       >
         {messages.length === 0 ? (
           <Box flexDirection="column" alignItems="center" justifyContent="center">
-            <Text color="gray" dimColor>No messages yet. Type below and press Enter to chat.</Text>
+            <Typewriter
+              text="Ready. Select a model with Tab, type your prompt, and press Enter..."
+              speed={45}
+              cursorChar="▌"
+              theme={theme}
+            />
           </Box>
         ) : (
           <>
@@ -178,6 +204,13 @@ const Chat: React.FC<ChatProps> = ({
                     </Text>
                   ) : null}
                 </Box>
+                {message.thinking ? (
+                  <Box paddingLeft={2}>
+                    <Text color="yellow" dimColor>
+                      💭 Reasoning ({Math.ceil(message.thinking.length / 4)} tokens)
+                    </Text>
+                  </Box>
+                ) : null}
                 <Box paddingLeft={2}>
                   <Text>{message.content}</Text>
                 </Box>
@@ -186,21 +219,45 @@ const Chat: React.FC<ChatProps> = ({
           </>
         )}
 
-        {/* Streaming indicator */}
-        {isThinking && (
-          <Box flexDirection="column">
-            <Box flexDirection="row" gap={1} alignItems="center">
-              <Spinner type="dots" />
-              <Text color="yellow"> Generating response from {selectedModel}...</Text>
-            </Box>
-            {streamingTokens.length > 0 && (
-              <Box paddingLeft={2}>
-                <StreamingText text={streamingTokens.join('')} />
-              </Box>
+        {/* Streaming indicator: Phase 1 (Reasoning) */}
+        {streamPhase === 'thinking' && (
+          <Box flexDirection="row" gap={1} alignItems="center">
+            <Spinner type="dots" />
+            <Text color="yellow"> {selectedModel} is thinking...</Text>
+            {streamedThinking.length > 0 && (
+              <Text color="gray" dimColor>
+                ({Math.ceil(streamedThinking.length / 4)} tokens)
+              </Text>
             )}
           </Box>
         )}
+
+        {/* Streaming indicator: Phase 2 (Proper Token Streaming) */}
+        {streamPhase === 'responding' && (
+          <Box flexDirection="column">
+            <Box flexDirection="row" gap={1} alignItems="center">
+              <Badge variant="success">AI</Badge>
+              <Text color="green" dimColor>streaming</Text>
+            </Box>
+            <Box paddingLeft={2}>
+              <StreamingText
+                text={streamedContent.split('\n').slice(-4).join('\n')}
+                streaming={true}
+                cursor="█"
+                cursorBlinkSpeed={530}
+                theme={theme}
+              />
+            </Box>
+          </Box>
+        )}
       </Box>
+
+      {/* Toast Notification Stack - on top of TextInput */}
+      {toasts.length > 0 && (
+        <Box paddingX={1}>
+          <ToastStack toasts={toasts.slice(-1)} onDismiss={dismiss} theme={theme} />
+        </Box>
+      )}
 
       {/* Input Area */}
       <Box

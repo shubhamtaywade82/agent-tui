@@ -1,11 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Text, Newline } from 'ink';
+import { Box } from 'ink';
 import { Header } from './components/ui/header';
-import { Badge } from './components/ui/badge';
-import { Toast } from './components/ui/toast';
-import { ProgressBar } from './components/ui/progress-bar';
-import { Select } from './components/ui/select';
-import { Dialog } from './components/ui/dialog';
 import { StatusIndicator } from './components/ui/status-indicator';
 import Chat from './components/Chat';
 import StatusBar from './components/StatusBar';
@@ -17,12 +12,12 @@ interface Message {
   content: string;
   timestamp: number;
   tokens?: number;
+  thinking?: string;
 }
 
 const App: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isConnected, setIsConnected] = useState(false);
-  const [showThinking, setShowThinking] = useState(false);
 
   const { client, models, healthCheck, isLoading } = useOllama();
 
@@ -32,7 +27,11 @@ const App: React.FC = () => {
     }
   }, [client]);
 
-  const handleSendMessage = (userMessage: string, assistantMessage?: string) => {
+  const handleSendMessage = (
+    userMessage: string,
+    assistantMessage?: string,
+    thinking?: string,
+  ) => {
     setMessages((prev) => {
       const next: Message[] = [
         ...prev,
@@ -47,6 +46,7 @@ const App: React.FC = () => {
           role: 'assistant',
           content: assistantMessage,
           timestamp: Date.now(),
+          thinking,
         });
       }
       return next;
