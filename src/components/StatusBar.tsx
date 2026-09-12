@@ -1,9 +1,9 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
-import { Badge } from '../ui/badge';
-import { ProgressBar } from '../ui/progress-bar';
-import { StatusIndicator } from '../ui/status-indicator';
-import { Gauge } from '../ui/gauge';
+import { Badge } from '../components/ui/badge';
+import { ProgressBar } from '../components/ui/progress-bar';
+import { StatusIndicator } from '../components/ui/status-indicator';
+import { Gauge } from '../components/ui/gauge';
 import { OllamaClient } from '@nemesis-oss/ollama-sdk';
 
 interface StatusBarProps {
@@ -21,7 +21,7 @@ const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme }) => {
       // Monitor memory usage
       const interval = setInterval(async () => {
         const ps = await client.ps();
-        const totalMemory = ps.models.reduce((acc, model) => acc + model.size_vram, 0);
+        const totalMemory = ps.models.reduce((acc, model) => acc + (model.size_vram ?? 0), 0);
         setMemoryUsage(totalMemory / 1024 / 1024); // Convert to MB
       }, 5000);
 
@@ -30,14 +30,14 @@ const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme }) => {
   }, [client]);
 
   return (
-    <Box borderStyle="round" padding={1} marginY={1} theme={theme}>
+    <Box borderStyle="round" padding={1} marginY={1}>
       <Box flexDirection="row" justifyContent="space-between">
         <Box>
           <Text bold color="cyan">
             Status:
           </Text>
           <StatusIndicator
-            status={client ? 'connected' : 'disconnected'}
+            status={client ? 'online' : 'offline'}
             label={client ? 'Connected' : 'Disconnected'}
             theme={theme}
           />
@@ -58,10 +58,8 @@ const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme }) => {
 
       <Box marginTop={1}>
         <ProgressBar
-          value={memoryUsage}
-          max={4096} // 4GB max memory
+          value={(memoryUsage / 4096) * 100}
           label="Memory Usage"
-          color="blue"
           theme={theme}
         />
       </Box>
@@ -71,7 +69,6 @@ const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme }) => {
           value={quotaUsed}
           max={100}
           label="Quota Used"
-          color="yellow"
           theme={theme}
         />
       </Box>

@@ -1,18 +1,15 @@
-import { OllamaClient } from '@nemesis-oss/ollama-sdk';
-import { NodeSDK } from '@opentelemetry/sdk-node';
-import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
-
-// Initialize OpenTelemetry
-const sdk = new NodeSDK({
-  instrumentations: [getNodeAutoInstrumentations()]
-});
-sdk.start();
+import {
+  OllamaClient,
+  createConsoleLogger,
+  type RequestLifecycleHook,
+} from '@nemesis-oss/ollama-sdk';
 
 // Create client with observability
-export const createObservableClient = () => {
+export const createObservableClient = (onLifecycleEvent?: RequestLifecycleHook) => {
   const client = new OllamaClient({
-    // ... other config
-    enableOpenTelemetry: true
+    debug: true,
+    logger: createConsoleLogger('[Ollama]'),
+    onLifecycleEvent,
   });
 
   return client;

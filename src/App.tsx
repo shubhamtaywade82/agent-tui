@@ -7,8 +7,8 @@ import { ProgressBar } from './components/ui/progress-bar';
 import { Select } from './components/ui/select';
 import { Dialog } from './components/ui/dialog';
 import { StatusIndicator } from './components/ui/status-indicator';
-import { Chat } from './components/Chat';
-import { StatusBar } from './components/StatusBar';
+import Chat from './components/Chat';
+import StatusBar from './components/StatusBar';
 import { useOllama } from './hooks/useOllama';
 import { myTheme } from './theme';
 
@@ -32,6 +32,24 @@ const App: React.FC = () => {
     }
   }, [client]);
 
+  const handleSendMessage = (message: string) => {
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: 'user',
+        content: message,
+        timestamp: Date.now(),
+      },
+    ]);
+  };
+
+  const calculateTokenCount = () => {
+    return messages.reduce(
+      (acc, msg) => acc + (msg.tokens ?? Math.ceil(msg.content.length / 4)),
+      0,
+    );
+  };
+
   if (isLoading) {
     return (
       <Box>
@@ -52,11 +70,11 @@ const App: React.FC = () => {
       {/* Connection Status */}
       <Box marginY={1}>
         <StatusIndicator
-          status={isConnected ? 'connected' : 'disconnected'}
+          status={isConnected ? 'online' : 'offline'}
           label={isConnected ? 'Connected' : 'Disconnected'}
           theme={myTheme}
         />
-        <Badge color={isConnected ? 'green' : 'red'}>
+        <Badge variant={isConnected ? 'success' : 'error'}>
           {isConnected ? 'Online' : 'Offline'}
         </Badge>
       </Box>

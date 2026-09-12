@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
-import { TextInput } from '../ui/text-input';
-import { Spinner } from '../ui/spinner';
-import { Badge } from '../ui/badge';
-import { StreamingText } from '../ui/streaming-text';
-import { TokenCounter } from '../ui/token-counter';
+import { TextInput } from '../components/ui/text-input';
+
+import { Spinner } from '../components/ui/spinner';
+import { Badge } from '../components/ui/badge';
+import { StreamingText } from '../components/ui/streaming-text';
+import { TokenCounter } from '../components/ui/token-counter';
 import { OllamaClient } from '@nemesis-oss/ollama-sdk';
+import { Message } from '@nemesis-oss/ollama-sdk';
+import { Select } from './ui/select';
 
 interface ChatProps {
   client: OllamaClient | null;
@@ -56,28 +59,28 @@ const Chat: React.FC<ChatProps> = ({ client, messages, onSendMessage, theme }) =
   return (
     <Box flexDirection="column" flexGrow={1} marginY={1}>
       {/* Model Selector */}
-      <Box marginBottom={1}>
+      <Box flexDirection="column" marginBottom={1}>
+        <Text color="cyan">Select Model:</Text>
         <Select
-          label="Select Model"
           items={[
             { label: 'Qwen3 8B', value: 'qwen3:8b' },
             { label: 'Llama3.2', value: 'llama3.2' },
             { label: 'Mistral', value: 'mistral' }
           ]}
-          onSelect={setSelectedModel}
+          onSelect={(item) => setSelectedModel(item.value)}
           theme={theme}
         />
       </Box>
 
       {/* Messages Display */}
-      <Box flexDirection="column" flexGrow={1} overflowY="scroll">
+      <Box flexDirection="column" flexGrow={1} overflowY="hidden">
         {messages.map((message, index) => (
           <Box key={index} marginBottom={1}>
             {message.role === 'user' && (
-              <Badge color="blue">You:</Badge>
+              <Badge variant="info">You:</Badge>
             )}
             {message.role === 'assistant' && (
-              <Badge color="green">AI:</Badge>
+              <Badge variant="success">AI:</Badge>
             )}
             <Text>{message.content}</Text>
           </Box>

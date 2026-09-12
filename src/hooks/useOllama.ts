@@ -45,12 +45,7 @@ export const useOllama = () => {
           endpointHealth: {
             strategy: 'least-connections',
             maxConcurrentPerEndpoint: 1
-          },
-          // Quota monitoring
-          quotaManager: createOllamaCloudFreeTierQuota({
-            session: { maxTokens: 50000 },
-            weekly: { maxTokens: 200000 }
-          })
+          }
         });
 
         // Get available models
@@ -59,10 +54,20 @@ export const useOllama = () => {
 
         // Perform health check
         const health = await ollamaClient.healthCheck();
+        const isConnected = health.some(h => h.reachable);
+        let memoryUsage = 0;
+        try {
+          const ps = await ollamaClient.ps();
+          const totalMemory = ps.models.reduce((acc, model) => acc + (model.size_vram ?? 0), 0);
+          memoryUsage = totalMemory / 1024 / 1024;
+        } catch {
+          // Keep 0 if ps is not reachable
+        }
+
         setHealthCheck({
-          connected: true,
-          memoryUsage: health.memoryUsage,
-          tokenCount: health.tokenCount,
+          connected: isConnected,
+          memoryUsage,
+          tokenCount: 0,
           models: availableModels.map(model => model.name)
         });
 

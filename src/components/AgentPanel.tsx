@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import { Box, Text } from 'ink';
-import { Agent, defineTool, ToolRegistry, OllamaClient } from '@nemesis-oss/ollama-sdk';
+import { Agent, defineTool, ToolRegistry, OllamaClient, type AgentTurn } from '@nemesis-oss/ollama-sdk';
 import { z } from 'zod';
-import { Badge } from '../ui/badge';
-import { Select } from '../ui/select';
-import { Table } from '../ui/table';
-import { Spinner } from '../ui/spinner';
+import { Badge } from '../components/ui/badge';
+import { Select } from '../components/ui/select';
+import { Table } from '../components/ui/table';
+import { Spinner } from '../components/ui/spinner';
 
 // Define tools for the agent
 const webSearchTool = defineTool({
@@ -45,7 +45,7 @@ const weatherTool = defineTool({
 
 const AgentPanel: React.FC<{ client: OllamaClient | null }> = ({ client }) => {
   const [isRunning, setIsRunning] = useState(false);
-  const [results, setResults] = useState<any[]>([]);
+  const [results, setResults] = useState<readonly AgentTurn[]>([]);
 
   // Create tool registry
   const toolRegistry = new ToolRegistry({
@@ -56,13 +56,15 @@ const AgentPanel: React.FC<{ client: OllamaClient | null }> = ({ client }) => {
   });
 
   // Create agent with tools
-  const agent = new Agent(client, {
-    tools: toolRegistry,
-    maxIterations: 5
-  });
+  const agent = client
+    ? new Agent(client, {
+        tools: toolRegistry,
+        maxIterations: 5
+      })
+    : null;
 
   const runAgent = async (prompt: string) => {
-    if (!client) return;
+    if (!client || !agent) return;
 
     setIsRunning(true);
     try {
@@ -84,14 +86,16 @@ const AgentPanel: React.FC<{ client: OllamaClient | null }> = ({ client }) => {
       <Text bold color="magenta">AI Agent Panel</Text>
 
       {/* Tool Selection */}
-      <Select
-        label="Select Tool"
-        items={[
-          { label: 'Web Search', value: 'web_search' },
-          { label: 'Weather', value: 'get_weather' }
-        ]}
-        onSelect={tool => console.log('Selected tool:', tool)}
-      />
+      <Box flexDirection="column" marginY={1}>
+        <Text color="cyan">Select Tool:</Text>
+        <Select
+          items={[
+            { label: 'Web Search', value: 'web_search' },
+            { label: 'Weather', value: 'get_weather' }
+          ]}
+          onSelect={tool => console.log('Selected tool:', tool.value)}
+        />
+      </Box>
 
       {/* Results Display */}
       {isRunning ? (
@@ -100,8 +104,8 @@ const AgentPanel: React.FC<{ client: OllamaClient | null }> = ({ client }) => {
         <Table
           data={results.map((result, index) => ({
             index,
-            tool: result.toolCalls[0]?.name || 'unknown',
-            status: result.toolResults[0]?.success ? 'success' : 'error',
+            tool: result.toolCalls?.[0]?.function?.name || 'unknown',
+            status: result.toolResults?.[0]?.success ? 'success' : 'error',
             timestamp: new Date().toLocaleTimeString()
           }))}
           columns={[
