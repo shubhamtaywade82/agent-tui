@@ -3,6 +3,7 @@ import { Box, Text, useInput } from 'ink';
 import { TextInput } from '../components/ui/text-input';
 import { Spinner } from '../components/ui/spinner';
 import { Badge } from '../components/ui/badge';
+import { StatusIndicator } from '../components/ui/status-indicator';
 import { StreamingText } from '../components/ui/streaming-text';
 import { OllamaClient } from '@nemesis-oss/ollama-sdk';
 import { Message } from '@nemesis-oss/ollama-sdk';
@@ -18,6 +19,7 @@ interface ChatProps {
   messages: ChatMessage[];
   onSendMessage: (userMessage: string, assistantMessage?: string) => void;
   models?: string[];
+  isConnected?: boolean;
   theme?: any;
 }
 
@@ -26,6 +28,7 @@ const Chat: React.FC<ChatProps> = ({
   messages,
   onSendMessage,
   models = [],
+  isConnected = false,
   theme,
 }) => {
   const [input, setInput] = useState('');
@@ -88,27 +91,41 @@ const Chat: React.FC<ChatProps> = ({
     }
   };
 
-  const maxVisibleMessages = 5;
+  const maxVisibleMessages = 3;
   const visibleMessages = messages.slice(-maxVisibleMessages);
   const hiddenCount = Math.max(0, messages.length - maxVisibleMessages);
 
   return (
-    <Box flexDirection="column" flexGrow={1} marginY={1}>
-      {/* Model Selection Header */}
+    <Box flexDirection="column">
+      {/* Unified Top Controls: Status, Model Selector, Model Count */}
       <Box
         borderStyle="round"
         borderColor={isModelFocused ? (theme?.colors?.focus ?? 'green') : (theme?.colors?.border ?? 'gray')}
         paddingX={1}
         flexDirection="column"
-        marginBottom={1}
       >
         <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-          <Text bold color={isModelFocused ? (theme?.colors?.focus ?? 'green') : 'cyan'}>
-            Model: <Text color="white">{selectedModel}</Text>
-          </Text>
-          <Text color="gray" dimColor>
-            {isModelFocused ? '[↑/↓ Choose • Enter Confirm]' : '[Press Tab to change model]'}
-          </Text>
+          <Box flexDirection="row" gap={1} alignItems="center">
+            <StatusIndicator
+              status={isConnected ? 'online' : 'offline'}
+              label={isConnected ? 'Online' : 'Offline'}
+              theme={theme}
+            />
+          </Box>
+
+          <Box flexDirection="row" gap={1} alignItems="center">
+            <Text bold color={isModelFocused ? (theme?.colors?.focus ?? 'green') : 'cyan'}>
+              Model: <Text color="white">{selectedModel}</Text>
+            </Text>
+            <Text color="gray" dimColor>
+              {isModelFocused ? '[↑/↓ Choose • Enter]' : '[Tab Switch]'}
+            </Text>
+          </Box>
+
+          <Box flexDirection="row" gap={1} alignItems="center">
+            <Text color="gray">Models: </Text>
+            <Badge variant="info">{String(models.length || 0)}</Badge>
+          </Box>
         </Box>
 
         {isModelFocused && (
@@ -132,29 +149,24 @@ const Chat: React.FC<ChatProps> = ({
         borderStyle="single"
         borderColor={theme?.colors?.border ?? 'gray'}
         flexDirection="column"
-        flexGrow={1}
         paddingX={1}
-        paddingY={1}
-        minHeight={8}
+        minHeight={5}
       >
         {messages.length === 0 ? (
-          <Box flexDirection="column" alignItems="center" justifyContent="center" paddingY={2}>
-            <Text color="gray" dimColor>No messages yet.</Text>
-            <Text color="gray" dimColor>
-              Type a prompt below and press Enter to chat with {selectedModel}.
-            </Text>
+          <Box flexDirection="column" alignItems="center" justifyContent="center">
+            <Text color="gray" dimColor>No messages yet. Type below and press Enter to chat.</Text>
           </Box>
         ) : (
           <>
             {hiddenCount > 0 && (
-              <Box marginBottom={1} justifyContent="center">
+              <Box justifyContent="center">
                 <Text color="gray" dimColor>
                   ── {hiddenCount} earlier messages hidden ──
                 </Text>
               </Box>
             )}
             {visibleMessages.map((message, index) => (
-              <Box key={index} flexDirection="column" marginBottom={1}>
+              <Box key={index} flexDirection="column">
                 <Box flexDirection="row" gap={1} alignItems="center">
                   <Badge variant={message.role === 'user' ? 'info' : 'success'}>
                     {message.role === 'user' ? 'You' : 'AI'}
@@ -165,7 +177,7 @@ const Chat: React.FC<ChatProps> = ({
                     </Text>
                   ) : null}
                 </Box>
-                <Box paddingLeft={2} marginTop={0}>
+                <Box paddingLeft={2}>
                   <Text>{message.content}</Text>
                 </Box>
               </Box>
@@ -175,13 +187,13 @@ const Chat: React.FC<ChatProps> = ({
 
         {/* Streaming indicator */}
         {isThinking && (
-          <Box flexDirection="column" marginTop={1}>
+          <Box flexDirection="column">
             <Box flexDirection="row" gap={1} alignItems="center">
               <Spinner type="dots" />
               <Text color="yellow"> Generating response from {selectedModel}...</Text>
             </Box>
             {streamingTokens.length > 0 && (
-              <Box paddingLeft={2} marginTop={1}>
+              <Box paddingLeft={2}>
                 <StreamingText text={streamingTokens.join('')} />
               </Box>
             )}
@@ -194,7 +206,6 @@ const Chat: React.FC<ChatProps> = ({
         borderStyle="round"
         borderColor={isInputFocused ? (theme?.colors?.focus ?? 'green') : (theme?.colors?.border ?? 'gray')}
         paddingX={1}
-        marginTop={1}
       >
         <TextInput
           value={input}
@@ -205,7 +216,7 @@ const Chat: React.FC<ChatProps> = ({
           theme={theme}
         />
       </Box>
-      <Box marginTop={0} paddingX={1}>
+      <Box paddingX={1}>
         <Text color="gray" dimColor>
           {isModelFocused
             ? '↑/↓ Choose model • Enter Select • Esc/Tab back to Chat'

@@ -98,6 +98,11 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
   const { exit } = useApp();
   const [cursor, setCursor] = useState(value.length);
 
+  // Sync cursor position if input value is cleared or changed externally
+  React.useEffect(() => {
+    setCursor((c) => Math.min(c, value.length));
+  }, [value.length]);
+
   useInput((input, key) => {
     if (key.ctrl && input === 'c') { exit(); return; }
 

@@ -47,7 +47,6 @@ const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme }) => {
       borderStyle="round"
       borderColor={theme?.colors?.border ?? 'gray'}
       paddingX={1}
-      marginTop={1}
     >
       <Box flexDirection="row" justifyContent="space-between" alignItems="center">
         <Box flexDirection="row" gap={1} alignItems="center">
@@ -74,7 +73,7 @@ const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme }) => {
         </Box>
       </Box>
 
-      <Box marginTop={1} flexDirection="row" justifyContent="space-between" alignItems="center">
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center">
         <ProgressBar
           value={vramPercent}
           label={`VRAM (${maxVramGB}GB):`}

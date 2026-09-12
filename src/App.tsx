@@ -89,29 +89,13 @@ const App: React.FC = () => {
         theme={myTheme}
       />
 
-      <Box marginTop={0} marginBottom={1} paddingX={1} flexDirection="row" justifyContent="space-between" alignItems="center">
-        <Box flexDirection="row" gap={1} alignItems="center">
-          <StatusIndicator
-            status={isConnected ? 'online' : 'offline'}
-            label={isConnected ? 'Connected to Ollama' : 'Disconnected from Ollama'}
-            theme={myTheme}
-          />
-          <Badge variant={isConnected ? 'success' : 'error'}>
-            {isConnected ? 'ONLINE' : 'OFFLINE'}
-          </Badge>
-        </Box>
-        <Box flexDirection="row" gap={1} alignItems="center">
-          <Text color="gray">Installed Models: </Text>
-          <Badge variant="info">{String(models.length || 0)}</Badge>
-        </Box>
-      </Box>
-
-      {/* Main Chat Interface */}
+      {/* Main Chat Interface with Integrated Top Controls */}
       <Chat
         client={client}
         messages={messages}
         onSendMessage={handleSendMessage}
         models={models}
+        isConnected={isConnected}
         theme={myTheme}
       />
 
