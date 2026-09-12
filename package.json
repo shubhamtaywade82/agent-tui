@@ -5,6 +5,9 @@
   "main": "src/index.ts",
   "scripts": {
     "start": "tsx src/index.ts",
+    "ui": "node dist/index.js",
+    "dev": "tsx watch src/index.tsx",
+    "build": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
