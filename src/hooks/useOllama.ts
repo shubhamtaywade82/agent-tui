@@ -22,22 +22,24 @@ export const useOllama = () => {
   useEffect(() => {
     const initializeClient = async () => {
       try {
-        // Multi-endpoint configuration for high availability
+        // Multi-endpoint configuration without restrictive hardcoded model lists
         const ollamaClient = new OllamaClient({
           endpoints: [
             {
               name: 'local-gpu',
-              baseUrl: 'http://localhost:11434',
+              baseUrl: process.env.OLLAMA_HOST || 'http://localhost:11434',
               priority: 10,
-              models: ['qwen3:8b', 'llama3.2', 'mistral']
             },
-            {
-              name: 'cloud-replica',
-              baseUrl: 'https://ollama.internal.net',
-              apiKey: process.env.OLLAMA_API_KEY,
-              priority: 5,
-              models: ['qwen3:8b', 'llama3.2']
-            }
+            ...(process.env.OLLAMA_API_KEY
+              ? [
+                  {
+                    name: 'cloud-replica',
+                    baseUrl: process.env.OLLAMA_CLOUD_URL || 'https://ollama.internal.net',
+                    apiKey: process.env.OLLAMA_API_KEY,
+                    priority: 5,
+                  },
+                ]
+              : []),
           ],
           timeoutMs: 30000,
           retries: 3,

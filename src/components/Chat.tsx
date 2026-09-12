@@ -55,7 +55,7 @@ const Chat: React.FC<ChatProps> = ({
     }
   }, [models, selectedModel]);
 
-  const modelItems = (models.length > 0 ? models : ['qwen3:8b', 'llama3.2', 'mistral']).map(
+  const modelItems = (models.length > 0 ? models : [selectedModel]).map(
     (m) => ({ label: m, value: m }),
   );
 
@@ -84,7 +84,8 @@ const Chat: React.FC<ChatProps> = ({
       const assistantText = finalResponse.message?.content || streamingTokens.join('');
       onSendMessage(message, assistantText);
     } catch (error) {
-      console.error('Chat error:', error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      onSendMessage(message, `⚠️ Error: ${errorMsg}`);
     } finally {
       setIsThinking(false);
       setStreamingTokens([]);
