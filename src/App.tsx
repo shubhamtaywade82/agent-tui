@@ -28,19 +28,19 @@ const App: React.FC = () => {
   }, [client]);
 
   const handleSendMessage = (
-    userMessage: string,
+    userMessage?: string,
     assistantMessage?: string,
     thinking?: string,
   ) => {
     setMessages((prev) => {
-      const next: Message[] = [
-        ...prev,
-        {
+      const next: Message[] = [...prev];
+      if (userMessage) {
+        next.push({
           role: 'user',
           content: userMessage,
           timestamp: Date.now(),
-        },
-      ];
+        });
+      }
       if (assistantMessage) {
         next.push({
           role: 'assistant',

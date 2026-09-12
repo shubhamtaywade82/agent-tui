@@ -119,6 +119,8 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
     if (key.return) { onSubmit?.(value); return; }
     // Do not insert tab or control characters into the text input
     if (key.tab || key.ctrl || key.meta || key.escape) return;
+    // Discard mouse escape sequences when mouse tracking is active
+    if (/^\[?<\d+;\d+;\d+[Mm]/.test(input) || /^\[?M.../.test(input)) return;
 
     onChange(value.slice(0, cursor) + input + value.slice(cursor));
     setCursor((c) => c + input.length);

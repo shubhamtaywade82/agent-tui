@@ -1,17 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { TextInput } from '../components/ui/text-input';
 import { Spinner } from '../components/ui/spinner';
 import { Badge } from '../components/ui/badge';
 import { StatusIndicator } from '../components/ui/status-indicator';
-import { StreamingText } from '../components/ui/streaming-text';
 import { Typewriter } from '../components/ui/typewriter';
 import { OllamaClient, Message } from '@nemesis-oss/ollama-sdk';
 import { Select } from './ui/select';
 import { ToastStack, useToast } from './ui/toast';
 import { Markdown } from './ui/markdown';
 import { ScrollArea } from './ui/scroll-area';
-import { useFocusManager } from './ui/hooks';
+import { useFocusManager, useTerminalSize } from './ui/hooks';
 
 interface ChatMessage extends Message {
   timestamp?: number;
@@ -21,7 +20,7 @@ interface ChatMessage extends Message {
 interface ChatProps {
   client: OllamaClient | null;
   messages: ChatMessage[];
-  onSendMessage: (userMessage: string, assistantMessage?: string, thinking?: string) => void;
+  onSendMessage: (userMessage?: string, assistantMessage?: string, thinking?: string) => void;
   models?: string[];
   isConnected?: boolean;
   theme?: any;
@@ -37,17 +36,23 @@ const Chat: React.FC<ChatProps> = ({
   const [selectedModel, setSelectedModel] = useState(models[0] || 'qwen3:8b');
   const { toasts, show, dismiss } = useToast();
 
+  const { rows } = useTerminalSize();
   const { isFocused, setFocus } = useFocusManager({
     count: 3,
-    initialIndex: 2, // Start focus on chat input
+    initialIndex: 0, // Start focus on chat input
   });
-  const isModelFocused = isFocused(0);
+  const isInputFocused = isFocused(0);
   const isChatFocused = isFocused(1);
-  const isInputFocused = isFocused(2);
+  const isModelFocused = isFocused(2);
+
+  // Dynamic height accounting for fixed layout (18 rows) and active overlays
+  const selectOverhead = isModelFocused ? 1 + Math.min(models.length || 1, 5) + (models.length > 5 ? 1 : 0) : 0;
+  const toastOverhead = toasts.length > 0 ? 1 : 0;
+  const chatHeight = Math.max(3, rows - 18 - selectOverhead - toastOverhead);
 
   useInput((_input, key) => {
     if (key.escape && !isInputFocused) {
-      setFocus(2);
+      setFocus(0);
     }
   });
 
@@ -105,44 +110,38 @@ const Chat: React.FC<ChatProps> = ({
     }
   };
 
-  const messageRows: React.ReactNode[] = [];
-  messages.forEach((msg, mi) => {
-    messageRows.push(
-      <Box key={`h-${mi}`} flexDirection="row" gap={1} alignItems="center">
-        <Badge variant={msg.role === 'user' ? 'info' : 'success'}>
-          {msg.role === 'user' ? 'You' : 'AI'}
-        </Badge>
-        {msg.timestamp && (
-          <Text color="gray" dimColor>
-            {new Date(msg.timestamp).toLocaleTimeString()}
-          </Text>
-        )}
-      </Box>
-    );
-
-    if (msg.thinking) {
-      messageRows.push(
-        <Box key={`t-${mi}`} paddingLeft={2}>
-          <Text color="yellow" dimColor>
-            💭 Reasoning ({Math.ceil(msg.thinking.length / 4)} tokens)
-          </Text>
-        </Box>
-      );
-    }
-
-    const lines = msg.content.split('\n');
-    lines.forEach((line, li) => {
-      messageRows.push(
-        <Box key={`c-${mi}-${li}`} paddingLeft={2}>
-          {msg.role === 'assistant' ? (
-            <Markdown content={line} theme={theme} />
-          ) : (
-            <Text>{line}</Text>
+  const messageRows = useMemo(() => {
+    const rows: React.ReactNode[] = [];
+    messages.forEach((msg, mi) => {
+      rows.push(
+        <Box key={`h-${mi}`} flexDirection="row" gap={1} alignItems="center">
+          <Badge variant={msg.role === 'user' ? 'info' : 'success'}>
+            {msg.role === 'user' ? 'You' : 'AI'}
+          </Badge>
+          {msg.timestamp && (
+            <Text color="gray" dimColor>{new Date(msg.timestamp).toLocaleTimeString()}</Text>
           )}
         </Box>
       );
+
+      if (msg.thinking) {
+        rows.push(
+          <Box key={`t-${mi}`} paddingLeft={2}>
+            <Text color="yellow" dimColor>💭 Reasoning ({Math.ceil(msg.thinking.length / 4)} tokens)</Text>
+          </Box>
+        );
+      }
+
+      msg.content.split('\n').forEach((line, li) => {
+        rows.push(
+          <Box key={`c-${mi}-${li}`} paddingLeft={2}>
+            {msg.role === 'assistant' ? <Markdown content={line} theme={theme} /> : <Text>{line}</Text>}
+          </Box>
+        );
+      });
     });
-  });
+    return rows;
+  }, [messages, theme]);
 
   return (
     <Box flexDirection="column">
@@ -184,7 +183,7 @@ const Chat: React.FC<ChatProps> = ({
               onSelect={(item) => {
                 setSelectedModel(item.value);
                 show(`Model switched to ${item.value}`, 'info', 2500);
-                setFocus(2);
+                setFocus(0);
               }}
               focus={isModelFocused}
               theme={theme}
@@ -201,22 +200,23 @@ const Chat: React.FC<ChatProps> = ({
         flexDirection="column"
         paddingX={1}
       >
+        <Box flexDirection="row" justifyContent="space-between">
+          <Text bold color={isChatFocused ? (theme?.colors?.focus ?? 'green') : 'gray'}>
+            {isChatFocused ? '● Chat History (Focused)' : 'Chat History'}
+          </Text>
+          <Text color="gray" dimColor>
+            {isChatFocused
+              ? '↑/↓/j/k Scroll • PgUp/PgDn • Home/End • Esc to Input'
+              : 'Mouse Wheel to Scroll • Tab to Focus'}
+          </Text>
+        </Box>
+
         {messageRows.length === 0 ? (
-          <Box flexDirection="column" alignItems="center" justifyContent="center">
-            <Typewriter
-              text="Ready. Select a model with Tab, type your prompt, and press Enter..."
-              speed={45}
-              cursorChar="▌"
-              theme={theme}
-            />
+          <Box height={chatHeight} flexDirection="column" alignItems="center" justifyContent="center">
+            <Typewriter text="Ready. Type prompt and press Enter... (Tab to scroll)" speed={45} cursorChar="▌" theme={theme} />
           </Box>
         ) : (
-          <ScrollArea
-            height={7}
-            focus={isChatFocused}
-            autoScroll={true}
-            theme={theme}
-          >
+          <ScrollArea height={chatHeight} focus={isChatFocused} autoScroll={true} theme={theme}>
             {messageRows}
           </ScrollArea>
         )}
@@ -279,10 +279,10 @@ const Chat: React.FC<ChatProps> = ({
       <Box paddingX={1}>
         <Text color="gray" dimColor>
           {isModelFocused
-            ? '↑/↓ Choose model • Enter Select • Esc to Input'
+            ? '↑/↓ Choose model • Enter Select • Esc/Tab to Input'
             : isChatFocused
-              ? '↑/↓/PgUp/PgDn Scroll • g/G Top/End • Esc to Input'
-              : 'Tab Focus (Model/Chat/Input) • Enter Send • Ctrl+C Exit'}
+              ? '↑/↓/j/k or Wheel Scroll • PgUp/PgDn Page • Home/End Top/Bottom • Esc to Input'
+              : 'Tab Focus Chat • Mouse Wheel to Scroll • Enter Send • Ctrl+C Exit'}
         </Text>
       </Box>
     </Box>
