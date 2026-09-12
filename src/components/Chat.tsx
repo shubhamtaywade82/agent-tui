@@ -6,11 +6,11 @@ import { Badge } from '../components/ui/badge';
 import { StatusIndicator } from '../components/ui/status-indicator';
 import { StreamingText } from '../components/ui/streaming-text';
 import { Typewriter } from '../components/ui/typewriter';
-import { OllamaClient } from '@nemesis-oss/ollama-sdk';
-import { Message } from '@nemesis-oss/ollama-sdk';
+import { OllamaClient, Message } from '@nemesis-oss/ollama-sdk';
 import { Select } from './ui/select';
 import { ToastStack, useToast } from './ui/toast';
 import { Markdown } from './ui/markdown';
+import { ScrollArea } from './ui/scroll-area';
 import { useFocusManager } from './ui/hooks';
 
 interface ChatMessage extends Message {
@@ -21,23 +21,14 @@ interface ChatMessage extends Message {
 interface ChatProps {
   client: OllamaClient | null;
   messages: ChatMessage[];
-  onSendMessage: (
-    userMessage: string,
-    assistantMessage?: string,
-    thinking?: string,
-  ) => void;
+  onSendMessage: (userMessage: string, assistantMessage?: string, thinking?: string) => void;
   models?: string[];
   isConnected?: boolean;
   theme?: any;
 }
 
 const Chat: React.FC<ChatProps> = ({
-  client,
-  messages,
-  onSendMessage,
-  models = [],
-  isConnected = false,
-  theme,
+  client, messages, onSendMessage, models = [], isConnected = false, theme,
 }) => {
   const [input, setInput] = useState('');
   const [streamPhase, setStreamPhase] = useState<'idle' | 'thinking' | 'responding'>('idle');
@@ -47,15 +38,16 @@ const Chat: React.FC<ChatProps> = ({
   const { toasts, show, dismiss } = useToast();
 
   const { isFocused, setFocus } = useFocusManager({
-    count: 2,
-    initialIndex: 1, // Start focus on chat input
+    count: 3,
+    initialIndex: 2, // Start focus on chat input
   });
   const isModelFocused = isFocused(0);
-  const isInputFocused = isFocused(1);
+  const isChatFocused = isFocused(1);
+  const isInputFocused = isFocused(2);
 
   useInput((_input, key) => {
-    if (key.escape && isModelFocused) {
-      setFocus(1);
+    if (key.escape && !isInputFocused) {
+      setFocus(2);
     }
   });
 
@@ -113,9 +105,44 @@ const Chat: React.FC<ChatProps> = ({
     }
   };
 
-  const maxVisibleMessages = 3;
-  const visibleMessages = messages.slice(-maxVisibleMessages);
-  const hiddenCount = Math.max(0, messages.length - maxVisibleMessages);
+  const messageRows: React.ReactNode[] = [];
+  messages.forEach((msg, mi) => {
+    messageRows.push(
+      <Box key={`h-${mi}`} flexDirection="row" gap={1} alignItems="center">
+        <Badge variant={msg.role === 'user' ? 'info' : 'success'}>
+          {msg.role === 'user' ? 'You' : 'AI'}
+        </Badge>
+        {msg.timestamp && (
+          <Text color="gray" dimColor>
+            {new Date(msg.timestamp).toLocaleTimeString()}
+          </Text>
+        )}
+      </Box>
+    );
+
+    if (msg.thinking) {
+      messageRows.push(
+        <Box key={`t-${mi}`} paddingLeft={2}>
+          <Text color="yellow" dimColor>
+            💭 Reasoning ({Math.ceil(msg.thinking.length / 4)} tokens)
+          </Text>
+        </Box>
+      );
+    }
+
+    const lines = msg.content.split('\n');
+    lines.forEach((line, li) => {
+      messageRows.push(
+        <Box key={`c-${mi}-${li}`} paddingLeft={2}>
+          {msg.role === 'assistant' ? (
+            <Markdown content={line} theme={theme} />
+          ) : (
+            <Text>{line}</Text>
+          )}
+        </Box>
+      );
+    });
+  });
 
   return (
     <Box flexDirection="column">
@@ -157,7 +184,7 @@ const Chat: React.FC<ChatProps> = ({
               onSelect={(item) => {
                 setSelectedModel(item.value);
                 show(`Model switched to ${item.value}`, 'info', 2500);
-                setFocus(1);
+                setFocus(2);
               }}
               focus={isModelFocused}
               theme={theme}
@@ -167,15 +194,14 @@ const Chat: React.FC<ChatProps> = ({
         )}
       </Box>
 
-      {/* Messages Conversation Panel */}
+      {/* Messages Conversation Panel with ScrollArea */}
       <Box
         borderStyle="single"
-        borderColor={theme?.colors?.border ?? 'gray'}
+        borderColor={isChatFocused ? (theme?.colors?.focus ?? 'green') : (theme?.colors?.border ?? 'gray')}
         flexDirection="column"
         paddingX={1}
-        minHeight={5}
       >
-        {messages.length === 0 ? (
+        {messageRows.length === 0 ? (
           <Box flexDirection="column" alignItems="center" justifyContent="center">
             <Typewriter
               text="Ready. Select a model with Tab, type your prompt, and press Enter..."
@@ -185,43 +211,14 @@ const Chat: React.FC<ChatProps> = ({
             />
           </Box>
         ) : (
-          <>
-            {hiddenCount > 0 && (
-              <Box justifyContent="center">
-                <Text color="gray" dimColor>
-                  ── {hiddenCount} earlier messages hidden ──
-                </Text>
-              </Box>
-            )}
-            {visibleMessages.map((message, index) => (
-              <Box key={index} flexDirection="column">
-                <Box flexDirection="row" gap={1} alignItems="center">
-                  <Badge variant={message.role === 'user' ? 'info' : 'success'}>
-                    {message.role === 'user' ? 'You' : 'AI'}
-                  </Badge>
-                  {message.timestamp ? (
-                    <Text color="gray" dimColor>
-                      {new Date(message.timestamp).toLocaleTimeString()}
-                    </Text>
-                  ) : null}
-                </Box>
-                {message.thinking ? (
-                  <Box paddingLeft={2}>
-                    <Text color="yellow" dimColor>
-                      💭 Reasoning ({Math.ceil(message.thinking.length / 4)} tokens)
-                    </Text>
-                  </Box>
-                ) : null}
-                <Box paddingLeft={2}>
-                  {message.role === 'assistant' ? (
-                    <Markdown content={message.content} theme={theme} />
-                  ) : (
-                    <Text>{message.content}</Text>
-                  )}
-                </Box>
-              </Box>
-            ))}
-          </>
+          <ScrollArea
+            height={7}
+            focus={isChatFocused}
+            autoScroll={true}
+            theme={theme}
+          >
+            {messageRows}
+          </ScrollArea>
         )}
 
         {/* Streaming indicator: Phase 1 (Reasoning) */}
@@ -282,8 +279,10 @@ const Chat: React.FC<ChatProps> = ({
       <Box paddingX={1}>
         <Text color="gray" dimColor>
           {isModelFocused
-            ? '↑/↓ Choose model • Enter Select • Esc/Tab back to Chat'
-            : 'Tab Change Model • Enter Send Message • Ctrl+C Exit'}
+            ? '↑/↓ Choose model • Enter Select • Esc to Input'
+            : isChatFocused
+              ? '↑/↓/PgUp/PgDn Scroll • g/G Top/End • Esc to Input'
+              : 'Tab Focus (Model/Chat/Input) • Enter Send • Ctrl+C Exit'}
         </Text>
       </Box>
     </Box>

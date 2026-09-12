@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { darkTheme } from '../_core.js';
 import type { InkUITheme } from '../_core.js';
@@ -16,6 +16,8 @@ export interface ScrollAreaProps {
   onScroll?: (offset: number, total: number) => void;
   /** Whether this component accepts keyboard input */
   focus?: boolean;
+  /** Automatically scroll to bottom when new content arrives */
+  autoScroll?: boolean;
   /** Color theme */
   theme?: InkUITheme;
   children: React.ReactNode;
@@ -28,14 +30,22 @@ export const ScrollArea: React.FC<ScrollAreaProps> = ({
   trackChar = '░',
   onScroll,
   focus = true,
+  autoScroll = false,
   theme = darkTheme,
   children,
 }) => {
-  const [scrollOffset, setScrollOffset] = useState(0);
-
   const items = React.Children.toArray(children);
   const totalItems = items.length;
   const maxOffset = Math.max(0, totalItems - height);
+  const [scrollOffset, setScrollOffset] = useState(autoScroll ? maxOffset : 0);
+  const prevTotalRef = useRef(totalItems);
+
+  useEffect(() => {
+    if (autoScroll && totalItems > prevTotalRef.current) {
+      setScrollOffset(maxOffset);
+    }
+    prevTotalRef.current = totalItems;
+  }, [autoScroll, totalItems, maxOffset]);
 
   const scroll = useCallback(
     (delta: number) => {
