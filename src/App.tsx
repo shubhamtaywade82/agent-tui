@@ -82,6 +82,10 @@ const App: React.FC = () => {
     assistantMessage?: string,
     thinking?: string,
   ) => {
+    if (userMessage === '/clear') {
+      setMessages([]);
+      return;
+    }
     setMessages((prev) => {
       const next: Message[] = [...prev];
       if (userMessage) {

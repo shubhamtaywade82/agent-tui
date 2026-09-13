@@ -26,6 +26,16 @@ export interface TextInputProps {
   label?: string;
   /** Theme override — defaults to darkTheme */
   theme?: InkUITheme;
+  /** Autocomplete suggestions (e.g. slash commands) */
+  suggestions?: string[];
+  /** Disabled while agent is thinking/streaming */
+  disabled?: boolean;
+  /** Show live character and estimated token counter */
+  showCounter?: boolean;
+  /** Called when Escape is pressed while disabled */
+  onCancel?: () => void;
+  /** Maximum length limit */
+  maxLength?: number;
 }
 
 // ─── shared display ──────────────────────────────────────────────────────────
@@ -37,14 +47,25 @@ interface DisplayProps {
   isFocused: boolean;
   cursor: number;
   theme: InkUITheme;
+  suggestionSuffix?: string;
 }
 
 const CursorChar: React.FC<{ char: string; color: string }> = ({ char, color }) => (
   <Text color={color} inverse>{char}</Text>
 );
 
+function deleteWordBackward(text: string, cursor: number): { text: string; cursor: number } {
+  if (cursor === 0) return { text, cursor: 0 };
+  const before = text.slice(0, cursor);
+  const after = text.slice(cursor);
+  const trimmed = before.trimEnd();
+  const lastSpace = trimmed.lastIndexOf(' ');
+  const newBefore = lastSpace === -1 ? '' : before.slice(0, lastSpace + 1);
+  return { text: newBefore + after, cursor: newBefore.length };
+}
+
 const InputDisplay: React.FC<DisplayProps> = ({
-  value, placeholder, password, isFocused, cursor, theme,
+  value, placeholder, password, isFocused, cursor, theme, suggestionSuffix,
 }) => {
   const display = password ? '*'.repeat(value.length) : value;
   if (!isFocused) {
@@ -63,6 +84,11 @@ const InputDisplay: React.FC<DisplayProps> = ({
       {cursor > 0 && <Text>{display.slice(0, cursor)}</Text>}
       <CursorChar char={display[cursor] ?? ' '} color={theme.colors.focus} />
       {cursor < display.length - 1 && <Text>{display.slice(cursor + 1)}</Text>}
+      {suggestionSuffix && (
+        <Text color={theme.colors.muted} dimColor>
+          {suggestionSuffix} <Text color="gray" dimColor>[Tab]</Text>
+        </Text>
+      )}
     </Box>
   );
 };
@@ -118,6 +144,7 @@ interface FocusedInputProps extends TextInputProps {
 
 const FocusedInput: React.FC<FocusedInputProps> = ({
   value, onChange, onSubmit, onUpArrow, onDownArrow, history, placeholder = '', password = false, theme,
+  suggestions, maxLength,
 }) => {
   const { exit } = useApp();
   const [cursor, setCursor] = useState(value.length);
@@ -127,8 +154,29 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
     setCursor((c) => Math.min(c, value.length));
   }, [value.length]);
 
+  const activeSuggestion = React.useMemo(() => {
+    if (!suggestions || !value || password) return undefined;
+    const match = suggestions.find((s) => s.toLowerCase().startsWith(value.toLowerCase()) && s.length > value.length);
+    return match ? match.slice(value.length) : undefined;
+  }, [suggestions, value, password]);
+
   useInput((input, key) => {
     if (key.ctrl && input === 'c') { exit(); return; }
+    if (key.ctrl && input === 'a') { setCursor(0); return; }
+    if (key.ctrl && input === 'e') { setCursor(value.length); return; }
+    if (key.ctrl && (input === 'u' || input === 'k')) { onChange(''); setCursor(0); return; }
+    if (key.ctrl && input === 'w') {
+      const res = deleteWordBackward(value, cursor);
+      onChange(res.text);
+      setCursor(res.cursor);
+      return;
+    }
+    if ((key.tab || (key.rightArrow && cursor === value.length)) && activeSuggestion) {
+      const full = value + activeSuggestion;
+      onChange(full);
+      setCursor(full.length);
+      return;
+    }
     if (key.upArrow)   { onUpArrow?.();   navigate(-1); return; }
     if (key.downArrow) { onDownArrow?.(); navigate(1);  return; }
     if (key.leftArrow)  { setCursor((c) => Math.max(0, c - 1)); return; }
@@ -143,6 +191,7 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
     if (key.tab || key.ctrl || key.meta || key.escape) return;
     if (/^\[?<\d+;\d+;\d+[Mm]/.test(input) || /^\[?M.../.test(input)) return;
 
+    if (maxLength && value.length + input.length > maxLength) return;
     onChange(value.slice(0, cursor) + input + value.slice(cursor));
     setCursor((c) => c + input.length);
   });
@@ -150,6 +199,7 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
   return (
     <InputDisplay
       value={value} placeholder={placeholder} password={password} isFocused cursor={cursor} theme={theme}
+      suggestionSuffix={cursor === value.length ? activeSuggestion : undefined}
     />
   );
 };
@@ -157,24 +207,44 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
 // ─── public component ─────────────────────────────────────────────────────────
 
 export const TextInput: React.FC<TextInputProps> = ({
-  value, onChange, onSubmit, onUpArrow, onDownArrow, history, placeholder = '', password = false, focus = true, label, theme = darkTheme,
+  value, onChange, onSubmit, onUpArrow, onDownArrow, history, placeholder = '', password = false, focus = true, label,
+  theme = darkTheme, suggestions, disabled = false, showCounter = false, onCancel, maxLength,
 }) => {
   const { isRawModeSupported } = useStdin();
-  const canFocus = focus && isRawModeSupported;
+  const canFocus = focus && isRawModeSupported && !disabled;
+
+  useInput((_input, key) => {
+    if (disabled && key.escape) onCancel?.();
+  }, { isActive: disabled });
 
   return (
-    <Box>
-      {label ? <Text color={theme.colors.muted}>{label} </Text> : null}
-      <Text color={theme.colors.border}>{'❯ '}</Text>
-      {canFocus ? (
-        <FocusedInput
-          value={value} onChange={onChange} onSubmit={onSubmit} onUpArrow={onUpArrow} onDownArrow={onDownArrow}
-          history={history} placeholder={placeholder} password={password} focus={focus} theme={theme}
-        />
-      ) : (
-        <InputDisplay
-          value={value} placeholder={placeholder} password={password} isFocused={false} cursor={value.length} theme={theme}
-        />
+    <Box flexDirection="row" justifyContent="space-between" width="100%">
+      <Box flexDirection="row" flexGrow={1}>
+        {label ? <Text color={theme.colors.muted}>{label} </Text> : null}
+        <Text color={disabled ? theme.colors.muted : theme.colors.border}>{'❯ '}</Text>
+        {disabled ? (
+          <Text color={theme.colors.muted} dimColor>
+            {placeholder || 'Thinking... [Esc to cancel]'}
+          </Text>
+        ) : canFocus ? (
+          <FocusedInput
+            value={value} onChange={onChange} onSubmit={onSubmit} onUpArrow={onUpArrow} onDownArrow={onDownArrow}
+            history={history} placeholder={placeholder} password={password} focus={focus} theme={theme}
+            suggestions={suggestions} maxLength={maxLength}
+          />
+        ) : (
+          <InputDisplay
+            value={value} placeholder={placeholder} password={password} isFocused={false} cursor={value.length} theme={theme}
+          />
+        )}
+      </Box>
+
+      {showCounter && value.length > 0 && !disabled && (
+        <Box marginLeft={2}>
+          <Text color={theme.colors.muted} dimColor>
+            {`${value.length}c · ~${Math.ceil(value.length / 4)}t`}
+          </Text>
+        </Box>
       )}
     </Box>
   );

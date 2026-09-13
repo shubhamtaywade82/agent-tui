@@ -49,6 +49,25 @@ async function consumeStream(
   return { thinking, content };
 }
 
+const SLASH_COMMANDS = ['/clear', '/help', '/model', '/system'];
+
+function isLocalSlashCommand(
+  cmd: string,
+  onClear: () => void,
+  showToast: (msg: string, type: 'info' | 'error' | 'warning', duration?: number) => void,
+): boolean {
+  if (cmd === '/clear') {
+    onClear();
+    showToast('Chat history cleared', 'info', 2000);
+    return true;
+  }
+  if (cmd === '/help') {
+    showToast('Commands: /clear, /model, /system, /help • Esc: cancel stream', 'info', 4000);
+    return true;
+  }
+  return false;
+}
+
 const Chat: React.FC<ChatProps> = ({
   client, messages, onSendMessage, models = [], isConnected = false, theme, isActive = true,
   columns: propCols, rows: propRows, selectedModel: propModel, isSelectingModel = false,
@@ -87,9 +106,21 @@ const Chat: React.FC<ChatProps> = ({
     setStreamedContent('');
   };
 
+  const handleCancelStream = () => {
+    if (streamPhase !== 'idle') {
+      resetStream('idle');
+      show('Generation cancelled', 'warning', 2000);
+    }
+  };
+
   const handleSendMessage = async (message: string) => {
     const trimmed = message.trim();
     if (!trimmed || !client || streamPhase !== 'idle') return;
+
+    if (isLocalSlashCommand(trimmed, () => onSendMessage('/clear'), show)) {
+      setInput('');
+      return;
+    }
 
     setHistory((prev) => (prev[prev.length - 1] === trimmed ? prev : [...prev, trimmed]));
     setInput('');
@@ -237,16 +268,26 @@ const Chat: React.FC<ChatProps> = ({
           onChange={setInput}
           onSubmit={handleSendMessage}
           history={history}
-          placeholder="Type your message (Enter to send)..."
+          placeholder={
+            streamPhase === 'thinking'
+              ? '⚡ Model is thinking... [Esc to stop]'
+              : streamPhase === 'responding'
+                ? 'Streaming response... [Esc to stop]'
+                : 'Type prompt or /command (Enter to send)...'
+          }
           focus={isActive && !isSelectingModel && isInputFocused}
           theme={theme}
+          suggestions={SLASH_COMMANDS}
+          disabled={streamPhase !== 'idle'}
+          showCounter={true}
+          onCancel={handleCancelStream}
         />
       </Box>
       <Box paddingX={1} width={columns}>
         <Text color="gray" dimColor>
           {isChatFocused
             ? '↑/↓/j/k or Wheel Scroll • PgUp/PgDn Page • Home/End Top/Bottom • Esc to Input'
-            : '↑/↓ History • Tab Scroll • Ctrl+O Model • Ctrl+T System Tab • Enter Send • Ctrl+C Exit'}
+            : '↑/↓ History • Tab Auto/Scroll • Ctrl+A/E Line • Ctrl+W Del Word • Ctrl+U Clear • Esc Stop'}
         </Text>
       </Box>
     </Box>
