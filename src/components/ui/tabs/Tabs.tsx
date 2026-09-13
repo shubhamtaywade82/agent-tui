@@ -18,7 +18,7 @@ export interface TabsProps {
   variant?: 'underline' | 'boxed' | 'pills';
   focus?: boolean;
   theme?: InkUITheme;
-  children: React.ReactNode;
+  children?: React.ReactNode;
 }
 
 export const Tabs: React.FC<TabsProps> = ({
@@ -118,9 +118,11 @@ export const Tabs: React.FC<TabsProps> = ({
   return (
     <Box flexDirection="column">
       {position === 'top' && renderTabBar()}
-      <Box marginTop={position === 'top' ? 1 : 0} marginBottom={position === 'bottom' ? 1 : 0}>
-        {activeChild}
-      </Box>
+      {activeChild && (
+        <Box marginTop={position === 'top' ? 1 : 0} marginBottom={position === 'bottom' ? 1 : 0}>
+          {activeChild}
+        </Box>
+      )}
       {position === 'bottom' && renderTabBar()}
     </Box>
   );

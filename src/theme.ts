@@ -1,4 +1,4 @@
-import { darkTheme } from './components/ui/_core';
+import { darkTheme } from './components/ui/_core.js';
 
 // Custom theme for the TUI harness
 export const myTheme = {

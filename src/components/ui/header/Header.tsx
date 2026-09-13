@@ -12,6 +12,7 @@ export interface HeaderProps {
   style?: HeaderStyle;
   align?: 'left' | 'center';
   theme?: InkUITheme;
+  width?: number;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -21,9 +22,10 @@ export const Header: React.FC<HeaderProps> = ({
   style = 'box',
   align = 'left',
   theme = darkTheme,
+  width,
 }) => {
   const { stdout } = useStdout();
-  const w = stdout?.columns ?? 80;
+  const w = width ?? stdout?.columns ?? 80;
   const fullTitle = version ? `${title} v${version}` : title;
 
   if (style === 'box') {
@@ -36,7 +38,7 @@ export const Header: React.FC<HeaderProps> = ({
     const bot = '└' + '─'.repeat(inner) + '┘';
 
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" width={w}>
         <Text color={theme.colors.primary}>{top}</Text>
         {subtitle && (
           <Text color={theme.colors.primary}>
@@ -56,7 +58,7 @@ export const Header: React.FC<HeaderProps> = ({
     const line = pre + label + '═'.repeat(remaining);
 
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" width={w}>
         <Text color={theme.colors.primary}>{line}</Text>
         {subtitle && <Text color={theme.colors.muted}>   {subtitle}</Text>}
       </Box>
@@ -70,7 +72,7 @@ export const Header: React.FC<HeaderProps> = ({
   const line = pre + label + '█'.repeat(remaining);
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={w}>
       <Text color={theme.colors.primary}>{line}</Text>
       {subtitle && <Text color={theme.colors.muted}>    {subtitle}</Text>}
     </Box>

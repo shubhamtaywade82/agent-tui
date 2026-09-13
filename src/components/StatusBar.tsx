@@ -1,20 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
-import { Badge } from '../components/ui/badge';
-import { ProgressBar } from '../components/ui/progress-bar';
-import { StatusIndicator } from '../components/ui/status-indicator';
-import { Gauge } from '../components/ui/gauge';
+import { ProgressBar } from './ui/progress-bar/index.js';
+import { StatusIndicator } from './ui/status-indicator/index.js';
+import { Gauge } from './ui/gauge/index.js';
 import { OllamaClient } from '@nemesis-oss/ollama-sdk';
+
+interface LoadedModelInfo {
+  name: string;
+  sizeVramMB: number;
+}
 
 interface StatusBarProps {
   client: OllamaClient | null;
   tokenCount: number;
   theme?: any;
+  width?: number;
 }
 
-const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme }) => {
+const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme, width }) => {
   const [memoryUsage, setMemoryUsage] = useState(0);
-  const [quotaUsed, setQuotaUsed] = useState(0);
+  const [quotaUsed] = useState(0);
+  const [loadedModels, setLoadedModels] = useState<LoadedModelInfo[]>([]);
 
   useEffect(() => {
     if (!client) return;
@@ -22,11 +28,13 @@ const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme }) => {
     const checkMetrics = async () => {
       try {
         const ps = await client.ps();
-        const totalMemory = ps.models.reduce(
-          (acc, model) => acc + (model.size_vram ?? 0),
-          0,
-        );
-        setMemoryUsage(totalMemory / 1024 / 1024);
+        const models = (ps.models ?? []).map((m) => ({
+          name: m.name ?? m.model ?? 'unknown',
+          sizeVramMB: (m.size_vram ?? 0) / 1024 / 1024,
+        }));
+        setLoadedModels(models);
+        const totalMemory = models.reduce((acc, m) => acc + m.sizeVramMB, 0);
+        setMemoryUsage(totalMemory);
       } catch {
         // Suppress transient poll error when client is unready
       }
@@ -37,7 +45,6 @@ const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme }) => {
     return () => clearInterval(interval);
   }, [client]);
 
-  // Dynamically scale max VRAM label to 8GB if usage exceeds 4GB
   const maxVramGB = memoryUsage > 4096 ? 8 : 4;
   const vramPercent = Math.min(100, (memoryUsage / (maxVramGB * 1024)) * 100);
 
@@ -47,6 +54,8 @@ const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme }) => {
       borderStyle="round"
       borderColor={theme?.colors?.border ?? 'gray'}
       paddingX={1}
+      paddingY={1}
+      width={width}
     >
       <Box flexDirection="row" justifyContent="space-between" alignItems="center">
         <Box flexDirection="row" gap={1} alignItems="center">
@@ -68,25 +77,47 @@ const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme }) => {
 
         <Box>
           <Text color="gray">
-            VRAM: <Text color="white" bold>{memoryUsage.toFixed(1)} MB</Text>
+            Total VRAM: <Text color="white" bold>{memoryUsage.toFixed(1)} MB</Text>
           </Text>
         </Box>
       </Box>
 
-      <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center" marginTop={1}>
         <ProgressBar
           value={vramPercent}
           label={`VRAM (${maxVramGB}GB):`}
-          width={20}
+          width={24}
           theme={theme}
         />
         <Gauge
           value={quotaUsed}
           max={100}
           label="Quota:"
-          width={12}
+          width={14}
           theme={theme}
         />
+      </Box>
+
+      <Box flexDirection="column" marginTop={1}>
+        <Text bold color={theme?.colors?.secondary ?? 'yellow'}>
+          Loaded Models in VRAM:
+        </Text>
+        {loadedModels.length === 0 ? (
+          <Text color="gray" dimColor>  No models currently resident in VRAM.</Text>
+        ) : (
+          loadedModels.map((m, idx) => (
+            <Box key={idx} flexDirection="row" justifyContent="space-between" paddingLeft={2}>
+              <Text color="white">• {m.name}</Text>
+              <Text color="cyan">{m.sizeVramMB.toFixed(1)} MB</Text>
+            </Box>
+          ))
+        )}
+      </Box>
+
+      <Box marginTop={1}>
+        <Text color="gray" dimColor>
+          Navigation: [Ctrl+T], [Esc], or [1] to return to Chat
+        </Text>
       </Box>
     </Box>
   );

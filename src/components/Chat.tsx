@@ -1,16 +1,16 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
-import { TextInput } from '../components/ui/text-input';
-import { Spinner } from '../components/ui/spinner';
-import { Badge } from '../components/ui/badge';
-import { StatusIndicator } from '../components/ui/status-indicator';
-import { Typewriter } from '../components/ui/typewriter';
+import { TextInput } from './ui/text-input/index.js';
+import { Spinner } from './ui/spinner/index.js';
+import { Badge } from './ui/badge/index.js';
+import { StatusIndicator } from './ui/status-indicator/index.js';
+import { Typewriter } from './ui/typewriter/index.js';
 import { OllamaClient, Message } from '@nemesis-oss/ollama-sdk';
-import { Select } from './ui/select';
-import { ToastStack, useToast } from './ui/toast';
-import { Markdown, parseMarkdownBlocks } from './ui/markdown';
-import { ScrollArea } from './ui/scroll-area';
-import { useFocusManager, useTerminalSize } from './ui/hooks';
+import { Select } from './ui/select/index.js';
+import { ToastStack, useToast } from './ui/toast/index.js';
+import { Markdown, parseMarkdownBlocks } from './ui/markdown/index.js';
+import { ScrollArea } from './ui/scroll-area/index.js';
+import { useFocusManager, useTerminalSize } from './ui/hooks/index.js';
 
 interface ChatMessage extends Message {
   timestamp?: number;
@@ -24,10 +24,11 @@ interface ChatProps {
   models?: string[];
   isConnected?: boolean;
   theme?: any;
+  isActive?: boolean;
 }
 
 const Chat: React.FC<ChatProps> = ({
-  client, messages, onSendMessage, models = [], isConnected = false, theme,
+  client, messages, onSendMessage, models = [], isConnected = false, theme, isActive = true,
 }) => {
   const [input, setInput] = useState('');
   const [streamPhase, setStreamPhase] = useState<'idle' | 'thinking' | 'responding'>('idle');
@@ -42,12 +43,13 @@ const Chat: React.FC<ChatProps> = ({
   const isChatFocused = isFocused(1);
   const isModelFocused = isFocused(2);
 
-  // Dynamic height accounting for fixed layout (18 rows) and active overlays
+  // Dynamic height accounting for fixed layout (14 rows now that VRAM StatusBar is in System tab)
   const selectOverhead = isModelFocused ? 1 + Math.min(models.length || 1, 5) + (models.length > 5 ? 1 : 0) : 0;
   const toastOverhead = toasts.length > 0 ? 1 : 0;
-  const chatHeight = Math.max(3, rows - 18 - selectOverhead - toastOverhead);
+  const chatHeight = Math.max(3, rows - 14 - selectOverhead - toastOverhead);
 
   useInput((_input, key) => {
+    if (!isActive) return;
     if (key.escape && !isInputFocused) setFocus(0);
   });
 
@@ -178,13 +180,14 @@ const Chat: React.FC<ChatProps> = ({
   }, [messages, streamPhase, streamedThinking, streamedContent, selectedModel, theme, columns]);
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={columns}>
       {/* Unified Top Controls: Status, Model Selector, Model Count */}
       <Box
         borderStyle="round"
         borderColor={isModelFocused ? (theme?.colors?.focus ?? 'green') : (theme?.colors?.border ?? 'gray')}
         paddingX={1}
         flexDirection="column"
+        width={columns}
       >
         <Box flexDirection="row" justifyContent="space-between" alignItems="center">
           <Box flexDirection="row" gap={1} alignItems="center">
@@ -219,7 +222,7 @@ const Chat: React.FC<ChatProps> = ({
                 show(`Model switched to ${item.value}`, 'info', 2500);
                 setFocus(0);
               }}
-              focus={isModelFocused}
+              focus={isActive && isModelFocused}
               theme={theme}
               maxVisible={5}
             />
@@ -233,6 +236,7 @@ const Chat: React.FC<ChatProps> = ({
         borderColor={isChatFocused ? (theme?.colors?.focus ?? 'green') : (theme?.colors?.border ?? 'gray')}
         flexDirection="column"
         paddingX={1}
+        width={columns}
       >
         <Box flexDirection="row" justifyContent="space-between">
           <Text bold color={isChatFocused ? (theme?.colors?.focus ?? 'green') : 'gray'}>
@@ -250,7 +254,7 @@ const Chat: React.FC<ChatProps> = ({
             <Typewriter text="Ready. Type prompt and press Enter... (Tab to scroll)" speed={45} cursorChar="▌" theme={theme} />
           </Box>
         ) : (
-          <ScrollArea height={chatHeight} focus={isChatFocused} autoScroll={true} theme={theme}>
+          <ScrollArea height={chatHeight} width={columns - 4} focus={isActive && isChatFocused} autoScroll={true} theme={theme}>
             {messageRows}
           </ScrollArea>
         )}
@@ -258,7 +262,7 @@ const Chat: React.FC<ChatProps> = ({
 
       {/* Toast Notification Stack - on top of TextInput */}
       {toasts.length > 0 && (
-        <Box paddingX={1}>
+        <Box paddingX={1} width={columns}>
           <ToastStack toasts={toasts.slice(-1)} onDismiss={dismiss} theme={theme} />
         </Box>
       )}
@@ -268,6 +272,7 @@ const Chat: React.FC<ChatProps> = ({
         borderStyle="round"
         borderColor={isInputFocused ? (theme?.colors?.focus ?? 'green') : (theme?.colors?.border ?? 'gray')}
         paddingX={1}
+        width={columns}
       >
         <TextInput
           value={input}
@@ -275,17 +280,17 @@ const Chat: React.FC<ChatProps> = ({
           onSubmit={handleSendMessage}
           history={history}
           placeholder="Type your message (Enter to send)..."
-          focus={isInputFocused}
+          focus={isActive && isInputFocused}
           theme={theme}
         />
       </Box>
-      <Box paddingX={1}>
+      <Box paddingX={1} width={columns}>
         <Text color="gray" dimColor>
           {isModelFocused
             ? '↑/↓ Choose model • Enter Select • Esc/Tab to Input'
             : isChatFocused
               ? '↑/↓/j/k or Wheel Scroll • PgUp/PgDn Page • Home/End Top/Bottom • Esc to Input'
-              : '↑/↓ History • Tab Focus Chat • Mouse Wheel to Scroll • Enter Send • Ctrl+C Exit'}
+              : '↑/↓ History • Tab Focus • Ctrl+T System Tab • Enter Send • Ctrl+C Exit'}
         </Text>
       </Box>
     </Box>

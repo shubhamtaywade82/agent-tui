@@ -26,11 +26,14 @@ export interface ScrollAreaProps {
   smoothIntervalMs?: number;
   /** Color theme */
   theme?: InkUITheme;
+  /** Width constraint */
+  width?: number | string;
   children: React.ReactNode;
 }
 
 export const ScrollArea: React.FC<ScrollAreaProps> = ({
   height,
+  width,
   scrollbar = true,
   scrollbarChar = '█',
   trackChar = '░',
@@ -174,7 +177,7 @@ export const ScrollArea: React.FC<ScrollAreaProps> = ({
       : 0;
 
   return (
-    <Box flexDirection="row" height={height}>
+    <Box flexDirection="row" height={height} width={width ?? '100%'}>
       <Box flexDirection="column" flexGrow={1}>
         {visibleItems}
       </Box>

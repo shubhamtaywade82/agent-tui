@@ -89,7 +89,7 @@ function renderCodeBlockLines(
   maxWidth: number,
 ): React.ReactElement[] {
   const b = borderStyles.rounded;
-  const innerWidth = Math.max(10, Math.min(maxWidth - 4, 76));
+  const innerWidth = Math.max(10, maxWidth - 4);
   const title = lang ? ` ${lang} ` : '';
   const topFill = b.top.repeat(Math.max(0, innerWidth - title.length));
   const botFill = b.top.repeat(innerWidth);
@@ -161,9 +161,9 @@ function parseTableBlock(
   return { elements, nextIdx: i };
 }
 
-function renderLineBlock(line: string, idx: number, theme: InkUITheme): React.ReactElement {
+function renderLineBlock(line: string, idx: number, theme: InkUITheme, maxWidth: number = 80): React.ReactElement {
   if (/^---+$/.test(line.trim())) {
-    return <Text key={idx} color={theme.colors.border}>{'─'.repeat(40)}</Text>;
+    return <Text key={idx} color={theme.colors.border}>{'─'.repeat(Math.max(10, maxWidth - 4))}</Text>;
   }
   if (line.startsWith('# ')) {
     return <Text key={idx} bold color={theme.colors.primary}>{line.slice(2)}</Text>;
@@ -227,7 +227,7 @@ export function parseMarkdownBlocks(
       i = block.nextIdx;
       continue;
     }
-    elements.push(renderLineBlock(lines[i]!, i, theme));
+    elements.push(renderLineBlock(lines[i]!, i, theme, maxWidth));
     i++;
   }
 
