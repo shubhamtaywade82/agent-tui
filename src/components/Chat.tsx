@@ -12,11 +12,7 @@ import { ScrollArea } from './ui/scroll-area/index.js';
 import { useFocusManager, useTerminalSize } from './ui/hooks/index.js';
 import { getActiveToolRegistry, consumeStream, dispatchSlashCommand, SLASH_COMMANDS, executeMcpCalls } from '../tools.js';
 
-export interface ChatMessage extends Message {
-  timestamp?: number;
-  thinking?: string;
-  tokens?: number;
-}
+export interface ChatMessage extends Message { timestamp?: number; thinking?: string; tokens?: number; }
 
 const HISTORY_FILE = '.history';
 const MAX_HISTORY = 500;
@@ -30,8 +26,8 @@ function loadLocalHistory(): string[] {
   } catch { return []; }
 }
 
-function appendLocalHistory(prompt: string) {
-  try { appendFileSync(HISTORY_FILE, JSON.stringify(prompt) + '\n', 'utf-8'); } catch {}
+function appendLocalHistory(p: string) {
+  try { appendFileSync(HISTORY_FILE, JSON.stringify(p) + '\n', 'utf-8'); } catch {}
 }
 
 interface ChatProps {
@@ -39,15 +35,8 @@ interface ChatProps {
   messages: ChatMessage[];
   onSendMessage: (u?: string, a?: string, t?: string, x?: Partial<ChatMessage>) => void;
   setMessages?: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
-  models?: string[];
-  isConnected?: boolean;
-  theme?: any;
-  isActive?: boolean;
-  columns?: number;
-  rows?: number;
-  selectedModel?: string;
-  onSelectModel?: (model: string) => void;
-  isSelectingModel?: boolean;
+  models?: string[]; isConnected?: boolean; theme?: any; isActive?: boolean;
+  columns?: number; rows?: number; selectedModel?: string; onSelectModel?: (m: string) => void; isSelectingModel?: boolean;
 }
 
 function renderMessageHeader(msg: ChatMessage, idx: number) {
@@ -276,16 +265,13 @@ const Chat: React.FC<ChatProps> = ({
             <Text bold color="cyan">⚡ Commands ({selectedCmdIndex + 1}/{matchingCommands.length})</Text>
             <Text color="gray" dimColor>↑/↓ Nav • Tab Select • Enter Run • Esc Close</Text>
           </Box>
-          {visibleCommands.map((cmd) => {
-            const isSel = matchingCommands.indexOf(cmd) === selectedCmdIndex;
-            return (
-              <Box key={cmd.name} flexDirection="row" gap={1}>
-                <Text bold color={isSel ? 'cyan' : 'yellow'} inverse={isSel}>{isSel ? '❯ ' : '  '}{cmd.name}</Text>
-                {cmd.args && <Text color={isSel ? 'white' : 'gray'}>{cmd.args}</Text>}
-                <Text color="gray" dimColor={!isSel}>— {cmd.desc}</Text>
-              </Box>
-            );
-          })}
+          {visibleCommands.map((c) => (
+            <Box key={c.name} flexDirection="row" gap={1}>
+              <Text bold color={c === matchingCommands[selectedCmdIndex] ? 'cyan' : 'yellow'} inverse={c === matchingCommands[selectedCmdIndex]}>{c === matchingCommands[selectedCmdIndex] ? '❯ ' : '  '}{c.name}</Text>
+              {c.args && <Text color={c === matchingCommands[selectedCmdIndex] ? 'white' : 'gray'}>{c.args}</Text>}
+              <Text color="gray" dimColor={c !== matchingCommands[selectedCmdIndex]}>— {c.desc}</Text>
+            </Box>
+          ))}
         </Box>
       )}
 
