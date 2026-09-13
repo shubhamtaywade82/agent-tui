@@ -21,7 +21,7 @@ interface Message {
 
 const TABS: Tab[] = [
   { key: 'chat', label: '💬 Chat' },
-  { key: 'system', label: '📊 System & Hardware' },
+  { key: 'system', label: '📊 System' },
 ];
 
 const App: React.FC = () => {
@@ -127,7 +127,7 @@ const App: React.FC = () => {
 
   return (
     <Box flexDirection="column" width={columns}>
-      {/* Unified Top Navigation & Controls Header */}
+      {/* Unified Top Navigation & Controls Header (Single Line) */}
       <Box
         borderStyle="round"
         borderColor={isSelectingModel ? (myTheme.colors.focus ?? 'green') : (myTheme.colors.border ?? 'gray')}
@@ -135,11 +135,10 @@ const App: React.FC = () => {
         flexDirection="column"
         width={columns}
       >
-        {/* Row 1: Brand & View Navigation */}
         <Box flexDirection="row" justifyContent="space-between" alignItems="center">
           <Box flexDirection="row" gap={2} alignItems="center">
             <Text bold color={myTheme.colors.primary}>
-              ⚡ Ollama TUI <Text dimColor color="gray">v1.0.0</Text>
+              ⚡ Ollama TUI
             </Text>
             <Tabs
               tabs={TABS}
@@ -154,32 +153,27 @@ const App: React.FC = () => {
             />
           </Box>
 
-          <Text color="gray" dimColor>[Ctrl+T / F2: Switch View]</Text>
-        </Box>
-
-        {/* Row 2: Live Ollama Status & Model Control */}
-        <Box flexDirection="row" justifyContent="space-between" alignItems="center" marginTop={1}>
-          <Box flexDirection="row" gap={1} alignItems="center">
+          <Box flexDirection="row" gap={2} alignItems="center">
             <StatusIndicator
               status={isConnected ? 'online' : 'offline'}
               label={isConnected ? 'Online' : 'Offline'}
               theme={myTheme}
             />
+            <Box flexDirection="row" gap={1} alignItems="center">
+              <Text bold color={isSelectingModel ? (myTheme.colors.focus ?? 'green') : 'cyan'}>
+                Model: <Text color="white">{selectedModel || 'none'}</Text>
+              </Text>
+              <Badge variant="info">{String(models.length || 0)}</Badge>
+            </Box>
           </Box>
 
-          <Box flexDirection="row" gap={1} alignItems="center">
-            <Text bold color={isSelectingModel ? (myTheme.colors.focus ?? 'green') : 'cyan'}>
-              Model: <Text color="white">{selectedModel || 'loading...'}</Text>
-            </Text>
-            <Text color="gray" dimColor>
-              {isSelectingModel ? '[↑/↓ Choose • Enter • Esc]' : '[Ctrl+O / F3: Switch]'}
-            </Text>
-          </Box>
-
-          <Box flexDirection="row" gap={1} alignItems="center">
-            <Text color="gray">Models: </Text>
-            <Badge variant="info">{String(models.length || 0)}</Badge>
-          </Box>
+          {columns >= 90 && (
+            <Box flexDirection="row" alignItems="center">
+              <Text color="gray" dimColor>
+                {isSelectingModel ? '[↑/↓ Choose • Enter • Esc]' : '[Ctrl+O Model • Ctrl+T View]'}
+              </Text>
+            </Box>
+          )}
         </Box>
 
         {/* Expandable Model Selector dropdown */}

@@ -67,10 +67,10 @@ const Chat: React.FC<ChatProps> = ({
   const isInputFocused = isFocused(0);
   const isChatFocused = isFocused(1);
 
-  // Safe height: reserves 11 fixed UI rows + 2 terminal headroom rows to prevent scroll & cursor desync
+  // Safe height: reserves 9 fixed UI rows + 2 terminal headroom rows to prevent scroll & cursor desync
   const selectOverhead = isSelectingModel ? 1 + Math.min(models.length || 1, 5) + (models.length > 5 ? 1 : 0) : 0;
   const toastOverhead = toasts.length > 0 ? 1 : 0;
-  const chatHeight = Math.max(3, rows - 13 - selectOverhead - toastOverhead);
+  const chatHeight = Math.max(3, rows - 11 - selectOverhead - toastOverhead);
 
   useInput((_input, key) => {
     if (!isActive || isSelectingModel) return;
