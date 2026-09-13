@@ -24,20 +24,14 @@ const MAX_HISTORY = 500;
 function loadLocalHistory(): string[] {
   try {
     if (!existsSync(HISTORY_FILE)) return [];
-    return readFileSync(HISTORY_FILE, 'utf-8').split('\n').filter(Boolean).slice(-MAX_HISTORY).map((line) => {
-      try { return JSON.parse(line); } catch { return line; }
+    return readFileSync(HISTORY_FILE, 'utf-8').split('\n').filter(Boolean).slice(-MAX_HISTORY).map((l) => {
+      try { return JSON.parse(l); } catch { return l; }
     });
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
 
 function appendLocalHistory(prompt: string) {
-  try {
-    appendFileSync(HISTORY_FILE, JSON.stringify(prompt) + '\n', 'utf-8');
-  } catch {
-    // Disk write failures should not break the UI session
-  }
+  try { appendFileSync(HISTORY_FILE, JSON.stringify(prompt) + '\n', 'utf-8'); } catch {}
 }
 
 interface ChatProps {
@@ -68,19 +62,36 @@ function renderMessageContent(msg: ChatMessage, idx: number, theme: any, maxWidt
     return [<Box key={`tr-${idx}`} paddingLeft={2}><Text color="cyan" dimColor>Result: {msg.content.slice(0, 100)}{msg.content.length > 100 ? '...' : ''}</Text></Box>];
   }
   const nodes = msg.role === 'user'
-    ? msg.content.split('\n').flatMap((l, li) => wrapTextLine(l, maxWidth).map((wl, wli) => <Text key={`${li}-${wli}`}>{wl}</Text>))
+    ? msg.content.split('\n').flatMap((l, li) => wrapTextLine(l, maxWidth).map((wl, wli) => <Text key={`${li}-${wli}`}>{wl || ' '}</Text>))
     : parseMarkdownBlocks(msg.content, theme, maxWidth);
   return nodes.map((n, bi) => <Box key={`c-${idx}-${bi}`} paddingLeft={2}>{n}</Box>);
 }
 
-const StreamingIndicator: React.FC<{ phase: string; model: string; thinking: string; content: string; theme: any; maxWidth: number }> = ({
-  phase, model, thinking, content, theme, maxWidth,
-}) => {
-  if (phase === 'thinking') return <Box flexDirection="row" gap={1} alignItems="center" paddingLeft={2}><Spinner type="dots" /><Text color="yellow"> {model} is thinking...</Text>{thinking.length > 0 && <Text color="gray" dimColor>({Math.ceil(thinking.length / 4)} tokens)</Text>}</Box>;
-  if (phase === 'executing-tools') return <Box flexDirection="row" gap={1} alignItems="center" paddingLeft={2}><Spinner type="dots" /><Text color="cyan"> Executing MCP tool call...</Text></Box>;
-  if (phase === 'responding') return <Box flexDirection="column"><Box flexDirection="row" gap={1} alignItems="center"><Badge variant="success">AI</Badge><Text color="green" dimColor>streaming</Text><Spinner type="dots" /></Box>{parseMarkdownBlocks(`${content}█`, theme, maxWidth).map((n, bi) => <Box key={`sb-${bi}`} paddingLeft={2}>{n}</Box>)}</Box>;
-  return null;
-};
+function renderSingleTurn(msg: ChatMessage, mi: number, theme: any, maxWidth: number): React.ReactElement[] {
+  const items: React.ReactElement[] = [];
+  if (mi > 0) items.push(<Box key={`gap-${mi}`}><Text>{' '}</Text></Box>);
+  items.push(renderMessageHeader(msg, mi));
+  if (msg.thinking) items.push(<Box key={`t-${mi}`} paddingLeft={2}><Text color="yellow" dimColor>💭 Reasoning ({Math.ceil(msg.thinking.length / 4)} tokens)</Text></Box>);
+  msg.tool_calls?.forEach((tc: any, tci: number) => {
+    const args = JSON.stringify(tc.function?.arguments || {});
+    const trunc = args.length > maxWidth - 16 ? args.slice(0, maxWidth - 19) + '...' : args;
+    items.push(<Box key={`tc-${mi}-${tci}`} paddingLeft={2} flexDirection="row" gap={1}><Badge variant="warning">Tool Call</Badge><Text color="yellow">{tc.function?.name || 'tool'}</Text><Text color="gray" dimColor>({trunc})</Text></Box>);
+  });
+  items.push(...renderMessageContent(msg, mi, theme, maxWidth));
+  return items;
+}
+
+interface StreamState { phase: string; model: string; thinking: string; content: string; }
+
+function renderStreamingRows(s: StreamState, theme: any, maxWidth: number): React.ReactElement[] {
+  if (s.phase === 'thinking') return [<Box key="st-think" flexDirection="row" gap={1} alignItems="center" paddingLeft={2}><Spinner type="dots" /><Text color="yellow"> {s.model} is thinking...</Text>{s.thinking.length > 0 && <Text color="gray" dimColor>({Math.ceil(s.thinking.length / 4)} tokens)</Text>}</Box>];
+  if (s.phase === 'executing-tools') return [<Box key="st-tool" flexDirection="row" gap={1} alignItems="center" paddingLeft={2}><Spinner type="dots" /><Text color="cyan"> Executing MCP tool call...</Text></Box>];
+  if (s.phase === 'responding') {
+    const head = <Box key="st-head" flexDirection="row" gap={1} alignItems="center"><Badge variant="success">AI</Badge><Text color="green" dimColor>streaming</Text><Spinner type="dots" /></Box>;
+    return [head, ...parseMarkdownBlocks(`${s.content}█`, theme, maxWidth).map((n, bi) => <Box key={`sb-${bi}`} paddingLeft={2}>{n}</Box>)];
+  }
+  return [];
+}
 
 const Chat: React.FC<ChatProps> = ({
   client, messages, onSendMessage, setMessages, models = [], theme, isActive = true,
@@ -92,6 +103,7 @@ const Chat: React.FC<ChatProps> = ({
   const [streamedThinking, setStreamedThinking] = useState('');
   const [streamedContent, setStreamedContent] = useState('');
   const [registry, setRegistry] = useState<any>(null);
+  const [scrollOffset, setScrollOffset] = useState(0);
   const selectedModel = propModel || models[0] || 'qwen3:8b';
   const { toasts, show, dismiss } = useToast();
 
@@ -126,25 +138,19 @@ const Chat: React.FC<ChatProps> = ({
     return Array.from(new Set([...loaded, ...initial]));
   });
 
-  const resetStream = (p: typeof phase = 'idle') => {
-    setPhase(p);
-    setStreamedThinking('');
-    setStreamedContent('');
-  };
+  const resetStream = (p: typeof phase = 'idle') => { setPhase(p); setStreamedThinking(''); setStreamedContent(''); };
 
-  const executeSlashCommand = (trimmed: string): boolean => {
-    return dispatchSlashCommand(trimmed, {
-      messages, model: selectedModel, setModel: onSelectModel, models,
-      clearMessages: () => onSendMessage('/clear'), setMessages: setMessages ?? (() => {}),
-      showToast: show, registry,
-      addSystemCard: (text) => onSendMessage(undefined, text, undefined, { role: 'system', content: text, timestamp: Date.now() }),
-    });
-  };
+  const executeSlashCommand = (cmd: string): boolean => dispatchSlashCommand(cmd, {
+    messages, model: selectedModel, setModel: onSelectModel, models,
+    clearMessages: () => onSendMessage('/clear'), setMessages: setMessages ?? (() => {}),
+    showToast: show, registry,
+    addSystemCard: (text) => onSendMessage(undefined, text, undefined, { role: 'system', content: text, timestamp: Date.now() }),
+  });
 
   const executeSingleTurn = async (chatHistory: ChatMessage[]) => {
     const tools = registry ? registry.definitions() : undefined;
     const stream = await client!.chatStream({ model: selectedModel, messages: chatHistory, think: 'high', tools, options: { temperature: 0.7 } });
-    const { thinking, content } = await consumeStream(stream, (d) => setStreamedThinking((prev) => prev + d), (d) => { setPhase('responding'); setStreamedContent((prev) => prev + d); });
+    const { thinking, content } = await consumeStream(stream, (d) => setStreamedThinking((p) => p + d), (d) => { setPhase('responding'); setStreamedContent((p) => p + d); });
     const final = await stream.finalResult;
     const toolCalls = final.message?.tool_calls;
     if (!toolCalls?.length || !registry) {
@@ -182,33 +188,33 @@ const Chat: React.FC<ChatProps> = ({
     const trimmed = message.trim();
     if (!trimmed || !client || phase !== 'idle') return;
     if (trimmed.startsWith('/')) {
-      let cmdToRun = trimmed;
+      let cmd = trimmed;
       if (trimmed === '/' || !SLASH_COMMANDS.some((c) => c.name === trimmed.split(/\s+/)[0])) {
         const sel = matchingCommands[selectedCmdIndex] || matchingCommands[0];
         if (sel) {
           if (sel.args && trimmed === '/') { setInput(sel.name + ' '); return; }
-          cmdToRun = sel.name;
+          cmd = sel.name;
         }
       }
-      setHistory((prev) => (prev[prev.length - 1] === cmdToRun ? prev : [...prev, cmdToRun]));
-      appendLocalHistory(cmdToRun);
+      setHistory((prev) => (prev[prev.length - 1] === cmd ? prev : [...prev, cmd]));
+      appendLocalHistory(cmd);
       setInput('');
       setSelectedCmdIndex(0);
-      const ok = executeSlashCommand(cmdToRun);
-      if (!ok) show(`Unknown command: ${cmdToRun}. Type /help for manual`, 'error', 3000);
+      if (!executeSlashCommand(cmd)) show(`Unknown command: ${cmd}. Type /help for manual`, 'error', 3000);
       return;
     }
     setHistory((prev) => (prev[prev.length - 1] === trimmed ? prev : [...prev, trimmed]));
     appendLocalHistory(trimmed);
     setInput('');
+    setScrollOffset(Infinity);
     onSendMessage(trimmed);
     resetStream('thinking');
     await runAgentLoop([...messages, { role: 'user', content: trimmed, timestamp: Date.now() }]);
   };
 
-  const handleArrow = (delta: -1 | 1): boolean => {
-    if (!input.startsWith('/') || matchingCommands.length === 0) return false;
-    setSelectedCmdIndex((prev) => (delta === 1 ? (prev + 1) % matchingCommands.length : prev <= 0 ? matchingCommands.length - 1 : prev - 1));
+  const handleArrow = (d: -1 | 1): boolean => {
+    if (!input.startsWith('/') || !matchingCommands.length) return false;
+    setSelectedCmdIndex((p) => (d === 1 ? (p + 1) % matchingCommands.length : p <= 0 ? matchingCommands.length - 1 : p - 1));
     return true;
   };
 
@@ -222,20 +228,18 @@ const Chat: React.FC<ChatProps> = ({
     return true;
   };
 
+  const maxWidth = Math.max(20, columns - 8);
   const messageRows = useMemo(() => {
-    const maxWidth = Math.max(20, columns - 6);
-    const rows = messages.flatMap((msg, mi) => [
-      renderMessageHeader(msg, mi),
-      ...(msg.thinking ? [<Box key={`t-${mi}`} paddingLeft={2}><Text color="yellow" dimColor>💭 Reasoning ({Math.ceil(msg.thinking.length / 4)} tokens)</Text></Box>] : []),
-      ...(msg.tool_calls?.map((tc: any, tci: number) => (
-        <Box key={`tc-${mi}-${tci}`} paddingLeft={2} flexDirection="row" gap={1}><Badge variant="warning">Tool Call</Badge><Text color="yellow">{tc.function?.name}</Text><Text color="gray" dimColor>({JSON.stringify(tc.function?.arguments || {})})</Text></Box>
-      )) || []),
-      ...renderMessageContent(msg, mi, theme, maxWidth),
-    ]);
-    if (phase !== 'idle') rows.push(<StreamingIndicator key="stream" phase={phase} model={selectedModel} thinking={streamedThinking} content={streamedContent} theme={theme} maxWidth={maxWidth} />);
+    const rows = messages.flatMap((msg, mi) => renderSingleTurn(msg, mi, theme, maxWidth));
+    if (phase !== 'idle') {
+      if (messages.length > 0) rows.push(<Box key="st-gap"><Text>{' '}</Text></Box>);
+      rows.push(...renderStreamingRows({ phase, model: selectedModel, thinking: streamedThinking, content: streamedContent }, theme, maxWidth));
+    }
     return rows;
-  }, [messages, phase, streamedThinking, streamedContent, selectedModel, theme, columns]);
+  }, [messages, phase, streamedThinking, streamedContent, selectedModel, theme, maxWidth]);
 
+  const totalRows = messageRows.length;
+  const maxScrollOffset = Math.max(0, totalRows - chatHeight);
   const menuStart = Math.min(Math.max(0, selectedCmdIndex - 1), Math.max(0, matchingCommands.length - 4));
   const visibleCommands = matchingCommands.slice(menuStart, menuStart + 4);
 
@@ -243,15 +247,24 @@ const Chat: React.FC<ChatProps> = ({
     <Box flexDirection="column" width={columns}>
       <Box borderStyle="single" borderColor={isChatFocused ? (theme?.colors?.focus ?? 'green') : (theme?.colors?.border ?? 'gray')} flexDirection="column" paddingX={1} width={columns}>
         <Box flexDirection="row" justifyContent="space-between">
-          <Text bold color={isChatFocused ? (theme?.colors?.focus ?? 'green') : 'gray'}>{isChatFocused ? '● Chat History (Focused)' : 'Chat History'}</Text>
-          <Text color="gray" dimColor>{isChatFocused ? '↑/↓/j/k Scroll • PgUp/PgDn • Home/End • Esc/Tab to Input' : 'Mouse Wheel to Scroll • Tab (when empty) to Focus'}</Text>
+          <Box flexDirection="row" gap={1}>
+            <Text bold color={isChatFocused ? (theme?.colors?.focus ?? 'green') : 'gray'}>{isChatFocused ? '● Chat History (Focused)' : 'Chat History'}</Text>
+            {totalRows > chatHeight && <Text color="cyan" dimColor>[{Math.min(totalRows, scrollOffset + 1)}-{Math.min(scrollOffset + chatHeight, totalRows)} of {totalRows}]</Text>}
+          </Box>
+          <Box flexDirection="row" gap={1}>
+            {scrollOffset > 0 && <Text color="yellow">▲ Above (PgUp)</Text>}
+            {scrollOffset < maxScrollOffset && <Text color="yellow">▼ Below (PgDn)</Text>}
+            <Text color="gray" dimColor>{isChatFocused ? '↑/↓/j/k • PgUp/PgDn • Home/End • Esc to Input' : 'PgUp/PgDn Scroll • Tab to Focus'}</Text>
+          </Box>
         </Box>
         {messageRows.length === 0 ? (
           <Box height={chatHeight} flexDirection="column" alignItems="center" justifyContent="center">
             <Typewriter text="Ready. Type prompt or /command... (Tab to scroll)" speed={45} cursorChar="▌" theme={theme} />
           </Box>
         ) : (
-          <ScrollArea height={chatHeight} width="100%" focus={isActive && isChatFocused} autoScroll={true} theme={theme}>{messageRows}</ScrollArea>
+          <ScrollArea height={chatHeight} width="100%" scrollOffset={scrollOffset} onScrollOffsetChange={setScrollOffset} focus={isActive && isChatFocused} autoScroll={true} theme={theme}>
+            {messageRows}
+          </ScrollArea>
         )}
       </Box>
 
@@ -261,14 +274,13 @@ const Chat: React.FC<ChatProps> = ({
         <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1} width={columns}>
           <Box flexDirection="row" justifyContent="space-between">
             <Text bold color="cyan">⚡ Commands ({selectedCmdIndex + 1}/{matchingCommands.length})</Text>
-            <Text color="gray" dimColor>↑/↓ Navigate • Tab Select • Enter Run • Esc Close</Text>
+            <Text color="gray" dimColor>↑/↓ Nav • Tab Select • Enter Run • Esc Close</Text>
           </Box>
           {visibleCommands.map((cmd) => {
             const isSel = matchingCommands.indexOf(cmd) === selectedCmdIndex;
             return (
               <Box key={cmd.name} flexDirection="row" gap={1}>
-                <Text bold color="cyan">{isSel ? '❯' : ' '}</Text>
-                <Text bold color={isSel ? 'cyan' : 'yellow'} inverse={isSel}>{cmd.name}</Text>
+                <Text bold color={isSel ? 'cyan' : 'yellow'} inverse={isSel}>{isSel ? '❯ ' : '  '}{cmd.name}</Text>
                 {cmd.args && <Text color={isSel ? 'white' : 'gray'}>{cmd.args}</Text>}
                 <Text color="gray" dimColor={!isSel}>— {cmd.desc}</Text>
               </Box>
@@ -280,17 +292,19 @@ const Chat: React.FC<ChatProps> = ({
       <Box borderStyle="round" borderColor={isInputFocused ? (theme?.colors?.focus ?? 'green') : (theme?.colors?.border ?? 'gray')} paddingX={1} width={columns}>
         <TextInput
           value={input} onChange={setInput} onSubmit={handleSendMessage}
-          onUpArrow={() => handleArrow(-1)} onDownArrow={() => handleArrow(1)} onTab={handleTab}
-          onEscape={() => { if (input.startsWith('/')) { setInput(''); setSelectedCmdIndex(0); return true; } return false; }}
+          onUpArrow={() => handleArrow(-1)} onDownArrow={() => handleArrow(1)}
+          onPageUp={() => { setScrollOffset((p) => Math.max(0, p - Math.max(1, Math.floor(chatHeight / 2)))); return true; }}
+          onPageDown={() => { setScrollOffset((p) => Math.min(maxScrollOffset, p + Math.max(1, Math.floor(chatHeight / 2)))); return true; }}
+          onTab={handleTab} onEscape={() => { if (input.startsWith('/')) { setInput(''); setSelectedCmdIndex(0); return true; } return false; }}
           history={history} focus={isActive && !isSelectingModel && isInputFocused} theme={theme}
-          placeholder={phase === 'thinking' ? '⚡ Thinking... [Esc to stop]' : phase === 'executing-tools' ? '🔧 Executing MCP tools...' : phase === 'responding' ? 'Streaming... [Esc to stop]' : 'Type prompt or /command (Enter to send)...'}
+          placeholder={phase === 'thinking' ? '⚡ Thinking... [Esc stop]' : phase === 'executing-tools' ? '🔧 Running tools...' : phase === 'responding' ? 'Streaming... [Esc stop]' : 'Type prompt or /command...'}
           disabled={phase !== 'idle'} showCounter={true}
           onCancel={() => { if (phase !== 'idle') { resetStream('idle'); show('Cancelled', 'warning', 2000); } }}
         />
       </Box>
       <Box paddingX={1} width={columns}>
         <Text color="gray" dimColor>
-          {isChatFocused ? '↑/↓/j/k or Wheel Scroll • PgUp/PgDn Page • Home/End Top/Bottom • Esc/Tab to Input' : '↑/↓ History/Menu • Tab Complete • Ctrl+A/E Line • Ctrl+W Del Word • Ctrl+U Clear • Esc Stop'}
+          {isChatFocused ? '↑/↓/j/k or Wheel Scroll • PgUp/PgDn Page • Home/End Top/Bottom • Esc/Tab to Input' : 'PgUp/PgDn Scroll Chat • ↑/↓ History • Tab Complete/Focus • Esc Stop'}
         </Text>
       </Box>
     </Box>

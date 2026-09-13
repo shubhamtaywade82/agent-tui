@@ -114,8 +114,8 @@ function renderCodeBlockLines(
   const innerWidth = Math.max(10, maxWidth - 4);
   const language = resolveLanguage(lang);
   const title = lang ? ` ${lang} ` : '';
-  const topFill = b.top.repeat(Math.max(0, innerWidth - title.length));
-  const botFill = b.top.repeat(innerWidth);
+  const topFill = b.top.repeat(Math.max(0, innerWidth + 2 - title.length));
+  const botFill = b.top.repeat(innerWidth + 2);
 
   const lines: React.ReactElement[] = [
     <Text key="code-top" color={theme.colors.border}>{`${b.topLeft}${title}${topFill}${b.topRight}`}</Text>,
@@ -183,48 +183,49 @@ function parseTableBlock(
   return { elements, nextIdx: i };
 }
 
-function renderLineBlock(line: string, idx: number, theme: InkUITheme, maxWidth: number = 80): React.ReactElement {
-  if (/^---+$/.test(line.trim())) {
-    return <Text key={idx} color={theme.colors.border}>{'─'.repeat(Math.max(10, maxWidth - 4))}</Text>;
-  }
-  if (line.startsWith('# ')) {
-    return <Text key={idx} bold color={theme.colors.primary}>{line.slice(2)}</Text>;
-  }
-  if (line.startsWith('## ')) {
-    return <Text key={idx} bold color={theme.colors.secondary}>{line.slice(3)}</Text>;
-  }
-  if (line.startsWith('### ')) {
-    return <Text key={idx} bold>{line.slice(4)}</Text>;
-  }
-  if (line.startsWith('> ')) {
-    return (
-      <Box key={idx} flexDirection="row">
-        <Text color={theme.colors.muted}>{'│ '}</Text>
-        <Text italic color={theme.colors.muted}>{line.slice(2)}</Text>
-      </Box>
-    );
-  }
-  if (line.startsWith('- ') || line.startsWith('* ')) {
-    return (
-      <Box key={idx} flexDirection="row">
-        <Text color={theme.colors.primary}>{'  • '}</Text>
-        <Text>{renderInline(parseInline(line.slice(2)), theme)}</Text>
-      </Box>
-    );
-  }
-  const olMatch = line.match(/^(\d+)\.\s(.*)/);
-  if (olMatch) {
-    return (
-      <Box key={idx} flexDirection="row">
-        <Text color={theme.colors.primary}>{`  ${olMatch[1]}. `}</Text>
-        <Text>{renderInline(parseInline(olMatch[2]!), theme)}</Text>
-      </Box>
-    );
-  }
-  if (line.trim() === '') {
-    return <Text key={idx}>{' '}</Text>;
-  }
-  return <Text key={idx}>{renderInline(parseInline(line), theme)}</Text>;
+interface LineFormatOptions {
+  theme: InkUITheme;
+  maxWidth: number;
+}
+
+function renderListLines(text: string, i: number, pfx: string, opts: LineFormatOptions) {
+  const innerW = Math.max(10, opts.maxWidth - pfx.length);
+  const indent = ' '.repeat(pfx.length);
+  return wrapTextLine(text, innerW).map((w, wi) => (
+    <Box key={`${i}-${wi}`} flexDirection="row">
+      <Text color={opts.theme.colors.primary}>{wi === 0 ? pfx : indent}</Text>
+      <Text>{renderInline(parseInline(w), opts.theme)}</Text>
+    </Box>
+  ));
+}
+
+function renderQuoteLines(text: string, i: number, opts: LineFormatOptions) {
+  const innerW = Math.max(10, opts.maxWidth - 2);
+  return wrapTextLine(text, innerW).map((w, wi) => (
+    <Box key={`${i}-${wi}`} flexDirection="row">
+      <Text color={opts.theme.colors.muted}>{'│ '}</Text>
+      <Text italic color={opts.theme.colors.muted}>{renderInline(parseInline(w), opts.theme)}</Text>
+    </Box>
+  ));
+}
+
+function renderHeadingLines(text: string, i: number, color: string, opts: LineFormatOptions) {
+  return wrapTextLine(text, opts.maxWidth).map((w, wi) => (
+    <Text key={`${i}-${wi}`} bold color={color}>{renderInline(parseInline(w), opts.theme)}</Text>
+  ));
+}
+
+function renderLineItem(line: string, i: number, opts: LineFormatOptions): React.ReactElement[] {
+  if (/^---+$/.test(line.trim())) return [<Text key={i} color={opts.theme.colors.border}>{'─'.repeat(Math.max(10, opts.maxWidth))}</Text>];
+  if (line.trim() === '') return [<Text key={i}>{' '}</Text>];
+  if (line.startsWith('# ')) return renderHeadingLines(line.slice(2), i, opts.theme.colors.primary, opts);
+  if (line.startsWith('## ')) return renderHeadingLines(line.slice(3), i, opts.theme.colors.secondary, opts);
+  if (line.startsWith('### ')) return renderHeadingLines(line.slice(4), i, opts.theme.colors.text, opts);
+  if (line.startsWith('> ')) return renderQuoteLines(line.slice(2), i, opts);
+  if (line.startsWith('- ') || line.startsWith('* ')) return renderListLines(line.slice(2), i, '  • ', opts);
+  const ol = line.match(/^(\d+)\.\s(.*)/);
+  if (ol) return renderListLines(ol[2]!, i, `  ${ol[1]}. `, opts);
+  return wrapTextLine(line, opts.maxWidth).map((w, wi) => <Text key={`${i}-${wi}`}>{renderInline(parseInline(w), opts.theme)}</Text>);
 }
 
 export function wrapTextLine(line: string, maxWidth: number): string[] {
@@ -248,6 +249,7 @@ export function parseMarkdownBlocks(
 ): React.ReactElement[] {
   const lines = content.split('\n');
   const elements: React.ReactElement[] = [];
+  const opts: LineFormatOptions = { theme, maxWidth };
   let i = 0;
 
   while (i < lines.length) {
@@ -263,10 +265,7 @@ export function parseMarkdownBlocks(
       i = block.nextIdx;
       continue;
     }
-    const wrapped = wrapTextLine(lines[i]!, maxWidth);
-    wrapped.forEach((wl, wli) => {
-      elements.push(renderLineBlock(wl, i * 1000 + wli, theme, maxWidth));
-    });
+    elements.push(...renderLineItem(lines[i]!, i, opts));
     i++;
   }
 

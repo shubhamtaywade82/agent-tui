@@ -6,6 +6,10 @@ import type { InkUITheme } from '../_core.js';
 export interface ScrollAreaProps {
   /** Visible height in rows */
   height: number;
+  /** Controlled scroll offset */
+  scrollOffset?: number;
+  /** Called when scroll offset changes */
+  onScrollOffsetChange?: (offset: number) => void;
   /** Scrollbar visibility */
   scrollbar?: boolean;
   /** Scrollbar thumb character */
@@ -34,6 +38,8 @@ export interface ScrollAreaProps {
 export const ScrollArea: React.FC<ScrollAreaProps> = ({
   height,
   width,
+  scrollOffset: scrollOffsetProp,
+  onScrollOffsetChange,
   scrollbar = true,
   scrollbarChar = '█',
   trackChar = '░',
@@ -49,7 +55,8 @@ export const ScrollArea: React.FC<ScrollAreaProps> = ({
   const items = Array.isArray(children) ? children : React.Children.toArray(children);
   const totalItems = items.length;
   const maxOffset = Math.max(0, totalItems - height);
-  const [scrollOffset, setScrollOffset] = useState(autoScroll ? maxOffset : 0);
+  const [internalOffset, setInternalOffset] = useState(autoScroll ? maxOffset : 0);
+  const scrollOffset = scrollOffsetProp !== undefined ? Math.max(0, Math.min(maxOffset, scrollOffsetProp)) : internalOffset;
   const prevTotalRef = useRef(totalItems);
   const pendingDeltaRef = useRef(0);
   const throttleTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -57,20 +64,25 @@ export const ScrollArea: React.FC<ScrollAreaProps> = ({
 
   useEffect(() => {
     if (autoScroll && totalItems > prevTotalRef.current) {
-      setScrollOffset(maxOffset);
+      const prevMax = Math.max(0, prevTotalRef.current - height);
+      // Stay pinned to bottom only if already viewing the end
+      if (scrollOffset >= prevMax - 1) {
+        if (scrollOffsetProp === undefined) setInternalOffset(maxOffset);
+        onScrollOffsetChange?.(maxOffset);
+        onScroll?.(maxOffset, totalItems);
+      }
     }
     prevTotalRef.current = totalItems;
-  }, [autoScroll, totalItems, maxOffset]);
+  }, [autoScroll, totalItems, maxOffset, height, scrollOffset, scrollOffsetProp, onScrollOffsetChange, onScroll]);
 
   const scroll = useCallback(
     (delta: number) => {
-      setScrollOffset((prev) => {
-        const next = Math.max(0, Math.min(maxOffset, prev + delta));
-        onScroll?.(next, totalItems);
-        return next;
-      });
+      const next = Math.max(0, Math.min(maxOffset, scrollOffset + delta));
+      if (scrollOffsetProp === undefined) setInternalOffset(next);
+      onScrollOffsetChange?.(next);
+      onScroll?.(next, totalItems);
     },
-    [maxOffset, totalItems, onScroll]
+    [maxOffset, totalItems, scrollOffset, scrollOffsetProp, onScrollOffsetChange, onScroll]
   );
 
   // Batches high-frequency wheel events into smooth frame ticks

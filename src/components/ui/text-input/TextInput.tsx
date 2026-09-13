@@ -14,6 +14,10 @@ export interface TextInputProps {
   onUpArrow?: () => boolean | void;
   /** Called when Down Arrow is pressed. Return true to prevent default history navigation */
   onDownArrow?: () => boolean | void;
+  /** Called when Page Up is pressed. Return true to prevent default */
+  onPageUp?: () => boolean | void;
+  /** Called when Page Down is pressed. Return true to prevent default */
+  onPageDown?: () => boolean | void;
   /** Called when Tab is pressed. Return true to prevent default autocomplete */
   onTab?: () => boolean | void;
   /** Called when Escape is pressed while active */
@@ -141,7 +145,7 @@ interface FocusedInputProps extends TextInputProps {
 }
 
 const FocusedInput: React.FC<FocusedInputProps> = ({
-  value, onChange, onSubmit, onUpArrow, onDownArrow, onTab, onEscape, history, placeholder = '', password = false, theme,
+  value, onChange, onSubmit, onUpArrow, onDownArrow, onPageUp, onPageDown, onTab, onEscape, history, placeholder = '', password = false, theme,
   suggestions, maxLength,
 }) => {
   const { exit } = useApp();
@@ -171,6 +175,8 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
     }
     if (key.escape && onEscape && onEscape()) return;
     if (key.tab && onTab && onTab()) return;
+    if (key.pageUp && onPageUp && onPageUp()) return;
+    if (key.pageDown && onPageDown && onPageDown()) return;
     if ((key.tab || (key.rightArrow && cursor === value.length)) && activeSuggestion) {
       const full = value + activeSuggestion;
       onChange(full);
@@ -215,7 +221,7 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
 // ─── public component ─────────────────────────────────────────────────────────
 
 export const TextInput: React.FC<TextInputProps> = ({
-  value, onChange, onSubmit, onUpArrow, onDownArrow, onTab, onEscape, history, placeholder = '', password = false, focus = true, label,
+  value, onChange, onSubmit, onUpArrow, onDownArrow, onPageUp, onPageDown, onTab, onEscape, history, placeholder = '', password = false, focus = true, label,
   theme = darkTheme, suggestions, disabled = false, showCounter = false, onCancel, maxLength,
 }) => {
   const { isRawModeSupported } = useStdin();
@@ -237,6 +243,7 @@ export const TextInput: React.FC<TextInputProps> = ({
         ) : canFocus ? (
           <FocusedInput
             value={value} onChange={onChange} onSubmit={onSubmit} onUpArrow={onUpArrow} onDownArrow={onDownArrow}
+            onPageUp={onPageUp} onPageDown={onPageDown}
             onTab={onTab} onEscape={onEscape} history={history} placeholder={placeholder} password={password} focus={focus} theme={theme}
             suggestions={suggestions} maxLength={maxLength}
           />
