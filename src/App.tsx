@@ -5,19 +5,12 @@ import { Badge } from './components/ui/badge/index.js';
 import { Select } from './components/ui/select/index.js';
 import { Tabs } from './components/ui/tabs/index.js';
 import type { Tab } from './components/ui/tabs/index.js';
-import Chat from './components/Chat.js';
+import Chat, { type ChatMessage } from './components/Chat.js';
 import StatusBar from './components/StatusBar.js';
 import { useOllama } from './hooks/useOllama.js';
 import { useTerminalSize } from './components/ui/hooks/index.js';
 import { myTheme } from './theme.js';
-
-interface Message {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  timestamp: number;
-  tokens?: number;
-  thinking?: string;
-}
+import { closeMcpServers } from './tools.js';
 
 const TABS: Tab[] = [
   { key: 'chat', label: '💬 Chat' },
@@ -25,9 +18,10 @@ const TABS: Tab[] = [
 ];
 
 const App: React.FC = () => {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [activeTab, setActiveTab] = useState<string>('chat');
+
 
   const { client, models, isLoading } = useOllama();
   const { columns, rows } = useTerminalSize();
@@ -36,6 +30,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (client) setIsConnected(true);
+    return () => { closeMcpServers().catch(() => undefined); };
   }, [client]);
 
   useEffect(() => {
@@ -81,22 +76,31 @@ const App: React.FC = () => {
     userMessage?: string,
     assistantMessage?: string,
     thinking?: string,
+    extra?: Partial<ChatMessage>,
   ) => {
     if (userMessage === '/clear') {
       setMessages([]);
       return;
     }
     setMessages((prev) => {
-      const next: Message[] = [...prev];
+      const next: ChatMessage[] = [...prev];
       if (userMessage) {
         next.push({ role: 'user', content: userMessage, timestamp: Date.now() });
       }
-      if (assistantMessage) {
-        next.push({ role: 'assistant', content: assistantMessage, timestamp: Date.now(), thinking });
+      if (assistantMessage !== undefined || extra?.tool_calls) {
+        next.push({
+          role: extra?.role ?? 'assistant',
+          content: assistantMessage ?? '',
+          timestamp: Date.now(),
+          thinking,
+          tool_calls: extra?.tool_calls,
+          tool_call_id: extra?.tool_call_id,
+        });
       }
       return next;
     });
   };
+
 
   const calculateTokenCount = () => {
     return messages.reduce(
@@ -163,6 +167,7 @@ const App: React.FC = () => {
               label={isConnected ? 'Online' : 'Offline'}
               theme={myTheme}
             />
+            <Badge variant="success">MCP Active</Badge>
             <Box flexDirection="row" gap={1} alignItems="center">
               <Text bold color={isSelectingModel ? (myTheme.colors.focus ?? 'green') : 'cyan'}>
                 Model: <Text color="white">{selectedModel || 'none'}</Text>
