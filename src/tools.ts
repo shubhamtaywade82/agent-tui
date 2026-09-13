@@ -15,6 +15,7 @@ export interface McpServerConfig {
   args: string[];
   env?: Record<string, string>;
   enabled: boolean;
+  disabledReason?: string;
   description: string;
 }
 
@@ -25,12 +26,12 @@ export const MCP_SERVERS: McpServerConfig[] = [
   { id: 'time', name: 'Time & Timezones', command: 'uvx', args: ['mcp-server-time'], enabled: true, description: 'Time and timezones' },
   { id: 'fetch', name: 'Web Fetcher', command: 'uvx', args: ['mcp-server-fetch'], enabled: true, description: 'Web HTML to markdown' },
   { id: 'git', name: 'Git Repository', command: 'uvx', args: ['mcp-server-git', '--repository', process.cwd()], enabled: true, description: 'Git repo operations' },
-  { id: 'sequential-thinking', name: 'Sequential Thinking', command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking'], enabled: false, description: 'Thought sequences' },
-  { id: 'everything', name: 'Everything Reference', command: 'npx', args: ['-y', '@modelcontextprotocol/server-everything'], enabled: false, description: 'Reference test server' },
-  { id: 'sqlite', name: 'SQLite Database', command: 'uvx', args: ['mcp-server-sqlite'], enabled: false, description: 'SQLite query runner' },
-  { id: 'brave-search', name: 'Brave Search', command: 'npx', args: ['-y', '@modelcontextprotocol/server-brave-search'], enabled: Boolean(process.env['BRAVE_API_KEY']), description: 'Brave web search' },
-  { id: 'github', name: 'GitHub', command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], enabled: Boolean(process.env['GITHUB_PERSONAL_ACCESS_TOKEN']), description: 'GitHub repos and PRs' },
-  { id: 'postgres', name: 'PostgreSQL', command: 'npx', args: ['-y', '@modelcontextprotocol/server-postgres'], enabled: Boolean(process.env['POSTGRES_URL']), description: 'Postgres database' },
+  { id: 'sequential-thinking', name: 'Sequential Thinking', command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking'], enabled: true, description: 'Thought sequences' },
+  { id: 'sqlite', name: 'SQLite Database', command: 'uvx', args: ['mcp-server-sqlite', '--db-path', process.env['SQLITE_DB_PATH'] || 'data.db'], enabled: true, description: 'SQLite query runner' },
+  { id: 'everything', name: 'Everything Reference', command: 'npx', args: ['-y', '@modelcontextprotocol/server-everything'], enabled: false, disabledReason: 'Test reference mock server', description: 'Reference test server' },
+  { id: 'brave-search', name: 'Brave Search', command: 'npx', args: ['-y', '@modelcontextprotocol/server-brave-search'], enabled: Boolean(process.env['BRAVE_API_KEY']), disabledReason: 'Missing BRAVE_API_KEY', description: 'Brave web search' },
+  { id: 'github', name: 'GitHub', command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], enabled: Boolean(process.env['GITHUB_PERSONAL_ACCESS_TOKEN']), disabledReason: 'Missing GITHUB_PERSONAL_ACCESS_TOKEN', description: 'GitHub repos and PRs' },
+  { id: 'postgres', name: 'PostgreSQL', command: 'npx', args: ['-y', '@modelcontextprotocol/server-postgres'], enabled: Boolean(process.env['POSTGRES_URL']), disabledReason: 'Missing POSTGRES_URL', description: 'Postgres database' },
 ];
 
 export const calculator = defineTool({
@@ -192,6 +193,16 @@ function formatToolsList(registry?: ToolRegistry | null): string {
   return `Active Tools (${defs.length}):\n${list || 'None'}`;
 }
 
+function formatMcpServersList(): string {
+  const activeCount = MCP_SERVERS.filter((s) => s.enabled).length;
+  const list = MCP_SERVERS.map((s) => {
+    if (s.enabled) return `• ${s.name} (${s.id}): Active`;
+    const reason = s.disabledReason ? ` (${s.disabledReason})` : '';
+    return `• ${s.name} (${s.id}): Disabled${reason}`;
+  }).join('\n');
+  return `MCP Servers (${activeCount}/${MCP_SERVERS.length} active):\n${list}`;
+}
+
 export function dispatchSlashCommand(rawInput: string, ctx: CommandContext): boolean {
   if (!rawInput.startsWith('/')) return false;
   const [cmd, ...rest] = rawInput.trim().split(/\s+/);
@@ -202,7 +213,7 @@ export function dispatchSlashCommand(rawInput: string, ctx: CommandContext): boo
     case '/compact': handleCompactCmd(ctx); return true;
     case '/save': handleSaveCmd(ctx, arg); return true;
     case '/tools': ctx.addSystemCard(formatToolsList(ctx.registry)); return true;
-    case '/mcp': ctx.addSystemCard(`MCP Servers:\n${MCP_SERVERS.map((s) => `• ${s.name} (${s.id}): ${s.enabled ? 'Active' : 'Disabled'}`).join('\n')}`); return true;
+    case '/mcp': ctx.addSystemCard(formatMcpServersList()); return true;
     case '/model':
       if (arg && ctx.setModel) { ctx.setModel(arg); ctx.showToast(`Switched to ${arg}`, 'info', 2000); }
       else ctx.addSystemCard(`Model: ${ctx.model}\nAvailable: ${(ctx.models || []).join(', ')}`);
