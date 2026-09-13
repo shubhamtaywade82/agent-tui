@@ -8,25 +8,30 @@ export interface TerminalSize {
 
 export function useTerminalSize(): TerminalSize {
   const { stdout } = useStdout();
-
-  const [size, setSize] = useState<TerminalSize>({
-    columns: stdout?.columns ?? 80,
-    rows: stdout?.rows ?? 24,
-  });
+  const [, setVersion] = useState(0);
 
   useEffect(() => {
-    if (!stdout) return;
+    const stream = stdout ?? process.stdout;
+    if (!stream) return;
 
-    const handler = () => {
-      setSize({
-        columns: stdout.columns ?? 80,
-        rows: stdout.rows ?? 24,
-      });
+    const onResize = () => {
+      setVersion((v) => v + 1);
     };
 
-    stdout.on('resize', handler);
-    return () => { stdout.off('resize', handler); };
+    stream.on('resize', onResize);
+    process.stdout?.on('resize', onResize);
+    process.on('SIGWINCH', onResize);
+
+    return () => {
+      stream.off('resize', onResize);
+      process.stdout?.off('resize', onResize);
+      process.off('SIGWINCH', onResize);
+    };
   }, [stdout]);
 
-  return size;
+  const stream = stdout ?? process.stdout;
+  const columns = stream?.columns || process.stdout?.columns || 80;
+  const rows = stream?.rows || process.stdout?.rows || 24;
+
+  return { columns, rows };
 }

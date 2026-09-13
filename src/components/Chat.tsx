@@ -3,12 +3,10 @@ import { Box, Text, useInput } from 'ink';
 import { TextInput } from './ui/text-input/index.js';
 import { Spinner } from './ui/spinner/index.js';
 import { Badge } from './ui/badge/index.js';
-import { StatusIndicator } from './ui/status-indicator/index.js';
 import { Typewriter } from './ui/typewriter/index.js';
 import { OllamaClient, Message } from '@nemesis-oss/ollama-sdk';
-import { Select } from './ui/select/index.js';
 import { ToastStack, useToast } from './ui/toast/index.js';
-import { Markdown, parseMarkdownBlocks } from './ui/markdown/index.js';
+import { parseMarkdownBlocks } from './ui/markdown/index.js';
 import { ScrollArea } from './ui/scroll-area/index.js';
 import { useFocusManager, useTerminalSize } from './ui/hooks/index.js';
 
@@ -20,52 +18,74 @@ interface ChatMessage extends Message {
 interface ChatProps {
   client: OllamaClient | null;
   messages: ChatMessage[];
-  onSendMessage: (userMessage?: string, assistantMessage?: string, thinking?: string) => void;
+  onSendMessage: (user?: string, assistant?: string, thinking?: string) => void;
   models?: string[];
   isConnected?: boolean;
   theme?: any;
   isActive?: boolean;
+  columns?: number;
+  rows?: number;
+  selectedModel?: string;
+  onSelectModel?: (model: string) => void;
+  isSelectingModel?: boolean;
+}
+
+async function consumeStream(
+  stream: AsyncIterable<any>,
+  onThinking: (delta: string) => void,
+  onToken: (delta: string) => void,
+) {
+  let thinking = '';
+  let content = '';
+  for await (const event of stream) {
+    if (event.type === 'thinking') {
+      thinking += event.data.delta;
+      onThinking(event.data.delta);
+    } else if (event.type === 'token') {
+      content += event.data.delta;
+      onToken(event.data.delta);
+    }
+  }
+  return { thinking, content };
 }
 
 const Chat: React.FC<ChatProps> = ({
   client, messages, onSendMessage, models = [], isConnected = false, theme, isActive = true,
+  columns: propCols, rows: propRows, selectedModel: propModel, isSelectingModel = false,
 }) => {
   const [input, setInput] = useState('');
   const [streamPhase, setStreamPhase] = useState<'idle' | 'thinking' | 'responding'>('idle');
   const [streamedThinking, setStreamedThinking] = useState('');
   const [streamedContent, setStreamedContent] = useState('');
-  const [selectedModel, setSelectedModel] = useState(models[0] || 'qwen3:8b');
+  const selectedModel = propModel || models[0] || 'qwen3:8b';
   const { toasts, show, dismiss } = useToast();
 
-  const { rows, columns } = useTerminalSize();
-  const { isFocused, setFocus } = useFocusManager({ count: 3, initialIndex: 0 });
+  const termSize = useTerminalSize();
+  const columns = propCols ?? termSize.columns;
+  const rows = propRows ?? termSize.rows;
+  const { isFocused, setFocus } = useFocusManager({ count: 2, initialIndex: 0 });
   const isInputFocused = isFocused(0);
   const isChatFocused = isFocused(1);
-  const isModelFocused = isFocused(2);
 
-  // Safe height: reserves 14 fixed UI rows + 2 terminal headroom rows to prevent scroll & cursor desync
-  const selectOverhead = isModelFocused ? 1 + Math.min(models.length || 1, 5) + (models.length > 5 ? 1 : 0) : 0;
+  // Safe height: reserves 11 fixed UI rows + 2 terminal headroom rows to prevent scroll & cursor desync
+  const selectOverhead = isSelectingModel ? 1 + Math.min(models.length || 1, 5) + (models.length > 5 ? 1 : 0) : 0;
   const toastOverhead = toasts.length > 0 ? 1 : 0;
-  const chatHeight = Math.max(3, rows - 16 - selectOverhead - toastOverhead);
+  const chatHeight = Math.max(3, rows - 13 - selectOverhead - toastOverhead);
 
   useInput((_input, key) => {
-    if (!isActive) return;
+    if (!isActive || isSelectingModel) return;
     if (key.escape && !isInputFocused) setFocus(0);
   });
 
-  useEffect(() => {
-    if (models.length > 0 && !models.includes(selectedModel)) {
-      setSelectedModel(models[0]!);
-    }
-  }, [models, selectedModel]);
-
-  const modelItems = (models.length > 0 ? models : [selectedModel]).map((m) => ({ label: m, value: m }));
-
-  const initialHistory = useMemo(
-    () => messages.filter((m) => m.role === 'user' && m.content.trim()).map((m) => m.content.trim()),
-    [],
+  const [history, setHistory] = useState<string[]>(() =>
+    messages.filter((m) => m.role === 'user' && m.content.trim()).map((m) => m.content.trim()),
   );
-  const [history, setHistory] = useState<string[]>(initialHistory);
+
+  const resetStream = (phase: 'idle' | 'thinking' = 'idle') => {
+    setStreamPhase(phase);
+    setStreamedThinking('');
+    setStreamedContent('');
+  };
 
   const handleSendMessage = async (message: string) => {
     const trimmed = message.trim();
@@ -73,10 +93,8 @@ const Chat: React.FC<ChatProps> = ({
 
     setHistory((prev) => (prev[prev.length - 1] === trimmed ? prev : [...prev, trimmed]));
     setInput('');
-    onSendMessage(trimmed); // Immediately display user prompt in conversation
-    setStreamPhase('thinking');
-    setStreamedThinking('');
-    setStreamedContent('');
+    onSendMessage(trimmed);
+    resetStream('thinking');
 
     try {
       const stream = await client.chatStream({
@@ -86,31 +104,20 @@ const Chat: React.FC<ChatProps> = ({
         options: { temperature: 0.7 },
       });
 
-      let accumulatedThinking = '';
-      let accumulatedContent = '';
+      const { thinking, content } = await consumeStream(
+        stream,
+        (d) => setStreamedThinking((prev) => prev + d),
+        (d) => { setStreamPhase('responding'); setStreamedContent((prev) => prev + d); },
+      );
 
-      for await (const event of stream) {
-        if (event.type === 'thinking') {
-          accumulatedThinking += event.data.delta;
-          setStreamedThinking((prev) => prev + event.data.delta);
-        } else if (event.type === 'token') {
-          setStreamPhase('responding');
-          accumulatedContent += event.data.delta;
-          setStreamedContent((prev) => prev + event.data.delta);
-        }
-      }
-
-      const finalResponse = await stream.finalResult;
-      const assistantText = finalResponse.message?.content || accumulatedContent;
-      onSendMessage(undefined, assistantText, accumulatedThinking || undefined);
+      const final = await stream.finalResult;
+      onSendMessage(undefined, final.message?.content || content, thinking || undefined);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       show(`Error: ${errorMsg}`, 'error', 4000);
       onSendMessage(undefined, `⚠️ Error: ${errorMsg}`);
     } finally {
-      setStreamPhase('idle');
-      setStreamedThinking('');
-      setStreamedContent('');
+      resetStream('idle');
     }
   };
 
@@ -181,55 +188,6 @@ const Chat: React.FC<ChatProps> = ({
 
   return (
     <Box flexDirection="column" width={columns}>
-      {/* Unified Top Controls: Status, Model Selector, Model Count */}
-      <Box
-        borderStyle="round"
-        borderColor={isModelFocused ? (theme?.colors?.focus ?? 'green') : (theme?.colors?.border ?? 'gray')}
-        paddingX={1}
-        flexDirection="column"
-        width={columns}
-      >
-        <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-          <Box flexDirection="row" gap={1} alignItems="center">
-            <StatusIndicator
-              status={isConnected ? 'online' : 'offline'}
-              label={isConnected ? 'Online' : 'Offline'}
-              theme={theme}
-            />
-          </Box>
-
-          <Box flexDirection="row" gap={1} alignItems="center">
-            <Text bold color={isModelFocused ? (theme?.colors?.focus ?? 'green') : 'cyan'}>
-              Model: <Text color="white">{selectedModel}</Text>
-            </Text>
-            <Text color="gray" dimColor>
-              {isModelFocused ? '[↑/↓ Choose • Enter]' : '[Tab Switch]'}
-            </Text>
-          </Box>
-
-          <Box flexDirection="row" gap={1} alignItems="center">
-            <Text color="gray">Models: </Text>
-            <Badge variant="info">{String(models.length || 0)}</Badge>
-          </Box>
-        </Box>
-
-        {isModelFocused && (
-          <Box marginTop={1} flexDirection="column">
-            <Select
-              items={modelItems}
-              onSelect={(item) => {
-                setSelectedModel(item.value);
-                show(`Model switched to ${item.value}`, 'info', 2500);
-                setFocus(0);
-              }}
-              focus={isActive && isModelFocused}
-              theme={theme}
-              maxVisible={5}
-            />
-          </Box>
-        )}
-      </Box>
-
       {/* Messages Conversation Panel with ScrollArea */}
       <Box
         borderStyle="single"
@@ -254,7 +212,7 @@ const Chat: React.FC<ChatProps> = ({
             <Typewriter text="Ready. Type prompt and press Enter... (Tab to scroll)" speed={45} cursorChar="▌" theme={theme} />
           </Box>
         ) : (
-          <ScrollArea height={chatHeight} width={columns - 4} focus={isActive && isChatFocused} autoScroll={true} theme={theme}>
+          <ScrollArea height={chatHeight} width="100%" focus={isActive && isChatFocused} autoScroll={true} theme={theme}>
             {messageRows}
           </ScrollArea>
         )}
@@ -280,17 +238,15 @@ const Chat: React.FC<ChatProps> = ({
           onSubmit={handleSendMessage}
           history={history}
           placeholder="Type your message (Enter to send)..."
-          focus={isActive && isInputFocused}
+          focus={isActive && !isSelectingModel && isInputFocused}
           theme={theme}
         />
       </Box>
       <Box paddingX={1} width={columns}>
         <Text color="gray" dimColor>
-          {isModelFocused
-            ? '↑/↓ Choose model • Enter Select • Esc/Tab to Input'
-            : isChatFocused
-              ? '↑/↓/j/k or Wheel Scroll • PgUp/PgDn Page • Home/End Top/Bottom • Esc to Input'
-              : '↑/↓ History • Tab Focus • Ctrl+T System Tab • Enter Send • Ctrl+C Exit'}
+          {isChatFocused
+            ? '↑/↓/j/k or Wheel Scroll • PgUp/PgDn Page • Home/End Top/Bottom • Esc to Input'
+            : '↑/↓ History • Tab Scroll • Ctrl+O Model • Ctrl+T System Tab • Enter Send • Ctrl+C Exit'}
         </Text>
       </Box>
     </Box>
