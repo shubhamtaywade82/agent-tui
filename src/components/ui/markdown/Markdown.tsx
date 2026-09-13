@@ -111,20 +111,24 @@ function renderCodeBlockLines(
   maxWidth: number,
 ): React.ReactElement[] {
   const b = borderStyles.rounded;
-  const innerWidth = Math.max(10, maxWidth - 4);
+  const numWidth = String(codeLines.length).length;
+  const gutterWidth = numWidth + 3;
+  const innerWidth = Math.max(10, maxWidth - 4 - gutterWidth);
   const language = resolveLanguage(lang);
   const title = lang ? ` ${lang} ` : '';
-  const topFill = b.top.repeat(Math.max(0, innerWidth + 2 - title.length));
-  const botFill = b.top.repeat(innerWidth + 2);
+  const topFill = b.top.repeat(Math.max(0, innerWidth + gutterWidth + 2 - title.length));
+  const botFill = b.top.repeat(innerWidth + gutterWidth + 2);
 
   const lines: React.ReactElement[] = [
     <Text key="code-top" color={theme.colors.border}>{`${b.topLeft}${title}${topFill}${b.topRight}`}</Text>,
   ];
 
   codeLines.forEach((cl, ci) => {
+    const num = String(ci + 1).padStart(numWidth, ' ');
     lines.push(
       <Box key={`code-${ci}`} flexDirection="row">
         <Text color={theme.colors.border}>{`${b.left} `}</Text>
+        <Text color={theme.colors.muted}>{num} │ </Text>
         {renderHighlightedCode(cl, language, innerWidth, theme)}
         <Text color={theme.colors.border}>{` ${b.right}`}</Text>
       </Box>
