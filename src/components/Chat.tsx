@@ -167,19 +167,16 @@ const Chat: React.FC<ChatProps> = ({
         <Box key="stream-header" flexDirection="row" gap={1} alignItems="center">
           <Badge variant="success">AI</Badge>
           <Text color="green" dimColor>streaming</Text>
+          <Spinner type="dots" />
         </Box>
       );
-      const streamLines = streamedContent.split('\n');
-      streamLines.forEach((line, sli) => {
-        const isLast = sli === streamLines.length - 1;
-        rows.push(
-          <Box key={`stream-line-${sli}`} paddingLeft={2}>
-            <Text>
-              {line}
-              {isLast && <Text color={theme?.colors?.primary ?? 'cyan'}>█</Text>}
-            </Text>
-          </Box>
-        );
+      const streamBlocks = parseMarkdownBlocks(
+        `${streamedContent}█`,
+        theme,
+        Math.max(20, columns - 6),
+      );
+      streamBlocks.forEach((node, bi) => {
+        rows.push(<Box key={`stream-b-${bi}`} paddingLeft={2}>{node}</Box>);
       });
     }
 
