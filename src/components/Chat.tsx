@@ -37,10 +37,7 @@ const Chat: React.FC<ChatProps> = ({
   const { toasts, show, dismiss } = useToast();
 
   const { rows, columns } = useTerminalSize();
-  const { isFocused, setFocus } = useFocusManager({
-    count: 3,
-    initialIndex: 0, // Start focus on chat input
-  });
+  const { isFocused, setFocus } = useFocusManager({ count: 3, initialIndex: 0 });
   const isInputFocused = isFocused(0);
   const isChatFocused = isFocused(1);
   const isModelFocused = isFocused(2);
@@ -51,9 +48,7 @@ const Chat: React.FC<ChatProps> = ({
   const chatHeight = Math.max(3, rows - 18 - selectOverhead - toastOverhead);
 
   useInput((_input, key) => {
-    if (key.escape && !isInputFocused) {
-      setFocus(0);
-    }
+    if (key.escape && !isInputFocused) setFocus(0);
   });
 
   useEffect(() => {
@@ -62,15 +57,21 @@ const Chat: React.FC<ChatProps> = ({
     }
   }, [models, selectedModel]);
 
-  const modelItems = (models.length > 0 ? models : [selectedModel]).map(
-    (m) => ({ label: m, value: m }),
+  const modelItems = (models.length > 0 ? models : [selectedModel]).map((m) => ({ label: m, value: m }));
+
+  const initialHistory = useMemo(
+    () => messages.filter((m) => m.role === 'user' && m.content.trim()).map((m) => m.content.trim()),
+    [],
   );
+  const [history, setHistory] = useState<string[]>(initialHistory);
 
   const handleSendMessage = async (message: string) => {
-    if (!message.trim() || !client || streamPhase !== 'idle') return;
+    const trimmed = message.trim();
+    if (!trimmed || !client || streamPhase !== 'idle') return;
 
+    setHistory((prev) => (prev[prev.length - 1] === trimmed ? prev : [...prev, trimmed]));
     setInput('');
-    onSendMessage(message); // Immediately display user prompt in conversation
+    onSendMessage(trimmed); // Immediately display user prompt in conversation
     setStreamPhase('thinking');
     setStreamedThinking('');
     setStreamedContent('');
@@ -272,6 +273,7 @@ const Chat: React.FC<ChatProps> = ({
           value={input}
           onChange={setInput}
           onSubmit={handleSendMessage}
+          history={history}
           placeholder="Type your message (Enter to send)..."
           focus={isInputFocused}
           theme={theme}
@@ -283,7 +285,7 @@ const Chat: React.FC<ChatProps> = ({
             ? '↑/↓ Choose model • Enter Select • Esc/Tab to Input'
             : isChatFocused
               ? '↑/↓/j/k or Wheel Scroll • PgUp/PgDn Page • Home/End Top/Bottom • Esc to Input'
-              : 'Tab Focus Chat • Mouse Wheel to Scroll • Enter Send • Ctrl+C Exit'}
+              : '↑/↓ History • Tab Focus Chat • Mouse Wheel to Scroll • Enter Send • Ctrl+C Exit'}
         </Text>
       </Box>
     </Box>
