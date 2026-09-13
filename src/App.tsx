@@ -111,7 +111,7 @@ const App: React.FC = () => {
           tabs={TABS}
           activeKey={activeTab}
           onChange={setActiveTab}
-          variant="boxed"
+          variant="pills"
           focus={false}
           theme={myTheme}
         />

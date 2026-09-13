@@ -43,10 +43,10 @@ const Chat: React.FC<ChatProps> = ({
   const isChatFocused = isFocused(1);
   const isModelFocused = isFocused(2);
 
-  // Dynamic height accounting for fixed layout (14 rows now that VRAM StatusBar is in System tab)
+  // Safe height: reserves 14 fixed UI rows + 2 terminal headroom rows to prevent scroll & cursor desync
   const selectOverhead = isModelFocused ? 1 + Math.min(models.length || 1, 5) + (models.length > 5 ? 1 : 0) : 0;
   const toastOverhead = toasts.length > 0 ? 1 : 0;
-  const chatHeight = Math.max(3, rows - 14 - selectOverhead - toastOverhead);
+  const chatHeight = Math.max(3, rows - 16 - selectOverhead - toastOverhead);
 
   useInput((_input, key) => {
     if (!isActive) return;

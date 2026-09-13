@@ -30,19 +30,22 @@ export const Header: React.FC<HeaderProps> = ({
 
   if (style === 'box') {
     // ┌─── MyApp v1.0 ──────────────────┐
-    const inner = w - 2; // exclude ┌ and ┐
-    const label = ` ${fullTitle} `;
+    const inner = Math.max(10, w - 2); // exclude ┌ and ┐
+    const maxTitle = Math.max(0, inner - 6);
+    const displayTitle = fullTitle.length > maxTitle ? fullTitle.slice(0, Math.max(0, maxTitle - 3)) + '...' : fullTitle;
+    const label = ` ${displayTitle} `;
     const left  = 3; // ─── before label
     const right = Math.max(0, inner - left - label.length);
     const top = '┌' + '─'.repeat(left) + label + '─'.repeat(right) + '┐';
     const bot = '└' + '─'.repeat(inner) + '┘';
+    const sub = subtitle ? (subtitle.length > inner - 2 ? subtitle.slice(0, Math.max(0, inner - 5)) + '...' : subtitle).padEnd(inner - 2) : '';
 
     return (
       <Box flexDirection="column" width={w}>
         <Text color={theme.colors.primary}>{top}</Text>
         {subtitle && (
           <Text color={theme.colors.primary}>
-            {'│'} <Text color={theme.colors.muted}>{subtitle.padEnd(inner - 2)}</Text> {'│'}
+            {'│'} <Text color={theme.colors.muted}>{sub}</Text> {'│'}
           </Text>
         )}
         <Text color={theme.colors.primary}>{bot}</Text>

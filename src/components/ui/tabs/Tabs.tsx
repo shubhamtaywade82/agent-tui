@@ -86,13 +86,14 @@ export const Tabs: React.FC<TabsProps> = ({
           return (
             <Box
               key={tab.key}
-              borderStyle={isActive ? 'single' : undefined}
-              paddingX={isActive ? 1 : 0}
+              borderStyle="single"
+              borderColor={isActive ? (theme.colors.focus ?? 'cyan') : (theme.colors.border ?? 'gray')}
+              paddingX={1}
             >
               <Text
                 bold={isActive}
                 color={isDisabled ? theme.colors.muted : isActive ? theme.colors.primary : theme.colors.muted}
-                dimColor={isDisabled}
+                dimColor={isDisabled || !isActive}
               >
                 {label}
               </Text>
