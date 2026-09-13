@@ -6,7 +6,7 @@ import { Badge } from './ui/badge/index.js';
 import { Typewriter } from './ui/typewriter/index.js';
 import { OllamaClient, Message } from '@nemesis-oss/ollama-sdk';
 import { ToastStack, useToast } from './ui/toast/index.js';
-import { parseMarkdownBlocks } from './ui/markdown/index.js';
+import { parseMarkdownBlocks, wrapTextLine } from './ui/markdown/index.js';
 import { ScrollArea } from './ui/scroll-area/index.js';
 import { useFocusManager, useTerminalSize } from './ui/hooks/index.js';
 
@@ -67,10 +67,10 @@ const Chat: React.FC<ChatProps> = ({
   const isInputFocused = isFocused(0);
   const isChatFocused = isFocused(1);
 
-  // Safe height: reserves 9 fixed UI rows + 2 terminal headroom rows to prevent scroll & cursor desync
+  // Safe height: reserves fixed UI rows + 3-4 terminal headroom rows to prevent scroll & cursor desync
   const selectOverhead = isSelectingModel ? 1 + Math.min(models.length || 1, 5) + (models.length > 5 ? 1 : 0) : 0;
   const toastOverhead = toasts.length > 0 ? 1 : 0;
-  const chatHeight = Math.max(3, rows - 11 - selectOverhead - toastOverhead);
+  const chatHeight = Math.max(3, rows - 13 - selectOverhead - toastOverhead);
 
   useInput((_input, key) => {
     if (!isActive || isSelectingModel) return;
@@ -143,9 +143,12 @@ const Chat: React.FC<ChatProps> = ({
         );
       }
 
+      const maxWidth = Math.max(20, columns - 6);
       const contentNodes = msg.role === 'user'
-        ? msg.content.split('\n').map((line, li) => <Text key={li}>{line}</Text>)
-        : parseMarkdownBlocks(msg.content, theme, Math.max(20, columns - 6));
+        ? msg.content.split('\n').flatMap((line, li) =>
+            wrapTextLine(line, maxWidth).map((wl, wli) => <Text key={`${li}-${wli}`}>{wl}</Text>)
+          )
+        : parseMarkdownBlocks(msg.content, theme, maxWidth);
 
       contentNodes.forEach((node, bi) => {
         rows.push(<Box key={`c-${mi}-${bi}`} paddingLeft={2}>{node}</Box>);

@@ -1,6 +1,7 @@
 export type Language =
   | 'javascript' | 'typescript' | 'python' | 'json' | 'bash'
-  | 'html' | 'css' | 'rust' | 'go' | 'yaml' | 'markdown' | 'diff' | 'plain';
+  | 'html' | 'css' | 'rust' | 'go' | 'yaml' | 'markdown' | 'diff'
+  | 'sql' | 'cpp' | 'c' | 'java' | 'dockerfile' | 'plain';
 
 export interface Token {
   text: string;
@@ -88,9 +89,82 @@ const rulesMap: Record<Language, TokenRule[]> = {
     { pattern: /`[^`]+`/g, color: 'success' },
     { pattern: /^\s*[-*]\s/gm, color: 'warning' },
   ],
+  sql: [
+    { pattern: /--.*$/gm, color: 'muted' },
+    { pattern: /\/\*[\s\S]*?\*\//g, color: 'muted' },
+    { pattern: /(["'])(?:(?!\1|\\).|\\.)*\1/g, color: 'success' },
+    { pattern: /\b\d+\.?\d*\b/g, color: 'warning' },
+    { pattern: /\b(SELECT|INSERT|UPDATE|DELETE|FROM|WHERE|JOIN|LEFT|RIGHT|INNER|ON|GROUP|BY|ORDER|HAVING|LIMIT|CREATE|TABLE|DROP|ALTER|INTO|VALUES|SET|AND|OR|NOT|IN|AS|IS|NULL|DISTINCT|UNION|ALL|CASE|WHEN|THEN|ELSE|END)\b/gi, color: 'error' },
+  ],
+  c: [
+    { pattern: /\/\/.*$/gm, color: 'muted' },
+    { pattern: /\/\*[\s\S]*?\*\//g, color: 'muted' },
+    { pattern: /#\s*(include|define|ifdef|ifndef|endif)\b.*/g, color: 'info' },
+    { pattern: /(["'])(?:(?!\1|\\).|\\.)*\1/g, color: 'success' },
+    { pattern: /\b\d+\.?\d*\b/g, color: 'warning' },
+    { pattern: /\b(int|char|float|double|void|long|short|unsigned|signed|struct|union|enum|typedef|sizeof|return|if|else|for|while|do|switch|case|break|continue|static|extern|const)\b/g, color: 'error' },
+  ],
+  cpp: [
+    { pattern: /\/\/.*$/gm, color: 'muted' },
+    { pattern: /\/\*[\s\S]*?\*\//g, color: 'muted' },
+    { pattern: /#\s*(include|define|ifdef|ifndef|endif)\b.*/g, color: 'info' },
+    { pattern: /(["'])(?:(?!\1|\\).|\\.)*\1/g, color: 'success' },
+    { pattern: /\b\d+\.?\d*\b/g, color: 'warning' },
+    { pattern: /\b(class|public|private|protected|virtual|override|template|typename|namespace|using|new|delete|try|catch|throw|constexpr|auto|nullptr|this|bool|int|char|void|return|if|else|for|while)\b/g, color: 'error' },
+    { pattern: /\b(true|false|nullptr)\b/g, color: 'info' },
+  ],
+  java: [
+    { pattern: /\/\/.*$/gm, color: 'muted' },
+    { pattern: /\/\*[\s\S]*?\*\//g, color: 'muted' },
+    { pattern: /(["'])(?:(?!\1|\\).|\\.)*\1/g, color: 'success' },
+    { pattern: /\b\d+\.?\d*\b/g, color: 'warning' },
+    { pattern: /\b(public|private|protected|class|interface|enum|extends|implements|static|final|abstract|void|return|new|if|else|for|while|try|catch|finally|throw|throws|import|package|int|boolean)\b/g, color: 'error' },
+    { pattern: /\b(true|false|null|this|super)\b/g, color: 'info' },
+  ],
+  dockerfile: [
+    { pattern: /#.*$/gm, color: 'muted' },
+    { pattern: /(["'])(?:(?!\1|\\).|\\.)*\1/g, color: 'success' },
+    { pattern: /^\s*(FROM|RUN|CMD|LABEL|EXPOSE|ENV|ADD|COPY|ENTRYPOINT|VOLUME|USER|WORKDIR|ARG)\b/gim, color: 'error' },
+  ],
   diff: [],
   plain: [],
 };
+
+const ALIASES: Record<string, Language> = {
+  js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
+  ts: 'typescript', tsx: 'typescript',
+  py: 'python', python3: 'python',
+  sh: 'bash', zsh: 'bash', shell: 'bash',
+  rs: 'rust',
+  golang: 'go',
+  yml: 'yaml',
+  md: 'markdown',
+  docker: 'dockerfile',
+  'c++': 'cpp', hpp: 'cpp', cc: 'cpp',
+  h: 'c',
+};
+
+export function resolveLanguage(lang?: string): Language {
+  if (!lang) return 'plain';
+  const clean = lang.trim().toLowerCase();
+  return ALIASES[clean] ?? ((clean in rulesMap) ? (clean as Language) : 'plain');
+}
+
+function matchRuleRanges(line: string, rules: TokenRule[]): Array<{ start: number; end: number; color: string }> {
+  const matched: Array<{ start: number; end: number; color: string }> = [];
+  for (const rule of rules) {
+    rule.pattern.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = rule.pattern.exec(line)) !== null) {
+      const start = m.index;
+      const end = start + m[0].length;
+      if (!matched.some((r) => start < r.end && end > r.start)) {
+        matched.push({ start, end, color: rule.color });
+      }
+    }
+  }
+  return matched.sort((a, b) => a.start - b.start);
+}
 
 export function tokenizeLine(line: string, language: Language): Token[] {
   if (language === 'diff') {
@@ -99,30 +173,12 @@ export function tokenizeLine(line: string, language: Language): Token[] {
     if (line.startsWith('@@')) return [{ text: line, color: 'info' }];
     return [{ text: line, color: 'muted' }];
   }
-
   if (language === 'plain') return [{ text: line }];
 
   const rules = rulesMap[language] ?? [];
   if (!rules.length) return [{ text: line }];
 
-  // Mark matched ranges so we don't double-highlight
-  const matched: Array<{ start: number; end: number; color: string }> = [];
-
-  for (const rule of rules) {
-    rule.pattern.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = rule.pattern.exec(line)) !== null) {
-      const start = m.index;
-      const end = start + m[0].length;
-      // Skip if overlaps any existing match
-      if (!matched.some((r) => start < r.end && end > r.start)) {
-        matched.push({ start, end, color: rule.color });
-      }
-    }
-  }
-
-  matched.sort((a, b) => a.start - b.start);
-
+  const matched = matchRuleRanges(line, rules);
   const tokens: Token[] = [];
   let cursor = 0;
   for (const { start, end, color } of matched) {

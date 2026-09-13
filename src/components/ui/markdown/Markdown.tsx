@@ -3,6 +3,8 @@ import { Box, Text } from 'ink';
 import { renderTableLines } from '../table/index.js';
 import { borderStyles, darkTheme } from '../_core.js';
 import type { InkUITheme } from '../_core.js';
+import { tokenizeLine, resolveLanguage } from '../code-block/index.js';
+import type { Language } from '../code-block/index.js';
 
 export interface MarkdownProps {
   content: string;
@@ -82,6 +84,26 @@ interface BlockResult {
   nextIdx: number;
 }
 
+function renderHighlightedCode(
+  line: string,
+  lang: Language,
+  innerWidth: number,
+  theme: InkUITheme,
+): React.ReactElement {
+  const truncated = line.length > innerWidth ? line.slice(0, innerWidth - 1) + '…' : line;
+  const padLen = Math.max(0, innerWidth - truncated.length);
+  const tokens = tokenizeLine(truncated, lang);
+  return (
+    <Text>
+      {tokens.map((tok, ti) => {
+        const color = tok.color ? ((theme.colors as any)[tok.color] ?? tok.color) : theme.colors.text;
+        return <Text key={ti} color={color}>{tok.text}</Text>;
+      })}
+      {padLen > 0 && <Text>{' '.repeat(padLen)}</Text>}
+    </Text>
+  );
+}
+
 function renderCodeBlockLines(
   codeLines: string[],
   lang: string,
@@ -90,6 +112,7 @@ function renderCodeBlockLines(
 ): React.ReactElement[] {
   const b = borderStyles.rounded;
   const innerWidth = Math.max(10, maxWidth - 4);
+  const language = resolveLanguage(lang);
   const title = lang ? ` ${lang} ` : '';
   const topFill = b.top.repeat(Math.max(0, innerWidth - title.length));
   const botFill = b.top.repeat(innerWidth);
@@ -99,11 +122,10 @@ function renderCodeBlockLines(
   ];
 
   codeLines.forEach((cl, ci) => {
-    const truncated = cl.length > innerWidth ? cl.slice(0, innerWidth - 1) + '…' : cl;
     lines.push(
       <Box key={`code-${ci}`} flexDirection="row">
         <Text color={theme.colors.border}>{`${b.left} `}</Text>
-        <Text color={theme.colors.text}>{truncated.padEnd(innerWidth)}</Text>
+        {renderHighlightedCode(cl, language, innerWidth, theme)}
         <Text color={theme.colors.border}>{` ${b.right}`}</Text>
       </Box>
     );
@@ -205,6 +227,20 @@ function renderLineBlock(line: string, idx: number, theme: InkUITheme, maxWidth:
   return <Text key={idx}>{renderInline(parseInline(line), theme)}</Text>;
 }
 
+export function wrapTextLine(line: string, maxWidth: number): string[] {
+  if (line.length <= maxWidth || maxWidth <= 0) return [line];
+  const result: string[] = [];
+  let remaining = line;
+  while (remaining.length > maxWidth) {
+    let breakIdx = remaining.lastIndexOf(' ', maxWidth);
+    if (breakIdx <= 0) breakIdx = maxWidth;
+    result.push(remaining.slice(0, breakIdx));
+    remaining = remaining.slice(breakIdx).trimStart();
+  }
+  if (remaining.length > 0) result.push(remaining);
+  return result;
+}
+
 export function parseMarkdownBlocks(
   content: string,
   theme: InkUITheme = darkTheme,
@@ -227,7 +263,10 @@ export function parseMarkdownBlocks(
       i = block.nextIdx;
       continue;
     }
-    elements.push(renderLineBlock(lines[i]!, i, theme, maxWidth));
+    const wrapped = wrapTextLine(lines[i]!, maxWidth);
+    wrapped.forEach((wl, wli) => {
+      elements.push(renderLineBlock(wl, i * 1000 + wli, theme, maxWidth));
+    });
     i++;
   }
 
