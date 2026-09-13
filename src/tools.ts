@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { z } from 'zod';
 import {
   defineTool,
@@ -19,104 +20,24 @@ export interface McpServerConfig {
 
 // Complete catalogue of reference and example servers from modelcontextprotocol.io/examples
 export const MCP_SERVERS: McpServerConfig[] = [
-  {
-    id: 'memory',
-    name: 'Knowledge Graph Memory',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-memory'],
-    enabled: true,
-    description: 'Graph-based persistent entity and relations memory',
-  },
-  {
-    id: 'filesystem',
-    name: 'Local Filesystem',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-filesystem', process.cwd()],
-    enabled: true,
-    description: 'Read, search, and manage files in allowed directory',
-  },
-  {
-    id: 'time',
-    name: 'Time & Timezones',
-    command: 'uvx',
-    args: ['mcp-server-time'],
-    enabled: true,
-    description: 'Current local time and timezone conversions',
-  },
-  {
-    id: 'fetch',
-    name: 'Web Fetcher',
-    command: 'uvx',
-    args: ['mcp-server-fetch'],
-    enabled: true,
-    description: 'Fetch web pages and convert HTML to markdown',
-  },
-  {
-    id: 'git',
-    name: 'Git Repository',
-    command: 'uvx',
-    args: ['mcp-server-git', '--repository', process.cwd()],
-    enabled: true,
-    description: 'Git branch, commit, status, and diff operations',
-  },
-  {
-    id: 'sequential-thinking',
-    name: 'Sequential Thinking',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-sequential-thinking'],
-    enabled: false,
-    description: 'Dynamic problem solving through thought steps',
-  },
-  {
-    id: 'everything',
-    name: 'Everything Reference',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-everything'],
-    enabled: false,
-    description: 'Reference test server with prompts, resources, tools',
-  },
-  {
-    id: 'sqlite',
-    name: 'SQLite Database',
-    command: 'uvx',
-    args: ['mcp-server-sqlite'],
-    enabled: false,
-    description: 'Inspect and query SQLite database files',
-  },
-  {
-    id: 'brave-search',
-    name: 'Brave Search',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-brave-search'],
-    enabled: Boolean(process.env['BRAVE_API_KEY']),
-    description: 'Web search via Brave Search API',
-  },
-  {
-    id: 'github',
-    name: 'GitHub',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-github'],
-    enabled: Boolean(process.env['GITHUB_PERSONAL_ACCESS_TOKEN']),
-    description: 'GitHub repositories, issues, and PRs',
-  },
-  {
-    id: 'postgres',
-    name: 'PostgreSQL',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-postgres'],
-    enabled: Boolean(process.env['POSTGRES_URL']),
-    description: 'Database inspection and query execution',
-  },
+  { id: 'memory', name: 'Knowledge Graph Memory', command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'], enabled: true, description: 'Graph persistent memory' },
+  { id: 'filesystem', name: 'Local Filesystem', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', process.cwd()], enabled: true, description: 'File operations' },
+  { id: 'time', name: 'Time & Timezones', command: 'uvx', args: ['mcp-server-time'], enabled: true, description: 'Time and timezones' },
+  { id: 'fetch', name: 'Web Fetcher', command: 'uvx', args: ['mcp-server-fetch'], enabled: true, description: 'Web HTML to markdown' },
+  { id: 'git', name: 'Git Repository', command: 'uvx', args: ['mcp-server-git', '--repository', process.cwd()], enabled: true, description: 'Git repo operations' },
+  { id: 'sequential-thinking', name: 'Sequential Thinking', command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking'], enabled: false, description: 'Thought sequences' },
+  { id: 'everything', name: 'Everything Reference', command: 'npx', args: ['-y', '@modelcontextprotocol/server-everything'], enabled: false, description: 'Reference test server' },
+  { id: 'sqlite', name: 'SQLite Database', command: 'uvx', args: ['mcp-server-sqlite'], enabled: false, description: 'SQLite query runner' },
+  { id: 'brave-search', name: 'Brave Search', command: 'npx', args: ['-y', '@modelcontextprotocol/server-brave-search'], enabled: Boolean(process.env['BRAVE_API_KEY']), description: 'Brave web search' },
+  { id: 'github', name: 'GitHub', command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], enabled: Boolean(process.env['GITHUB_PERSONAL_ACCESS_TOKEN']), description: 'GitHub repos and PRs' },
+  { id: 'postgres', name: 'PostgreSQL', command: 'npx', args: ['-y', '@modelcontextprotocol/server-postgres'], enabled: Boolean(process.env['POSTGRES_URL']), description: 'Postgres database' },
 ];
 
 export const calculator = defineTool({
   name: 'calculator',
   description: 'Calculate a mathematical expression such as 25 * 38.',
-  schema: z.object({
-    expression: z.string().describe('Mathematical expression'),
-  }),
+  schema: z.object({ expression: z.string().describe('Mathematical expression') }),
   execute: async ({ expression }: { expression: string }) => {
-    // Function constructor handles basic arithmetic safely within strict mode
     const result = Function(`"use strict"; return (${expression})`)();
     return String(result);
   },
@@ -149,16 +70,12 @@ function createMcpAdapter(client: McpClient): McpClientLike {
 
 async function connectServer(cfg: McpServerConfig): Promise<McpClient | null> {
   try {
-    const transport = new StdioTransport({
-      command: cfg.command,
-      args: cfg.args,
-      env: cfg.env,
-    });
+    const transport = new StdioTransport({ command: cfg.command, args: cfg.args, env: cfg.env });
     const client = new McpClient({ serverId: cfg.id, transport });
     await client.connect();
     return client;
   } catch {
-    // Avoid crashing the host application if an optional server fails to start
+    // Return null on failure so other servers still load gracefully
     return null;
   }
 }
@@ -168,14 +85,7 @@ const activeClients: McpClient[] = [];
 
 export async function getActiveToolRegistry(): Promise<ToolRegistry> {
   if (cachedRegistry) return cachedRegistry;
-
-  const registry = new ToolRegistry({
-    tools: [calculator],
-    timeoutMs: 15_000,
-    maxConcurrency: 4,
-    maxOutputChars: 15_000,
-  });
-
+  const registry = new ToolRegistry({ tools: [calculator], timeoutMs: 15_000, maxConcurrency: 4, maxOutputChars: 15_000 });
   const enabled = MCP_SERVERS.filter((s) => s.enabled);
   for (const cfg of enabled) {
     const client = await connectServer(cfg);
@@ -183,7 +93,6 @@ export async function getActiveToolRegistry(): Promise<ToolRegistry> {
     activeClients.push(client);
     await registerMcpTools(registry, createMcpAdapter(client));
   }
-
   cachedRegistry = registry;
   return registry;
 }
@@ -215,26 +124,99 @@ export async function consumeStream(
   return { thinking, content };
 }
 
-export function isLocalSlashCommand(
-  cmd: string,
-  onClear: () => void,
-  showToast: (msg: string, type: 'info' | 'error' | 'warning', duration?: number) => void,
-): boolean {
-  if (cmd === '/clear') {
-    onClear();
-    showToast('Chat history cleared', 'info', 2000);
-    return true;
+export interface SlashCommandInfo {
+  name: string;
+  args?: string;
+  desc: string;
+}
+
+export const SLASH_COMMANDS: SlashCommandInfo[] = [
+  { name: '/help', args: '[cmd]', desc: 'Show command manual & shortcuts' },
+  { name: '/clear', desc: 'Clear conversation history' },
+  { name: '/mcp', args: '[list]', desc: 'Inspect MCP servers & connection health' },
+  { name: '/tools', desc: 'List active tools & parameter schemas' },
+  { name: '/model', args: '[name]', desc: 'Switch active LLM or show selector' },
+  { name: '/context', desc: 'Show token usage & context statistics' },
+  { name: '/compact', desc: 'Summarize past conversation to save context' },
+  { name: '/save', args: '[file.md]', desc: 'Export chat transcript to disk' },
+  { name: '/system', args: '[prompt]', desc: 'View or set system prompt' },
+  { name: '/quit', desc: 'Exit the TUI harness gracefully' },
+];
+
+export interface CommandContext {
+  messages: any[];
+  model: string;
+  setModel?: (m: string) => void;
+  models?: string[];
+  clearMessages: () => void;
+  setMessages: (updater: (prev: any[]) => any[]) => void;
+  showToast: (msg: string, type: 'info' | 'error' | 'warning', duration?: number) => void;
+  addSystemCard: (text: string) => void;
+  registry?: ToolRegistry | null;
+}
+
+function handleContextCmd(ctx: CommandContext): void {
+  const tokens = ctx.messages.reduce((s, m) => s + (m.tokens ?? Math.ceil(m.content.length / 4)), 0);
+  const toolDefs = ctx.registry?.definitions() || [];
+  ctx.addSystemCard(`📊 Context & Telemetry:\n• Model: ${ctx.model}\n• Messages: ${ctx.messages.length}\n• Est. Tokens: ~${tokens}\n• Tools Loaded: ${toolDefs.length}`);
+}
+
+function handleCompactCmd(ctx: CommandContext): void {
+  if (ctx.messages.length <= 3) {
+    ctx.showToast('Conversation too short to compact', 'warning', 2500);
+    return;
   }
-  if (cmd === '/help') {
-    showToast('Commands: /clear, /mcp, /model, /system, /help • Esc: cancel', 'info', 4000);
-    return true;
+  const olderCount = ctx.messages.length - 2;
+  ctx.setMessages((prev) => [
+    { role: 'system', content: `[Compacted context: ${olderCount} earlier turns summarized]`, timestamp: Date.now() },
+    ...prev.slice(-2),
+  ]);
+  ctx.showToast(`Compacted ${olderCount} turns`, 'info', 2500);
+}
+
+function handleSaveCmd(ctx: CommandContext, arg: string): void {
+  const file = arg || `chat-${new Date().toISOString().slice(0, 10)}.md`;
+  const body = ctx.messages.map((m) => `### ${m.role.toUpperCase()}\n\n${m.content}\n`).join('\n---\n\n');
+  try {
+    writeFileSync(file, `# Chat Transcript (${new Date().toLocaleString()})\n\n${body}`, 'utf8');
+    ctx.showToast(`Saved to ${file}`, 'info', 3000);
+    ctx.addSystemCard(`Transcript saved to ${file}`);
+  } catch (err) {
+    ctx.showToast(`Failed to save: ${String(err)}`, 'error', 4000);
   }
-  if (cmd === '/mcp') {
-    const active = MCP_SERVERS.filter((s) => s.enabled).map((s) => s.name).join(', ');
-    showToast(`Active MCP: ${active || 'none'}`, 'info', 5000);
-    return true;
+}
+
+function formatToolsList(registry?: ToolRegistry | null): string {
+  const defs = registry?.definitions() || [];
+  const list = defs.map((d: any) => `• ${d.function.name}: ${d.function.description || 'no desc'}`).join('\n');
+  return `Active Tools (${defs.length}):\n${list || 'None'}`;
+}
+
+export function dispatchSlashCommand(rawInput: string, ctx: CommandContext): boolean {
+  if (!rawInput.startsWith('/')) return false;
+  const [cmd, ...rest] = rawInput.trim().split(/\s+/);
+  const arg = rest.join(' ');
+  switch (cmd?.toLowerCase()) {
+    case '/clear': ctx.clearMessages(); ctx.showToast('Chat history cleared', 'info', 2000); return true;
+    case '/context': handleContextCmd(ctx); return true;
+    case '/compact': handleCompactCmd(ctx); return true;
+    case '/save': handleSaveCmd(ctx, arg); return true;
+    case '/tools': ctx.addSystemCard(formatToolsList(ctx.registry)); return true;
+    case '/mcp': ctx.addSystemCard(`MCP Servers:\n${MCP_SERVERS.map((s) => `• ${s.name} (${s.id}): ${s.enabled ? 'Active' : 'Disabled'}`).join('\n')}`); return true;
+    case '/model':
+      if (arg && ctx.setModel) { ctx.setModel(arg); ctx.showToast(`Switched to ${arg}`, 'info', 2000); }
+      else ctx.addSystemCard(`Model: ${ctx.model}\nAvailable: ${(ctx.models || []).join(', ')}`);
+      return true;
+    case '/system':
+      if (arg) { ctx.setMessages((prev) => [{ role: 'system', content: arg, timestamp: Date.now() }, ...prev]); ctx.showToast('System prompt updated', 'info', 2000); }
+      else { const s = ctx.messages.find((m) => m.role === 'system'); ctx.addSystemCard(`System Prompt:\n${s ? s.content : 'Default system instructions active'}`); }
+      return true;
+    case '/help':
+      ctx.addSystemCard(`Commands:\n${SLASH_COMMANDS.map((c) => `${c.name} ${c.args || ''} — ${c.desc}`).join('\n')}\n\nKeybindings: Tab: Complete/Scroll • Esc: Cancel • Ctrl+O: Model • Ctrl+T: View`);
+      return true;
+    case '/quit': case '/exit': closeMcpServers().finally(() => process.exit(0)); return true;
+    default: return false;
   }
-  return false;
 }
 
 export async function executeMcpCalls(

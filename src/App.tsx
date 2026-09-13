@@ -87,11 +87,11 @@ const App: React.FC = () => {
       if (userMessage) {
         next.push({ role: 'user', content: userMessage, timestamp: Date.now() });
       }
-      if (assistantMessage !== undefined || extra?.tool_calls) {
+      if (assistantMessage !== undefined || extra?.tool_calls || extra?.content !== undefined) {
         next.push({
           role: extra?.role ?? 'assistant',
-          content: assistantMessage ?? '',
-          timestamp: Date.now(),
+          content: assistantMessage ?? extra?.content ?? '',
+          timestamp: extra?.timestamp ?? Date.now(),
           thinking,
           tool_calls: extra?.tool_calls,
           tool_call_id: extra?.tool_call_id,
@@ -208,6 +208,7 @@ const App: React.FC = () => {
           client={client}
           messages={messages}
           onSendMessage={handleSendMessage}
+          setMessages={setMessages}
           models={models}
           isConnected={isConnected}
           theme={myTheme}
