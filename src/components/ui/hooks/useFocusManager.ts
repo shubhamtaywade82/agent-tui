@@ -27,17 +27,11 @@ export function useFocusManager({
   const [focusedIndex, setFocusedIndex] = useState(initialIndex);
 
   const focusNext = useCallback(() => {
-    setFocusedIndex((prev) => {
-      if (prev >= count - 1) return cycle ? 0 : prev;
-      return prev + 1;
-    });
+    setFocusedIndex((prev) => (prev >= count - 1 ? (cycle ? 0 : prev) : prev + 1));
   }, [count, cycle]);
 
   const focusPrev = useCallback(() => {
-    setFocusedIndex((prev) => {
-      if (prev <= 0) return cycle ? count - 1 : prev;
-      return prev - 1;
-    });
+    setFocusedIndex((prev) => (prev <= 0 ? (cycle ? count - 1 : prev) : prev - 1));
   }, [count, cycle]);
 
   const setFocus = useCallback((index: number) => {
@@ -47,15 +41,15 @@ export function useFocusManager({
   const isFocused = useCallback((index: number) => index === focusedIndex, [focusedIndex]);
 
   useInput((input, key) => {
-    const isNext =
-      (nextKey === 'tab' && key.tab && !key.shift) ||
-      (nextKey !== 'tab' && input === nextKey);
-    const isPrev =
-      (prevKey === 'shift+tab' && key.tab && key.shift) ||
-      (prevKey !== 'shift+tab' && input === prevKey);
+    const hasNext = Boolean(nextKey) && nextKey !== 'none';
+    const hasPrev = Boolean(prevKey) && prevKey !== 'none';
+    if (!hasNext && !hasPrev) return;
 
-    if (isNext) focusNext();
-    else if (isPrev) focusPrev();
+    if (hasNext && ((nextKey === 'tab' && key.tab && !key.shift) || (nextKey !== 'tab' && input === nextKey))) {
+      focusNext();
+    } else if (hasPrev && ((prevKey === 'shift+tab' && key.tab && key.shift) || (prevKey !== 'shift+tab' && input === prevKey))) {
+      focusPrev();
+    }
   });
 
   return { focusedIndex, setFocus, isFocused, focusNext, focusPrev };

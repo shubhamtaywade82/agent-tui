@@ -10,10 +10,14 @@ export interface TextInputProps {
   onChange: (value: string) => void;
   /** Called when Enter is pressed */
   onSubmit?: (value: string) => void;
-  /** Called when Up Arrow is pressed */
-  onUpArrow?: () => void;
-  /** Called when Down Arrow is pressed */
-  onDownArrow?: () => void;
+  /** Called when Up Arrow is pressed. Return true to prevent default history navigation */
+  onUpArrow?: () => boolean | void;
+  /** Called when Down Arrow is pressed. Return true to prevent default history navigation */
+  onDownArrow?: () => boolean | void;
+  /** Called when Tab is pressed. Return true to prevent default autocomplete */
+  onTab?: () => boolean | void;
+  /** Called when Escape is pressed while active */
+  onEscape?: () => boolean | void;
   /** History entries for Up/Down prompt navigation */
   history?: string[];
   /** Shown when value is empty */
@@ -105,7 +109,7 @@ function useHistoryNav(
   const draftRef = React.useRef('');
 
   const navigate = (direction: -1 | 1): boolean => {
-    if (!history || history.length === 0) return false;
+    if (!history?.length) return false;
     if (direction === -1) {
       const target = index === -1 ? history.length - 1 : index - 1;
       if (target < 0) return true;
@@ -117,18 +121,12 @@ function useHistoryNav(
       return true;
     }
     if (index === -1) return false;
-    if (index < history.length - 1) {
-      const target = index + 1;
-      setIndex(target);
-      const val = history[target]!;
-      onChange(val);
-      setCursor(val.length);
-      return true;
-    }
-    setIndex(-1);
-    const draft = draftRef.current;
-    onChange(draft);
-    setCursor(draft.length);
+    const target = index + 1;
+    const isDraft = target >= history.length;
+    setIndex(isDraft ? -1 : target);
+    const val = isDraft ? draftRef.current : history[target]!;
+    onChange(val);
+    setCursor(val.length);
     return true;
   };
 
@@ -143,7 +141,7 @@ interface FocusedInputProps extends TextInputProps {
 }
 
 const FocusedInput: React.FC<FocusedInputProps> = ({
-  value, onChange, onSubmit, onUpArrow, onDownArrow, history, placeholder = '', password = false, theme,
+  value, onChange, onSubmit, onUpArrow, onDownArrow, onTab, onEscape, history, placeholder = '', password = false, theme,
   suggestions, maxLength,
 }) => {
   const { exit } = useApp();
@@ -171,14 +169,24 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
       setCursor(res.cursor);
       return;
     }
+    if (key.escape && onEscape && onEscape()) return;
+    if (key.tab && onTab && onTab()) return;
     if ((key.tab || (key.rightArrow && cursor === value.length)) && activeSuggestion) {
       const full = value + activeSuggestion;
       onChange(full);
       setCursor(full.length);
       return;
     }
-    if (key.upArrow)   { onUpArrow?.();   navigate(-1); return; }
-    if (key.downArrow) { onDownArrow?.(); navigate(1);  return; }
+    if (key.upArrow) {
+      if (onUpArrow && onUpArrow()) return;
+      navigate(-1);
+      return;
+    }
+    if (key.downArrow) {
+      if (onDownArrow && onDownArrow()) return;
+      navigate(1);
+      return;
+    }
     if (key.leftArrow)  { setCursor((c) => Math.max(0, c - 1)); return; }
     if (key.rightArrow) { setCursor((c) => Math.min(value.length, c + 1)); return; }
     if (key.backspace || key.delete) {
@@ -207,7 +215,7 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
 // ─── public component ─────────────────────────────────────────────────────────
 
 export const TextInput: React.FC<TextInputProps> = ({
-  value, onChange, onSubmit, onUpArrow, onDownArrow, history, placeholder = '', password = false, focus = true, label,
+  value, onChange, onSubmit, onUpArrow, onDownArrow, onTab, onEscape, history, placeholder = '', password = false, focus = true, label,
   theme = darkTheme, suggestions, disabled = false, showCounter = false, onCancel, maxLength,
 }) => {
   const { isRawModeSupported } = useStdin();
@@ -229,7 +237,7 @@ export const TextInput: React.FC<TextInputProps> = ({
         ) : canFocus ? (
           <FocusedInput
             value={value} onChange={onChange} onSubmit={onSubmit} onUpArrow={onUpArrow} onDownArrow={onDownArrow}
-            history={history} placeholder={placeholder} password={password} focus={focus} theme={theme}
+            onTab={onTab} onEscape={onEscape} history={history} placeholder={placeholder} password={password} focus={focus} theme={theme}
             suggestions={suggestions} maxLength={maxLength}
           />
         ) : (
