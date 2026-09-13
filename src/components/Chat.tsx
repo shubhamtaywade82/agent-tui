@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { existsSync, readFileSync, appendFileSync } from 'fs';
 import { Box, Text, useInput } from 'ink';
 import { TextInput } from './ui/text-input/index.js';
 import { Spinner } from './ui/spinner/index.js';
@@ -9,18 +10,34 @@ import { ToastStack, useToast } from './ui/toast/index.js';
 import { parseMarkdownBlocks, wrapTextLine } from './ui/markdown/index.js';
 import { ScrollArea } from './ui/scroll-area/index.js';
 import { useFocusManager, useTerminalSize } from './ui/hooks/index.js';
-import {
-  getActiveToolRegistry,
-  consumeStream,
-  dispatchSlashCommand,
-  SLASH_COMMANDS,
-  executeMcpCalls,
-} from '../tools.js';
+import { getActiveToolRegistry, consumeStream, dispatchSlashCommand, SLASH_COMMANDS, executeMcpCalls } from '../tools.js';
 
 export interface ChatMessage extends Message {
   timestamp?: number;
   thinking?: string;
   tokens?: number;
+}
+
+const HISTORY_FILE = '.history';
+const MAX_HISTORY = 500;
+
+function loadLocalHistory(): string[] {
+  try {
+    if (!existsSync(HISTORY_FILE)) return [];
+    return readFileSync(HISTORY_FILE, 'utf-8').split('\n').filter(Boolean).slice(-MAX_HISTORY).map((line) => {
+      try { return JSON.parse(line); } catch { return line; }
+    });
+  } catch {
+    return [];
+  }
+}
+
+function appendLocalHistory(prompt: string) {
+  try {
+    appendFileSync(HISTORY_FILE, JSON.stringify(prompt) + '\n', 'utf-8');
+  } catch {
+    // Disk write failures should not break the UI session
+  }
 }
 
 interface ChatProps {
@@ -61,9 +78,7 @@ const StreamingIndicator: React.FC<{ phase: string; model: string; thinking: str
 }) => {
   if (phase === 'thinking') return <Box flexDirection="row" gap={1} alignItems="center" paddingLeft={2}><Spinner type="dots" /><Text color="yellow"> {model} is thinking...</Text>{thinking.length > 0 && <Text color="gray" dimColor>({Math.ceil(thinking.length / 4)} tokens)</Text>}</Box>;
   if (phase === 'executing-tools') return <Box flexDirection="row" gap={1} alignItems="center" paddingLeft={2}><Spinner type="dots" /><Text color="cyan"> Executing MCP tool call...</Text></Box>;
-  if (phase === 'responding') {
-    return <Box flexDirection="column"><Box flexDirection="row" gap={1} alignItems="center"><Badge variant="success">AI</Badge><Text color="green" dimColor>streaming</Text><Spinner type="dots" /></Box>{parseMarkdownBlocks(`${content}█`, theme, maxWidth).map((n, bi) => <Box key={`sb-${bi}`} paddingLeft={2}>{n}</Box>)}</Box>;
-  }
+  if (phase === 'responding') return <Box flexDirection="column"><Box flexDirection="row" gap={1} alignItems="center"><Badge variant="success">AI</Badge><Text color="green" dimColor>streaming</Text><Spinner type="dots" /></Box>{parseMarkdownBlocks(`${content}█`, theme, maxWidth).map((n, bi) => <Box key={`sb-${bi}`} paddingLeft={2}>{n}</Box>)}</Box>;
   return null;
 };
 
@@ -105,9 +120,11 @@ const Chat: React.FC<ChatProps> = ({
     if ((key.escape || key.tab) && isChatFocused) setFocus(0);
   });
 
-  const [history, setHistory] = useState<string[]>(() =>
-    messages.filter((m) => m.role === 'user' && m.content.trim()).map((m) => m.content.trim()),
-  );
+  const [history, setHistory] = useState<string[]>(() => {
+    const loaded = loadLocalHistory();
+    const initial = messages.filter((m) => m.role === 'user' && m.content.trim()).map((m) => m.content.trim());
+    return Array.from(new Set([...loaded, ...initial]));
+  });
 
   const resetStream = (p: typeof phase = 'idle') => {
     setPhase(p);
@@ -117,15 +134,10 @@ const Chat: React.FC<ChatProps> = ({
 
   const executeSlashCommand = (trimmed: string): boolean => {
     return dispatchSlashCommand(trimmed, {
-      messages,
-      model: selectedModel,
-      setModel: onSelectModel,
-      models,
-      clearMessages: () => onSendMessage('/clear'),
-      setMessages: setMessages ?? (() => {}),
-      showToast: show,
+      messages, model: selectedModel, setModel: onSelectModel, models,
+      clearMessages: () => onSendMessage('/clear'), setMessages: setMessages ?? (() => {}),
+      showToast: show, registry,
       addSystemCard: (text) => onSendMessage(undefined, text, undefined, { role: 'system', content: text, timestamp: Date.now() }),
-      registry,
     });
   };
 
@@ -179,6 +191,7 @@ const Chat: React.FC<ChatProps> = ({
         }
       }
       setHistory((prev) => (prev[prev.length - 1] === cmdToRun ? prev : [...prev, cmdToRun]));
+      appendLocalHistory(cmdToRun);
       setInput('');
       setSelectedCmdIndex(0);
       const ok = executeSlashCommand(cmdToRun);
@@ -186,6 +199,7 @@ const Chat: React.FC<ChatProps> = ({
       return;
     }
     setHistory((prev) => (prev[prev.length - 1] === trimmed ? prev : [...prev, trimmed]));
+    appendLocalHistory(trimmed);
     setInput('');
     onSendMessage(trimmed);
     resetStream('thinking');
@@ -265,19 +279,12 @@ const Chat: React.FC<ChatProps> = ({
 
       <Box borderStyle="round" borderColor={isInputFocused ? (theme?.colors?.focus ?? 'green') : (theme?.colors?.border ?? 'gray')} paddingX={1} width={columns}>
         <TextInput
-          value={input}
-          onChange={setInput}
-          onSubmit={handleSendMessage}
-          onUpArrow={() => handleArrow(-1)}
-          onDownArrow={() => handleArrow(1)}
-          onTab={handleTab}
+          value={input} onChange={setInput} onSubmit={handleSendMessage}
+          onUpArrow={() => handleArrow(-1)} onDownArrow={() => handleArrow(1)} onTab={handleTab}
           onEscape={() => { if (input.startsWith('/')) { setInput(''); setSelectedCmdIndex(0); return true; } return false; }}
-          history={history}
+          history={history} focus={isActive && !isSelectingModel && isInputFocused} theme={theme}
           placeholder={phase === 'thinking' ? '⚡ Thinking... [Esc to stop]' : phase === 'executing-tools' ? '🔧 Executing MCP tools...' : phase === 'responding' ? 'Streaming... [Esc to stop]' : 'Type prompt or /command (Enter to send)...'}
-          focus={isActive && !isSelectingModel && isInputFocused}
-          theme={theme}
-          disabled={phase !== 'idle'}
-          showCounter={true}
+          disabled={phase !== 'idle'} showCounter={true}
           onCancel={() => { if (phase !== 'idle') { resetStream('idle'); show('Cancelled', 'warning', 2000); } }}
         />
       </Box>
