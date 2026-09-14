@@ -29,8 +29,8 @@ export const MCP_SERVERS: McpServerConfig[] = [
   { id: 'fetch', name: 'Web Fetcher', command: 'uvx', args: ['mcp-server-fetch'], enabled: true, description: 'Web HTML to markdown' },
   { id: 'git', name: 'Git Repository', command: 'uvx', args: ['mcp-server-git', '--repository', process.cwd()], enabled: true, description: 'Git repo operations' },
   { id: 'sequential-thinking', name: 'Sequential Thinking', command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking'], enabled: true, description: 'Thought sequences' },
-  { id: 'sqlite', name: 'SQLite Database', command: 'uvx', args: ['mcp-server-sqlite', '--db-path', process.env['SQLITE_DB_PATH'] || 'data.db'], enabled: true, description: 'SQLite query runner' },
-  { id: 'binance-sdk', name: 'Binance Local SDK', command: 'npx', args: ['binance-sdk-mcp'], enabled: true, description: 'Binance Spot, Futures, Margin SDK' },
+  { id: 'sqlite', name: 'SQLite Database', command: 'uvx', args: ['mcp-server-sqlite', '--db-path', process.env['SQLITE_DB_PATH'] || 'data.db'], enabled: false, disabledReason: 'Incompatible with Python 3.13', description: 'SQLite query runner' },
+  { id: 'binance-sdk', name: 'Binance Local SDK', command: 'node', args: ['./node_modules/@nemesis-oss/binance-sdk/dist/mcp/index.js'], enabled: true, description: 'Binance Spot, Futures, Margin SDK' },
   { id: 'binance-cloud', name: 'Binance Agentic Cloud', url: process.env['BINANCE_MCP_URL'] || 'https://agent.binance.com/mcp/agentic', transport: 'http', enabled: Boolean(process.env['BINANCE_OAUTH_TOKEN']), disabledReason: 'Requires OAuth token in BINANCE_OAUTH_TOKEN', description: 'Binance Cloud trading & market data' },
   { id: 'everything', name: 'Everything Reference', command: 'npx', args: ['-y', '@modelcontextprotocol/server-everything'], enabled: false, disabledReason: 'Test reference mock server', description: 'Reference test server' },
   { id: 'brave-search', name: 'Brave Search', command: 'npx', args: ['-y', '@modelcontextprotocol/server-brave-search'], enabled: Boolean(process.env['BRAVE_API_KEY']), disabledReason: 'Missing BRAVE_API_KEY', description: 'Brave web search' },
@@ -48,12 +48,22 @@ export const calculator = defineTool({
   },
 });
 
-function createMcpAdapter(client: McpClient): McpClientLike {
+const CORE_BINANCE_TOOLS = new Set([
+  'futures_klines', 'futures_ticker_price', 'futures_ticker_24hr', 'futures_order_book',
+  'spot_klines', 'spot_ticker_price', 'spot_ticker_24hr', 'spot_order_book',
+  'futures_account_balance', 'spot_account_info', 'futures_funding_rate', 'futures_open_interest',
+  'futures_exchange_info', 'spot_exchange_info',
+]);
+
+function createMcpAdapter(client: McpClient, serverId?: string): McpClientLike {
   return {
     listTools: async () => {
       const tools = await client.listTools();
+      const filtered = serverId === 'binance-sdk'
+        ? tools.filter((t) => CORE_BINANCE_TOOLS.has(t.name))
+        : tools;
       return {
-        tools: tools.map((t) => ({
+        tools: filtered.map((t) => ({
           name: t.name,
           description: t.description,
           inputSchema: t.inputSchema as Record<string, unknown>,
@@ -79,29 +89,33 @@ async function connectServer(cfg: McpServerConfig): Promise<McpClient | null> {
       ? new StreamableHttpTransport({ url: cfg.url! })
       : new StdioTransport({ command: cfg.command!, args: cfg.args, env: cfg.env });
     const client = new McpClient({ serverId: cfg.id, transport });
-    await client.connect();
+    await Promise.race([
+      client.connect(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000)),
+    ]);
     return client;
   } catch {
-    // Return null on failure so other servers still load gracefully
     return null;
   }
 }
 
-let cachedRegistry: ToolRegistry | null = null;
+let registryPromise: Promise<ToolRegistry> | null = null;
 const activeClients: McpClient[] = [];
 
 export async function getActiveToolRegistry(): Promise<ToolRegistry> {
-  if (cachedRegistry) return cachedRegistry;
-  const registry = new ToolRegistry({ tools: [calculator], timeoutMs: 15_000, maxConcurrency: 4, maxOutputChars: 15_000 });
-  const enabled = MCP_SERVERS.filter((s) => s.enabled);
-  for (const cfg of enabled) {
-    const client = await connectServer(cfg);
-    if (!client) continue;
-    activeClients.push(client);
-    await registerMcpTools(registry, createMcpAdapter(client));
-  }
-  cachedRegistry = registry;
-  return registry;
+  if (registryPromise) return registryPromise;
+  registryPromise = (async () => {
+    const registry = new ToolRegistry({ tools: [calculator], timeoutMs: 15_000, maxConcurrency: 4, maxOutputChars: 15_000 });
+    const enabled = MCP_SERVERS.filter((s) => s.enabled);
+    await Promise.allSettled(enabled.map(async (cfg) => {
+      const client = await connectServer(cfg);
+      if (!client) return;
+      activeClients.push(client);
+      await registerMcpTools(registry, createMcpAdapter(client, cfg.id));
+    }));
+    return registry;
+  })();
+  return registryPromise;
 }
 
 export async function closeMcpServers(): Promise<void> {
@@ -109,7 +123,7 @@ export async function closeMcpServers(): Promise<void> {
     await client.close().catch(() => undefined);
   }
   activeClients.length = 0;
-  cachedRegistry = null;
+  registryPromise = null;
 }
 
 export async function consumeStream(

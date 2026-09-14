@@ -154,7 +154,9 @@ interface AccordionItemProps {
 
 function renderAccordionItem(p: AccordionItemProps): React.ReactElement {
   const time = p.msg.timestamp ? new Date(p.msg.timestamp).toLocaleTimeString() : '';
-  const preview = p.msg.content.replace(/\n/g, ' ').slice(0, 45);
+  const toolName = p.msg.tool_calls?.[0]?.function?.name;
+  const rawPreview = p.msg.content.replace(/\n/g, ' ').trim() || (toolName ? `Tool: ${toolName}` : '');
+  const preview = rawPreview.slice(0, 45);
   const tokens = p.msg.tokens ?? Math.ceil(p.msg.content.length / 4);
 
   return (
@@ -162,7 +164,7 @@ function renderAccordionItem(p: AccordionItemProps): React.ReactElement {
       <Box flexDirection="row" gap={1} alignItems="center" backgroundColor={p.isSelected ? (p.theme?.colors?.selection ?? 'blue') : undefined}>
         <Text bold color={p.isSelected ? 'cyan' : 'gray'}>{p.isOpen ? '▾' : '▸'}</Text>
         {renderMessageHeader(p.msg, p.absIdx)}
-        <Text bold={p.isSelected} color={p.isSelected ? 'white' : 'gray'}>{preview}{p.msg.content.length > 45 ? '…' : ''}</Text>
+        <Text bold={p.isSelected} color={p.isSelected ? 'white' : 'gray'}>{preview}{rawPreview.length > 45 ? '…' : ''}</Text>
         <Text color="gray" dimColor>({tokens} tok{time ? ` • ${time}` : ''})</Text>
       </Box>
       {p.isOpen && (

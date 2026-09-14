@@ -99,7 +99,9 @@ const Chat: React.FC<ChatProps> = ({
   };
 
   const executeSingleTurn = async (chatHistory: ChatMessage[]) => {
-    const tools = registry ? registry.definitions() : undefined;
+    const reg = registry || await getActiveToolRegistry();
+    if (!registry && reg) setRegistry(reg);
+    const tools = reg ? reg.definitions() : undefined;
     const stream = await client!.chatStream({ model: selectedModel, messages: chatHistory, think: 'high', tools, options: { temperature: 0.7 } });
     const { thinking, content } = await consumeStream(stream, (d) => setStreamedThinking((p) => p + d), (d) => { setPhase('responding'); setStreamedContent((p) => p + d); });
     const final = await stream.finalResult;
@@ -112,15 +114,16 @@ const Chat: React.FC<ChatProps> = ({
         rawContent = rawContent.replace(/<function[\s\S]*?<\/function>/g, '').replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim();
       }
     }
-    if (!toolCalls?.length || !registry) {
+    if (!toolCalls?.length || !reg) {
       onSendMessage(undefined, rawContent, thinking || undefined);
       return { done: true as const };
     }
     const asst: ChatMessage = { role: 'assistant', content: rawContent, thinking: thinking || undefined, tool_calls: toolCalls, timestamp: Date.now() };
     onSendMessage(undefined, asst.content, asst.thinking, asst);
     setPhase('executing-tools');
-    show(`Calling ${toolCalls.length} MCP tool(s)...`, 'info', 2000);
-    const toolMsgs = await executeMcpCalls(registry, toolCalls);
+    const toolNames = toolCalls.map((tc: any) => tc.function?.name || 'tool').join(', ');
+    show(`Executing: ${toolNames}...`, 'info', 2500);
+    const toolMsgs = await executeMcpCalls(reg, toolCalls);
     toolMsgs.forEach((tm) => onSendMessage(undefined, tm.content, undefined, tm));
     return { asst, toolMsgs, done: false as const };
   };
