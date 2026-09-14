@@ -30,8 +30,8 @@ export const MCP_SERVERS: McpServerConfig[] = [
   { id: 'git', name: 'Git Repository', command: 'uvx', args: ['mcp-server-git', '--repository', process.cwd()], enabled: true, description: 'Git repo operations' },
   { id: 'sequential-thinking', name: 'Sequential Thinking', command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking'], enabled: true, description: 'Thought sequences' },
   { id: 'sqlite', name: 'SQLite Database', command: 'uvx', args: ['mcp-server-sqlite', '--db-path', process.env['SQLITE_DB_PATH'] || 'data.db'], enabled: true, description: 'SQLite query runner' },
-  { id: 'binance-cloud', name: 'Binance Agentic Cloud', url: process.env['BINANCE_MCP_URL'] || 'https://agent.binance.com/mcp/agentic', transport: 'http', enabled: true, description: 'Binance Cloud trading & market data' },
-  { id: 'binance-sdk', name: 'Binance Local SDK', command: 'npx', args: ['-y', '@nemesis-oss/binance-sdk'], enabled: Boolean(process.env['BINANCE_API_KEY']), disabledReason: 'Missing BINANCE_API_KEY', description: 'Binance local SDK' },
+  { id: 'binance-sdk', name: 'Binance Local SDK', command: 'npx', args: ['binance-sdk-mcp'], enabled: true, description: 'Binance Spot, Futures, Margin SDK' },
+  { id: 'binance-cloud', name: 'Binance Agentic Cloud', url: process.env['BINANCE_MCP_URL'] || 'https://agent.binance.com/mcp/agentic', transport: 'http', enabled: Boolean(process.env['BINANCE_OAUTH_TOKEN']), disabledReason: 'Requires OAuth token in BINANCE_OAUTH_TOKEN', description: 'Binance Cloud trading & market data' },
   { id: 'everything', name: 'Everything Reference', command: 'npx', args: ['-y', '@modelcontextprotocol/server-everything'], enabled: false, disabledReason: 'Test reference mock server', description: 'Reference test server' },
   { id: 'brave-search', name: 'Brave Search', command: 'npx', args: ['-y', '@modelcontextprotocol/server-brave-search'], enabled: Boolean(process.env['BRAVE_API_KEY']), disabledReason: 'Missing BRAVE_API_KEY', description: 'Brave web search' },
   { id: 'github', name: 'GitHub', command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], enabled: Boolean(process.env['GITHUB_PERSONAL_ACCESS_TOKEN']), disabledReason: 'Missing GITHUB_PERSONAL_ACCESS_TOKEN', description: 'GitHub repos and PRs' },
@@ -236,11 +236,29 @@ export function dispatchSlashCommand(rawInput: string, ctx: CommandContext): boo
   }
 }
 
+function resolveToolName(name: string, registry: ToolRegistry): string {
+  if (registry.get(name)) return name;
+  const normalized = name.toLowerCase().replace(/^get_market_/, '').replace(/^get_/, '');
+  const defs = registry.definitions();
+  const match = defs.find((d: any) => {
+    const fn = d.function.name.toLowerCase();
+    return fn === normalized || fn.endsWith(`_${normalized}`) || fn.includes(normalized);
+  });
+  return match ? (match as any).function.name : name;
+}
+
 export async function executeMcpCalls(
   registry: ToolRegistry,
   toolCalls: readonly any[],
 ): Promise<Array<{ role: 'tool'; content: string; tool_call_id?: string; timestamp: number }>> {
-  const results = await registry.executeToolCalls(toolCalls);
+  const resolved = toolCalls.map((tc) => ({
+    ...tc,
+    function: {
+      ...tc.function,
+      name: resolveToolName(tc.function?.name || '', registry),
+    },
+  }));
+  const results = await registry.executeToolCalls(resolved);
   return results.map((res) => ({
     role: 'tool' as const,
     content: res.outputString || (res.success ? 'Success' : 'Execution error'),

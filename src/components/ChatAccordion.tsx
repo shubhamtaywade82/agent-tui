@@ -119,6 +119,29 @@ function renderTurnDetails(msg: ChatMessage, theme: any, innerWidth: number): Re
   return elements;
 }
 
+export function parseTextToolCalls(text: string): Array<{ function: { name: string; arguments: any } }> {
+  const calls: Array<{ function: { name: string; arguments: any } }> = [];
+  const fnRe = /<function\s+name="([^"]+)">([\s\S]*?)<\/function>/g;
+  let m: RegExpExecArray | null;
+  while ((m = fnRe.exec(text)) !== null) {
+    const args: Record<string, any> = {};
+    const paramRe = /<param\s+name="([^"]+)">([\s\S]*?)<\/param>/g;
+    let pm: RegExpExecArray | null;
+    while ((pm = paramRe.exec(m[2]!)) !== null) {
+      args[pm[1]!] = pm[2]!.trim();
+    }
+    calls.push({ function: { name: m[1]!, arguments: args } });
+  }
+  const tcRe = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+  while ((m = tcRe.exec(text)) !== null) {
+    try {
+      const p = JSON.parse(m[1]!.trim());
+      if (p.name) calls.push({ function: { name: p.name, arguments: p.arguments || {} } });
+    } catch {}
+  }
+  return calls;
+}
+
 interface AccordionItemProps {
   msg: ChatMessage;
   absIdx: number;

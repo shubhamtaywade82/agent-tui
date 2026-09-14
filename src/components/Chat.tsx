@@ -8,7 +8,7 @@ import { ToastStack, useToast } from './ui/toast/index.js';
 import { ScrollArea } from './ui/scroll-area/index.js';
 import { useFocusManager, useTerminalSize } from './ui/hooks/index.js';
 import { getActiveToolRegistry, consumeStream, dispatchSlashCommand, SLASH_COMMANDS, executeMcpCalls } from '../tools.js';
-import { ChatAccordion, renderSingleTurn, renderStreamingRows } from './ChatAccordion.js';
+import { ChatAccordion, renderSingleTurn, renderStreamingRows, parseTextToolCalls } from './ChatAccordion.js';
 
 export interface ChatMessage extends Message { timestamp?: number; thinking?: string; tokens?: number; }
 
@@ -103,12 +103,20 @@ const Chat: React.FC<ChatProps> = ({
     const stream = await client!.chatStream({ model: selectedModel, messages: chatHistory, think: 'high', tools, options: { temperature: 0.7 } });
     const { thinking, content } = await consumeStream(stream, (d) => setStreamedThinking((p) => p + d), (d) => { setPhase('responding'); setStreamedContent((p) => p + d); });
     const final = await stream.finalResult;
-    const toolCalls = final.message?.tool_calls;
+    let toolCalls = final.message?.tool_calls;
+    let rawContent = final.message?.content || content;
+    if ((!toolCalls || toolCalls.length === 0) && rawContent) {
+      const parsed = parseTextToolCalls(rawContent);
+      if (parsed.length > 0) {
+        toolCalls = parsed;
+        rawContent = rawContent.replace(/<function[\s\S]*?<\/function>/g, '').replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim();
+      }
+    }
     if (!toolCalls?.length || !registry) {
-      onSendMessage(undefined, final.message?.content || content, thinking || undefined);
+      onSendMessage(undefined, rawContent, thinking || undefined);
       return { done: true as const };
     }
-    const asst: ChatMessage = { role: 'assistant', content: final.message?.content || content, thinking: thinking || undefined, tool_calls: toolCalls, timestamp: Date.now() };
+    const asst: ChatMessage = { role: 'assistant', content: rawContent, thinking: thinking || undefined, tool_calls: toolCalls, timestamp: Date.now() };
     onSendMessage(undefined, asst.content, asst.thinking, asst);
     setPhase('executing-tools');
     show(`Calling ${toolCalls.length} MCP tool(s)...`, 'info', 2000);
