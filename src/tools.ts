@@ -6,13 +6,15 @@ import {
   registerMcpTools,
   type McpClientLike,
 } from '@nemesis-oss/ollama-sdk';
-import { StdioTransport, McpClient } from '@nemesis-oss/agentic-runtime/mcp';
+import { StdioTransport, StreamableHttpTransport, McpClient } from '@nemesis-oss/agentic-runtime/mcp';
 
 export interface McpServerConfig {
   id: string;
   name: string;
-  command: string;
-  args: string[];
+  command?: string;
+  args?: string[];
+  url?: string;
+  transport?: 'stdio' | 'http';
   env?: Record<string, string>;
   enabled: boolean;
   disabledReason?: string;
@@ -28,6 +30,8 @@ export const MCP_SERVERS: McpServerConfig[] = [
   { id: 'git', name: 'Git Repository', command: 'uvx', args: ['mcp-server-git', '--repository', process.cwd()], enabled: true, description: 'Git repo operations' },
   { id: 'sequential-thinking', name: 'Sequential Thinking', command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking'], enabled: true, description: 'Thought sequences' },
   { id: 'sqlite', name: 'SQLite Database', command: 'uvx', args: ['mcp-server-sqlite', '--db-path', process.env['SQLITE_DB_PATH'] || 'data.db'], enabled: true, description: 'SQLite query runner' },
+  { id: 'binance-cloud', name: 'Binance Agentic Cloud', url: process.env['BINANCE_MCP_URL'] || 'https://agent.binance.com/mcp/agentic', transport: 'http', enabled: true, description: 'Binance Cloud trading & market data' },
+  { id: 'binance-sdk', name: 'Binance Local SDK', command: 'npx', args: ['-y', '@nemesis-oss/binance-sdk'], enabled: Boolean(process.env['BINANCE_API_KEY']), disabledReason: 'Missing BINANCE_API_KEY', description: 'Binance local SDK' },
   { id: 'everything', name: 'Everything Reference', command: 'npx', args: ['-y', '@modelcontextprotocol/server-everything'], enabled: false, disabledReason: 'Test reference mock server', description: 'Reference test server' },
   { id: 'brave-search', name: 'Brave Search', command: 'npx', args: ['-y', '@modelcontextprotocol/server-brave-search'], enabled: Boolean(process.env['BRAVE_API_KEY']), disabledReason: 'Missing BRAVE_API_KEY', description: 'Brave web search' },
   { id: 'github', name: 'GitHub', command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], enabled: Boolean(process.env['GITHUB_PERSONAL_ACCESS_TOKEN']), disabledReason: 'Missing GITHUB_PERSONAL_ACCESS_TOKEN', description: 'GitHub repos and PRs' },
@@ -71,7 +75,9 @@ function createMcpAdapter(client: McpClient): McpClientLike {
 
 async function connectServer(cfg: McpServerConfig): Promise<McpClient | null> {
   try {
-    const transport = new StdioTransport({ command: cfg.command, args: cfg.args, env: cfg.env });
+    const transport = cfg.url || cfg.transport === 'http'
+      ? new StreamableHttpTransport({ url: cfg.url! })
+      : new StdioTransport({ command: cfg.command!, args: cfg.args, env: cfg.env });
     const client = new McpClient({ serverId: cfg.id, transport });
     await client.connect();
     return client;
