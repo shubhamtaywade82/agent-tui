@@ -102,7 +102,7 @@ const Chat: React.FC<ChatProps> = ({
     const reg = registry || await getActiveToolRegistry();
     if (!registry && reg) setRegistry(reg);
     const tools = reg ? reg.definitions() : undefined;
-    const stream = await client!.chatStream({ model: selectedModel, messages: chatHistory, think: 'high', tools, options: { temperature: 0.7 } });
+    const stream = await client!.chatStream({ model: selectedModel, messages: chatHistory, think: 'high', tools, options: { temperature: 0.7, num_ctx: 16384 } });
     const { thinking, content } = await consumeStream(stream, (d) => setStreamedThinking((p) => p + d), (d) => { setPhase('responding'); setStreamedContent((p) => p + d); });
     const final = await stream.finalResult;
     let toolCalls = final.message?.tool_calls;
