@@ -5,6 +5,7 @@ import { Badge } from './components/ui/badge/index.js';
 import { Select } from './components/ui/select/index.js';
 import { Tabs } from './components/ui/tabs/index.js';
 import type { Tab } from './components/ui/tabs/index.js';
+import { Divider } from './components/ui/divider/index.js';
 import Chat, { type ChatMessage } from './components/Chat.js';
 import StatusBar from './components/StatusBar.js';
 import { useOllama } from './hooks/useOllama.js';
@@ -112,16 +113,12 @@ const App: React.FC = () => {
   if (isLoading) {
     return (
       <Box flexDirection="column" width={columns}>
-        <Box
-          borderStyle="round"
-          borderColor={myTheme.colors.border}
-          paddingX={1}
-          width={columns}
-        >
+        <Box paddingX={1} flexDirection="row" justifyContent="space-between" alignItems="center" width={columns}>
           <Text bold color={myTheme.colors.primary}>
             ⚡ Ollama TUI <Text color="gray" dimColor>v1.0.0</Text>
           </Text>
         </Box>
+        <Divider width={columns} theme={myTheme} />
         <Box marginTop={1} paddingX={1} width={columns}>
           <StatusIndicator
             status="loading"
@@ -135,14 +132,8 @@ const App: React.FC = () => {
 
   return (
     <Box flexDirection="column" width={columns}>
-      {/* Unified Top Navigation & Controls Header (Single Line) */}
-      <Box
-        borderStyle="round"
-        borderColor={isSelectingModel ? (myTheme.colors.focus ?? 'green') : (myTheme.colors.border ?? 'gray')}
-        paddingX={1}
-        flexDirection="column"
-        width={columns}
-      >
+      {/* Flat top nav — title, tabs, status, model on one line */}
+      <Box paddingX={1} flexDirection="column" width={columns}>
         <Box flexDirection="row" justifyContent="space-between" alignItems="center">
           <Box flexDirection="row" gap={2} alignItems="center">
             <Text bold color={myTheme.colors.primary}>
@@ -185,7 +176,7 @@ const App: React.FC = () => {
           )}
         </Box>
 
-        {/* Expandable Model Selector dropdown */}
+        {/* Expandable model selector */}
         {isSelectingModel && models.length > 0 && (
           <Box marginTop={1} flexDirection="column">
             <Select
@@ -201,6 +192,11 @@ const App: React.FC = () => {
           </Box>
         )}
       </Box>
+      <Divider
+        width={columns}
+        theme={myTheme}
+        style={isSelectingModel ? 'bold' : 'single'}
+      />
 
       {/* Primary Chat View */}
       <Box display={activeTab === 'chat' ? 'flex' : 'none'} width={columns}>

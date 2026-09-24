@@ -1,7 +1,8 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Box, Text, useInput, useStdin } from 'ink';
+import { Box, Text, useInput } from 'ink';
 import { darkTheme } from '../_core.js';
 import type { InkUITheme } from '../_core.js';
+import { useMouseScroll } from '../hooks/useMouse.js';
 
 export interface ScrollAreaProps {
   /** Visible height in rows */
@@ -60,7 +61,6 @@ export const ScrollArea: React.FC<ScrollAreaProps> = ({
   const prevTotalRef = useRef(totalItems);
   const pendingDeltaRef = useRef(0);
   const throttleTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const { stdin, isRawModeSupported } = useStdin();
 
   useEffect(() => {
     if (autoScroll && totalItems > prevTotalRef.current) {
@@ -112,57 +112,7 @@ export const ScrollArea: React.FC<ScrollAreaProps> = ({
     };
   }, []);
 
-  // Enable SGR mouse tracking in terminal so mouse wheel events are emitted
-  useEffect(() => {
-    if (!mouseScroll || !process.stdout.isTTY) return;
-    process.stdout.write('\x1b[?1000h\x1b[?1002h\x1b[?1006h');
-
-    const disableMouse = () => {
-      process.stdout.write('\x1b[?1006l\x1b[?1002l\x1b[?1000l');
-    };
-
-    process.on('exit', disableMouse);
-    return () => {
-      process.off('exit', disableMouse);
-      disableMouse();
-    };
-  }, [mouseScroll]);
-
-  // Handle mouse wheel scrolling directly from stdin
-  useEffect(() => {
-    if (!mouseScroll || !isRawModeSupported || !stdin) return;
-
-    const handleData = (chunk: Buffer | string) => {
-      const str = chunk.toString();
-      let delta = 0;
-
-      const sgrRegex = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
-      let match: RegExpExecArray | null;
-      while ((match = sgrRegex.exec(str)) !== null) {
-        const code = parseInt(match[1]!, 10);
-        if ((code & 64) !== 0) {
-          const isUp = (code & 1) === 0;
-          delta += isUp ? -mouseScrollDelta : mouseScrollDelta;
-        }
-      }
-
-      const legacyRegex = /\x1b\[M([\s\S])([\s\S])([\s\S])/g;
-      while ((match = legacyRegex.exec(str)) !== null) {
-        const cb = match[1]!.charCodeAt(0);
-        if (cb === 96) delta -= mouseScrollDelta;
-        else if (cb === 97) delta += mouseScrollDelta;
-      }
-
-      if (delta !== 0) {
-        queueScroll(delta);
-      }
-    };
-
-    stdin.on('data', handleData);
-    return () => {
-      stdin.off('data', handleData);
-    };
-  }, [mouseScroll, isRawModeSupported, stdin, queueScroll, mouseScrollDelta]);
+  useMouseScroll((delta) => queueScroll(delta * mouseScrollDelta), mouseScroll);
 
   useInput(
     (input, key) => {

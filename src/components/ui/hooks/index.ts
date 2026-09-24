@@ -9,3 +9,12 @@ export type { TerminalSize } from './useTerminalSize.js';
 
 export { useAsync } from './useAsync.js';
 export type { UseAsyncResult, UseAsyncOptions } from './useAsync.js';
+
+export { useMouse, useMouseScroll, isPointInside, parseSgrMouseEvent } from './useMouse.js';
+export type { MouseEvent, MouseButton, MouseAction, BoundingBox, UseMouseOptions } from './useMouse.js';
+
+export { useAlternateScreen } from './useAlternateScreen.js';
+export type { UseAlternateScreenOptions } from './useAlternateScreen.js';
+
+export { useClipboard } from './useClipboard.js';
+export type { ClipboardResult } from './useClipboard.js';

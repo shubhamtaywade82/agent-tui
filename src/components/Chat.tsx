@@ -3,6 +3,7 @@ import { existsSync, readFileSync, appendFileSync } from 'fs';
 import { Box, Text, useInput } from 'ink';
 import { TextInput } from './ui/text-input/index.js';
 import { Typewriter } from './ui/typewriter/index.js';
+import { Divider } from './ui/divider/index.js';
 import { OllamaClient, Message } from '@nemesis-oss/ollama-sdk';
 import { ToastStack, useToast } from './ui/toast/index.js';
 import { ScrollArea } from './ui/scroll-area/index.js';
@@ -68,7 +69,7 @@ const Chat: React.FC<ChatProps> = ({
 
   const selectOverhead = isSelectingModel ? 1 + Math.min(models.length || 1, 5) + (models.length > 5 ? 1 : 0) : 0;
   const menuOverhead = input.startsWith('/') && matchingCommands.length > 0 ? Math.min(matchingCommands.length, 4) + 2 : 0;
-  const chatHeight = Math.max(3, rows - 13 - selectOverhead - menuOverhead - (toasts.length > 0 ? 1 : 0));
+  const chatHeight = Math.max(3, rows - 7 - selectOverhead - menuOverhead - (toasts.length > 0 ? 1 : 0));
 
   useEffect(() => { setSelectedCmdIndex(0); }, [input]);
   useEffect(() => { getActiveToolRegistry().then(setRegistry).catch(() => undefined); }, []);
@@ -203,20 +204,23 @@ const Chat: React.FC<ChatProps> = ({
 
   return (
     <Box flexDirection="column" width={columns}>
-      <Box borderStyle="single" borderColor={isChatFocused ? (theme?.colors?.focus ?? 'green') : (theme?.colors?.border ?? 'gray')} flexDirection="column" paddingX={1} width={columns}>
-        <Box flexDirection="row" justifyContent="space-between">
-          <Box flexDirection="row" gap={1}>
-            <Text bold color={isChatFocused ? (theme?.colors?.focus ?? 'green') : 'gray'}>
-              {isChatFocused ? `● History [${viewMode === 'accordion' ? 'Accordion' : 'Stream'}] (Focused)` : `Chat History [${viewMode === 'accordion' ? 'Accordion' : 'Stream'}]`}
-            </Text>
-            {viewMode === 'stream' && totalRows > chatHeight && <Text color="cyan" dimColor>[{Math.min(totalRows, scrollOffset + 1)}-{Math.min(scrollOffset + chatHeight, totalRows)} of {totalRows}]</Text>}
-          </Box>
-          <Box flexDirection="row" gap={1}>
-            {viewMode === 'stream' && scrollOffset > 0 && <Text color="yellow">▲ Above (PgUp)</Text>}
-            {viewMode === 'stream' && scrollOffset < maxScrollOffset && <Text color="yellow">▼ Below (PgDn)</Text>}
-            <Text color="gray" dimColor>Ctrl+A View • {viewMode === 'accordion' ? '↑/↓ Nav • Space Fold' : isChatFocused ? '↑/↓ • t Think • Esc Input' : 'PgUp/PgDn • Tab Focus'}</Text>
-          </Box>
+      {/* Chat panel header */}
+      <Box paddingX={1} flexDirection="row" justifyContent="space-between" width={columns}>
+        <Box flexDirection="row" gap={1}>
+          <Text bold color={isChatFocused ? (theme?.colors?.focus ?? 'green') : 'gray'}>
+            {isChatFocused ? `● History [${viewMode === 'accordion' ? 'Accordion' : 'Stream'}] (Focused)` : `Chat History [${viewMode === 'accordion' ? 'Accordion' : 'Stream'}]`}
+          </Text>
+          {viewMode === 'stream' && totalRows > chatHeight && <Text color="cyan" dimColor>[{Math.min(totalRows, scrollOffset + 1)}-{Math.min(scrollOffset + chatHeight, totalRows)} of {totalRows}]</Text>}
         </Box>
+        <Box flexDirection="row" gap={1}>
+          {viewMode === 'stream' && scrollOffset > 0 && <Text color="yellow">▲ Above (PgUp)</Text>}
+          {viewMode === 'stream' && scrollOffset < maxScrollOffset && <Text color="yellow">▼ Below (PgDn)</Text>}
+          <Text color="gray" dimColor>Ctrl+A View • {viewMode === 'accordion' ? '↑/↓ Nav • Space Fold' : isChatFocused ? '↑/↓ • t Think • Esc Input' : 'PgUp/PgDn • Tab Focus'}</Text>
+        </Box>
+      </Box>
+      <Divider width={columns} theme={theme} style={isChatFocused ? 'bold' : 'single'} />
+      {/* Chat content */}
+      <Box paddingX={1} width={columns}>
         {messages.length === 0 ? (
           <Box height={chatHeight} flexDirection="column" alignItems="center" justifyContent="center">
             <Typewriter text="Ready. Type prompt or /command... (Ctrl+A for Accordion)" speed={45} cursorChar="▌" theme={theme} />
@@ -233,22 +237,25 @@ const Chat: React.FC<ChatProps> = ({
       {toasts.length > 0 && <Box paddingX={1} width={columns}><ToastStack toasts={toasts.slice(-1)} onDismiss={dismiss} theme={theme} /></Box>}
 
       {input.startsWith('/') && matchingCommands.length > 0 && (
-        <Box borderStyle="round" borderColor="cyan" flexDirection="column" paddingX={1} width={columns}>
-          <Box flexDirection="row" justifyContent="space-between">
-            <Text bold color="cyan">⚡ Commands ({selectedCmdIndex + 1}/{matchingCommands.length})</Text>
-            <Text color="gray" dimColor>↑/↓ Nav • Tab Select • Enter Run • Esc Close</Text>
-          </Box>
-          {visibleCommands.map((c) => (
-            <Box key={c.name} flexDirection="row" gap={1}>
-              <Text bold color={c === matchingCommands[selectedCmdIndex] ? 'cyan' : 'yellow'} inverse={c === matchingCommands[selectedCmdIndex]}>{c === matchingCommands[selectedCmdIndex] ? '❯ ' : '  '}{c.name}</Text>
-              {c.args && <Text color={c === matchingCommands[selectedCmdIndex] ? 'white' : 'gray'}>{c.args}</Text>}
-              <Text color="gray" dimColor={c !== matchingCommands[selectedCmdIndex]}>— {c.desc}</Text>
+        <>
+          <Divider title="⚡ Commands" width={columns} theme={theme} />
+          <Box paddingX={1} flexDirection="column" width={columns}>
+            <Box flexDirection="row" justifyContent="flex-end">
+              <Text color="gray" dimColor>↑/↓ Nav • Tab Select • Enter Run • Esc Close  ({selectedCmdIndex + 1}/{matchingCommands.length})</Text>
             </Box>
-          ))}
-        </Box>
+            {visibleCommands.map((c) => (
+              <Box key={c.name} flexDirection="row" gap={1}>
+                <Text bold color={c === matchingCommands[selectedCmdIndex] ? 'cyan' : 'yellow'} inverse={c === matchingCommands[selectedCmdIndex]}>{c === matchingCommands[selectedCmdIndex] ? '❯ ' : '  '}{c.name}</Text>
+                {c.args && <Text color={c === matchingCommands[selectedCmdIndex] ? 'white' : 'gray'}>{c.args}</Text>}
+                <Text color="gray" dimColor={c !== matchingCommands[selectedCmdIndex]}>— {c.desc}</Text>
+              </Box>
+            ))}
+          </Box>
+        </>
       )}
 
-      <Box borderStyle="round" borderColor={isInputFocused ? (theme?.colors?.focus ?? 'green') : (theme?.colors?.border ?? 'gray')} paddingX={1} width={columns}>
+      <Divider width={columns} theme={theme} style={isInputFocused ? 'bold' : 'single'} />
+      <Box paddingX={1} width={columns}>
         <TextInput
           value={input} onChange={setInput} onSubmit={handleSendMessage}
           onUpArrow={() => handleArrow(-1)} onDownArrow={() => handleArrow(1)}

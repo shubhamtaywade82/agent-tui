@@ -3,9 +3,10 @@ import { Box, Text, useInput } from 'ink';
 import { Badge } from './ui/badge/index.js';
 import { Spinner } from './ui/spinner/index.js';
 import { Stepper, type Step } from './ui/stepper/index.js';
-import { JSONViewer } from './ui/json-viewer/index.js';
 import { parseMarkdownBlocks, wrapTextLine } from './ui/markdown/index.js';
 import { ScrollArea } from './ui/scroll-area/index.js';
+import { Thinking } from './ui/thinking/index.js';
+import { ToolCall } from './ui/tool-call/index.js';
 import type { ChatMessage } from './Chat.js';
 
 export interface TurnOptions {
@@ -59,20 +60,33 @@ export function renderSingleTurn(msg: ChatMessage, mi: number, opts: TurnOptions
 
   if (msg.thinking) {
     const tok = Math.ceil(msg.thinking.length / 4);
-    if (!opts.expandThinking) {
-      items.push(<Box key={`t-${mi}`} paddingLeft={2}><Text color="yellow" dimColor>▸ 💭 Reasoning ({tok} tok) [t]</Text></Box>);
-    } else {
-      items.push(<Box key={`t-${mi}`} paddingLeft={2}><Text color="yellow">▾ 💭 Reasoning ({tok} tok):</Text></Box>);
-      wrapTextLine(msg.thinking, opts.maxWidth - 4).forEach((tl, tli) => {
-        items.push(<Box key={`tl-${mi}-${tli}`} paddingLeft={4}><Text color="gray" dimColor>│ {tl}</Text></Box>);
-      });
-    }
+    items.push(
+      <Box key={`t-${mi}`} paddingLeft={2}>
+        <Thinking
+          tokenCount={tok}
+          defaultExpanded={opts.expandThinking}
+          focus={false}
+          theme={opts.theme}
+        >
+          {msg.thinking}
+        </Thinking>
+      </Box>
+    );
   }
 
   msg.tool_calls?.forEach((tc: any, tci: number) => {
-    const args = JSON.stringify(tc.function?.arguments || {});
-    const trunc = args.length > opts.maxWidth - 16 ? args.slice(0, opts.maxWidth - 19) + '...' : args;
-    items.push(<Box key={`tc-${mi}-${tci}`} paddingLeft={2} flexDirection="row" gap={1}><Badge variant="warning">Tool</Badge><Text color="yellow">▸ {tc.function?.name || 'tool'}</Text><Text color="gray" dimColor>({trunc})</Text></Box>);
+    items.push(
+      <Box key={`tc-${mi}-${tci}`} paddingLeft={2}>
+        <ToolCall
+          name={tc.function?.name || 'tool'}
+          args={tc.function?.arguments}
+          status="success"
+          interactive={false}
+          compact={true}
+          theme={opts.theme}
+        />
+      </Box>
+    );
   });
 
   items.push(...renderMessageContent(msg, mi, opts));
@@ -84,7 +98,8 @@ export function renderStreamingRows(s: StreamState, opts: TurnOptions): React.Re
   const stepper = <Box key="st-step" paddingLeft={2}><Stepper steps={STEPS} currentStep={s.phase} completedSteps={completed} orientation="horizontal" theme={opts.theme} /></Box>;
 
   if (s.phase === 'thinking') {
-    return [stepper, <Box key="st-think" flexDirection="row" gap={1} alignItems="center" paddingLeft={2}><Spinner type="dots" /><Text color="yellow"> {s.model} thinking...</Text>{s.thinking.length > 0 && <Text color="gray" dimColor>({Math.ceil(s.thinking.length / 4)} tok)</Text>}</Box>];
+    const tok = s.thinking.length > 0 ? Math.ceil(s.thinking.length / 4) : undefined;
+    return [stepper, <Box key="st-think" paddingLeft={2}><Thinking isStreaming={true} tokenCount={tok} theme={opts.theme}>{s.thinking || ' '}</Thinking></Box>];
   }
   if (s.phase === 'executing-tools') {
     return [stepper, <Box key="st-tool" flexDirection="row" gap={1} alignItems="center" paddingLeft={2}><Spinner type="dots" /><Text color="cyan"> Executing MCP tool call...</Text></Box>];
@@ -99,18 +114,27 @@ export function renderStreamingRows(s: StreamState, opts: TurnOptions): React.Re
 function renderTurnDetails(msg: ChatMessage, theme: any, innerWidth: number): React.ReactElement[] {
   const elements: React.ReactElement[] = [];
   if (msg.thinking) {
-    elements.push(<Box key="th-hdr" flexDirection="row" gap={1}><Text bold color="yellow">💭 Reasoning ({Math.ceil(msg.thinking.length / 4)} tok):</Text></Box>);
-    wrapTextLine(msg.thinking, innerWidth - 4).forEach((line, li) => {
-      elements.push(<Box key={`th-${li}`} paddingLeft={1}><Text color="gray" dimColor>│ {line}</Text></Box>);
-    });
-    elements.push(<Box key="th-gap"><Text>{' '}</Text></Box>);
+    const tok = Math.ceil(msg.thinking.length / 4);
+    elements.push(
+      <Box key="th" marginBottom={1}>
+        <Thinking tokenCount={tok} defaultExpanded={true} focus={false} theme={theme}>
+          {msg.thinking}
+        </Thinking>
+      </Box>
+    );
   }
   if (msg.tool_calls?.length) {
     msg.tool_calls.forEach((tc: any, tci: number) => {
       elements.push(
-        <Box key={`tc-${tci}`} flexDirection="column" marginBottom={1}>
-          <Box flexDirection="row" gap={1}><Badge variant="warning">Tool Call</Badge><Text bold color="yellow">{tc.function?.name}</Text></Box>
-          <JSONViewer data={tc.function?.arguments || {}} theme={theme} focus={false} maxHeight={6} />
+        <Box key={`tc-${tci}`} marginBottom={1}>
+          <ToolCall
+            name={tc.function?.name || 'tool'}
+            args={tc.function?.arguments}
+            status="success"
+            defaultExpanded={true}
+            interactive={false}
+            theme={theme}
+          />
         </Box>
       );
     });
@@ -168,7 +192,7 @@ function renderAccordionItem(p: AccordionItemProps): React.ReactElement {
         <Text color="gray" dimColor>({tokens} tok{time ? ` • ${time}` : ''})</Text>
       </Box>
       {p.isOpen && (
-        <Box flexDirection="column" paddingLeft={2} borderStyle="single" borderColor={p.theme?.colors?.border ?? 'gray'} maxHeight={p.contentHeight}>
+        <Box flexDirection="column" paddingLeft={2} maxHeight={p.contentHeight}>
           <ScrollArea height={Math.max(2, p.contentHeight - 1)} width="100%" focus={false} theme={p.theme} scrollbar={true}>
             {renderTurnDetails(p.msg, p.theme, p.innerWidth)}
           </ScrollArea>

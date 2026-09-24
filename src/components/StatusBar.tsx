@@ -3,6 +3,7 @@ import { Box, Text } from 'ink';
 import { ProgressBar } from './ui/progress-bar/index.js';
 import { StatusIndicator } from './ui/status-indicator/index.js';
 import { Gauge } from './ui/gauge/index.js';
+import { Divider } from './ui/divider/index.js';
 import { OllamaClient } from '@nemesis-oss/ollama-sdk';
 
 interface LoadedModelInfo {
@@ -49,15 +50,8 @@ const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme, width 
   const vramPercent = Math.min(100, (memoryUsage / (maxVramGB * 1024)) * 100);
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={theme?.colors?.border ?? 'gray'}
-      paddingX={1}
-      paddingY={1}
-      width={width}
-    >
-      <Box flexDirection="row" justifyContent="space-between" alignItems="center">
+    <Box flexDirection="column" width={width}>
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center" paddingX={1}>
         <Box flexDirection="row" gap={1} alignItems="center">
           <Text bold color={theme?.colors?.primary ?? 'cyan'}>
             Ollama Node:
@@ -82,7 +76,9 @@ const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme, width 
         </Box>
       </Box>
 
-      <Box flexDirection="row" justifyContent="space-between" alignItems="center" marginTop={1}>
+      <Divider width={width} theme={theme} />
+
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center" paddingX={1}>
         <ProgressBar
           value={vramPercent}
           label={`VRAM (${maxVramGB}GB):`}
@@ -98,15 +94,14 @@ const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme, width 
         />
       </Box>
 
-      <Box flexDirection="column" marginTop={1}>
-        <Text bold color={theme?.colors?.secondary ?? 'yellow'}>
-          Loaded Models in VRAM:
-        </Text>
+      <Divider title="Loaded Models in VRAM" width={width} theme={theme} />
+
+      <Box flexDirection="column" paddingX={1}>
         {loadedModels.length === 0 ? (
           <Text color="gray" dimColor>  No models currently resident in VRAM.</Text>
         ) : (
           loadedModels.map((m, idx) => (
-            <Box key={idx} flexDirection="row" justifyContent="space-between" paddingLeft={2}>
+            <Box key={idx} flexDirection="row" justifyContent="space-between">
               <Text color="white">• {m.name}</Text>
               <Text color="cyan">{m.sizeVramMB.toFixed(1)} MB</Text>
             </Box>
@@ -114,7 +109,9 @@ const StatusBar: React.FC<StatusBarProps> = ({ client, tokenCount, theme, width 
         )}
       </Box>
 
-      <Box marginTop={1}>
+      <Divider width={width} theme={theme} />
+
+      <Box paddingX={1}>
         <Text color="gray" dimColor>
           Navigation: [Ctrl+T], [Esc], or [1] to return to Chat
         </Text>
