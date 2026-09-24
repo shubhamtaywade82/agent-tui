@@ -29,6 +29,14 @@ function appendLocalHistory(p: string) {
   try { appendFileSync(HISTORY_FILE, JSON.stringify(p) + '\n', 'utf-8'); } catch {}
 }
 
+const DEFAULT_SYSTEM_PROMPT =
+  `You are an expert AI assistant. Current workspace directory: ${process.cwd()}. Answer questions directly using your knowledge. Only use tools when specifically required to inspect workspace files, run calculations, or access real-time data requested by the user. Do not call filesystem tools for general programming, conceptual, or educational questions. If tools return errors or are unnecessary, proceed directly to answering the question with your own knowledge.`;
+
+function prepareMessages(history: ChatMessage[]): ChatMessage[] {
+  if (history.some((m) => m.role === 'system')) return history;
+  return [{ role: 'system', content: DEFAULT_SYSTEM_PROMPT, timestamp: Date.now() }, ...history];
+}
+
 interface ChatProps {
   client: OllamaClient | null;
   messages: ChatMessage[];
@@ -69,7 +77,7 @@ const Chat: React.FC<ChatProps> = ({
 
   const selectOverhead = isSelectingModel ? 1 + Math.min(models.length || 1, 5) + (models.length > 5 ? 1 : 0) : 0;
   const menuOverhead = input.startsWith('/') && matchingCommands.length > 0 ? Math.min(matchingCommands.length, 4) + 2 : 0;
-  const chatHeight = Math.max(3, rows - 8 - selectOverhead - menuOverhead - (toasts.length > 0 ? 1 : 0));
+  const chatHeight = Math.max(3, rows - 6 - selectOverhead - menuOverhead - (toasts.length > 0 ? 1 : 0));
 
   useEffect(() => { setSelectedCmdIndex(0); }, [input]);
   useEffect(() => { getActiveToolRegistry().then(setRegistry).catch(() => undefined); }, []);
@@ -99,12 +107,18 @@ const Chat: React.FC<ChatProps> = ({
     });
   };
 
-  const executeSingleTurn = async (chatHistory: ChatMessage[]) => {
+  const executeSingleTurn = async (chatHistory: ChatMessage[], allowTools = true) => {
     const reg = registry || await getActiveToolRegistry();
     if (!registry && reg) setRegistry(reg);
-    const tools = reg ? reg.definitions() : undefined;
-    const stream = await client!.chatStream({ model: selectedModel, messages: chatHistory, think: 'high', tools, options: { temperature: 0.7, num_ctx: 16384 } });
-    const { thinking, content } = await consumeStream(stream, (d) => setStreamedThinking((p) => p + d), (d) => { setPhase('responding'); setStreamedContent((p) => p + d); });
+    const tools = (allowTools && reg) ? reg.definitions() : undefined;
+    const stream = await client!.chatStream({
+      model: selectedModel, messages: prepareMessages(chatHistory),
+      think: 'high', tools, options: { temperature: 0.7, num_ctx: 16384 },
+    });
+    const { thinking, content } = await consumeStream(stream,
+      (d) => setStreamedThinking((p) => p + d),
+      (d) => { setPhase('responding'); setStreamedContent((p) => p + d); },
+    );
     const final = await stream.finalResult;
     let toolCalls = final.message?.tool_calls;
     let rawContent = final.message?.content || content;
@@ -115,28 +129,44 @@ const Chat: React.FC<ChatProps> = ({
         rawContent = rawContent.replace(/<function[\s\S]*?<\/function>/g, '').replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim();
       }
     }
-    if (!toolCalls?.length || !reg) {
-      onSendMessage(undefined, rawContent, thinking || undefined);
+    if (allowTools && toolCalls?.length && reg) {
+      const asst: ChatMessage = { role: 'assistant', content: rawContent, thinking: thinking || undefined, tool_calls: toolCalls, timestamp: Date.now() };
+      onSendMessage(undefined, asst.content, asst.thinking, asst);
+      setPhase('executing-tools');
+      show(`Executing: ${toolCalls.map((tc: any) => tc.function?.name || 'tool').join(', ')}...`, 'info', 2500);
+      const toolMsgs = await executeMcpCalls(reg, toolCalls);
+      toolMsgs.forEach((tm) => onSendMessage(undefined, tm.content, undefined, tm));
+      return { asst, toolMsgs, done: false as const };
+    }
+    const clean = rawContent.replace(/<function[\s\S]*?<\/function>/g, '').replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim();
+    if (clean) {
+      onSendMessage(undefined, clean, thinking || undefined);
       return { done: true as const };
     }
-    const asst: ChatMessage = { role: 'assistant', content: rawContent, thinking: thinking || undefined, tool_calls: toolCalls, timestamp: Date.now() };
-    onSendMessage(undefined, asst.content, asst.thinking, asst);
-    setPhase('executing-tools');
-    const toolNames = toolCalls.map((tc: any) => tc.function?.name || 'tool').join(', ');
-    show(`Executing: ${toolNames}...`, 'info', 2500);
-    const toolMsgs = await executeMcpCalls(reg, toolCalls);
-    toolMsgs.forEach((tm) => onSendMessage(undefined, tm.content, undefined, tm));
-    return { asst, toolMsgs, done: false as const };
+    return { done: false as const, needsSynthesis: true as const };
   };
 
   const runAgentLoop = async (initialHistory: ChatMessage[]) => {
     let currentHistory = initialHistory;
+    const MAX_TURNS = 6;
+    let isDone = false;
     try {
-      for (let turn = 0; turn < 5; turn++) {
-        const res = await executeSingleTurn(currentHistory);
-        if (res.done || !res.asst) break;
-        currentHistory = [...currentHistory, res.asst, ...(res.toolMsgs || [])];
+      for (let turn = 0; turn < MAX_TURNS; turn++) {
+        const res = await executeSingleTurn(currentHistory, turn < MAX_TURNS - 1);
+        if (res.done) { isDone = true; break; }
+        if (res.needsSynthesis) {
+          const req: ChatMessage = { role: 'user', content: 'Please answer directly in plain text now without tools.', timestamp: Date.now() };
+          await executeSingleTurn([...currentHistory, req], false);
+          isDone = true;
+          break;
+        }
+        if (res.asst && res.toolMsgs) currentHistory = [...currentHistory, res.asst, ...res.toolMsgs];
         resetStream('thinking');
+      }
+      if (!isDone) {
+        show('Synthesizing final response...', 'info', 3000);
+        resetStream('thinking');
+        await executeSingleTurn(currentHistory, false);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -204,21 +234,6 @@ const Chat: React.FC<ChatProps> = ({
 
   return (
     <Box flexDirection="column" width={columns}>
-      {/* Chat panel header */}
-      <Box paddingX={1} flexDirection="row" justifyContent="space-between" width={columns}>
-        <Box flexDirection="row" gap={1}>
-          <Text bold color={isChatFocused ? (theme?.colors?.focus ?? 'green') : 'gray'}>
-            {isChatFocused ? `● History [${viewMode === 'accordion' ? 'Accordion' : 'Stream'}] (Focused)` : `Chat History [${viewMode === 'accordion' ? 'Accordion' : 'Stream'}]`}
-          </Text>
-          {viewMode === 'stream' && totalRows > chatHeight && <Text color="cyan" dimColor>[{Math.min(totalRows, scrollOffset + 1)}-{Math.min(scrollOffset + chatHeight, totalRows)} of {totalRows}]</Text>}
-        </Box>
-        <Box flexDirection="row" gap={1}>
-          {viewMode === 'stream' && scrollOffset > 0 && <Text color="yellow">▲ Above (PgUp)</Text>}
-          {viewMode === 'stream' && scrollOffset < maxScrollOffset && <Text color="yellow">▼ Below (PgDn)</Text>}
-          <Text color="gray" dimColor>Ctrl+A View • {viewMode === 'accordion' ? '↑/↓ Nav • Space Fold' : isChatFocused ? '↑/↓ • t Think • Esc Input' : 'PgUp/PgDn • Tab Focus'}</Text>
-        </Box>
-      </Box>
-      <Divider width={columns} theme={theme} style={isChatFocused ? 'bold' : 'single'} />
       {/* Chat content */}
       <Box paddingX={1} width={columns}>
         {messages.length === 0 ? (
@@ -268,10 +283,15 @@ const Chat: React.FC<ChatProps> = ({
           onCancel={() => { if (phase !== 'idle') { resetStream('idle'); show('Cancelled', 'warning', 2000); } }}
         />
       </Box>
-      <Box paddingX={1} width={columns}>
+      <Box paddingX={1} width={columns} flexDirection="row" justifyContent="space-between">
         <Text color="gray" dimColor>
           {isChatFocused ? '↑/↓/j/k or Wheel Scroll • PgUp/PgDn Page • Ctrl+A Toggle Accordion • Esc/Tab to Input' : 'PgUp/PgDn Scroll Chat • Ctrl+A Accordion • ↑/↓ History • Tab Complete/Focus'}
         </Text>
+        <Box flexDirection="row" gap={1}>
+          {viewMode === 'stream' && scrollOffset > 0 && <Text color="yellow">▲ Above (PgUp)</Text>}
+          {viewMode === 'stream' && scrollOffset < maxScrollOffset && <Text color="yellow">▼ Below (PgDn)</Text>}
+          {viewMode === 'accordion' && <Text color="cyan">[Accordion]</Text>}
+        </Box>
       </Box>
     </Box>
   );
