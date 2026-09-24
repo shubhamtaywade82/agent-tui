@@ -69,7 +69,7 @@ const Chat: React.FC<ChatProps> = ({
 
   const selectOverhead = isSelectingModel ? 1 + Math.min(models.length || 1, 5) + (models.length > 5 ? 1 : 0) : 0;
   const menuOverhead = input.startsWith('/') && matchingCommands.length > 0 ? Math.min(matchingCommands.length, 4) + 2 : 0;
-  const chatHeight = Math.max(3, rows - 7 - selectOverhead - menuOverhead - (toasts.length > 0 ? 1 : 0));
+  const chatHeight = Math.max(3, rows - 8 - selectOverhead - menuOverhead - (toasts.length > 0 ? 1 : 0));
 
   useEffect(() => { setSelectedCmdIndex(0); }, [input]);
   useEffect(() => { getActiveToolRegistry().then(setRegistry).catch(() => undefined); }, []);
