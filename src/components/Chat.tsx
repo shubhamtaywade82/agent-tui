@@ -13,21 +13,17 @@ import { ChatAccordion, renderSingleTurn, renderStreamingRows, parseTextToolCall
 
 export interface ChatMessage extends Message { timestamp?: number; thinking?: string; tokens?: number; }
 
-const HISTORY_FILE = '.history';
-const MAX_HISTORY = 500;
+const HISTORY_FILE = '.history'; const MAX_HISTORY = 500;
 
 function loadLocalHistory(): string[] {
+  if (!existsSync(HISTORY_FILE)) return [];
   try {
-    if (!existsSync(HISTORY_FILE)) return [];
     return readFileSync(HISTORY_FILE, 'utf-8').split('\n').filter(Boolean).slice(-MAX_HISTORY).map((l) => {
       try { return JSON.parse(l); } catch { return l; }
     });
   } catch { return []; }
 }
-
-function appendLocalHistory(p: string) {
-  try { appendFileSync(HISTORY_FILE, JSON.stringify(p) + '\n', 'utf-8'); } catch {}
-}
+const appendLocalHistory = (p: string) => { try { appendFileSync(HISTORY_FILE, JSON.stringify(p) + '\n', 'utf-8'); } catch {} };
 
 const DEFAULT_SYSTEM_PROMPT =
   `You are an expert AI assistant. Current workspace directory: ${process.cwd()}. Answer questions directly using your knowledge. Only use tools when specifically required to inspect workspace files, run calculations, or access real-time data requested by the user. Do not call filesystem tools for general programming, conceptual, or educational questions. If tools return errors or are unnecessary, proceed directly to answering the question with your own knowledge.`;
@@ -35,6 +31,12 @@ const DEFAULT_SYSTEM_PROMPT =
 function prepareMessages(history: ChatMessage[]): ChatMessage[] {
   if (history.some((m) => m.role === 'system')) return history;
   return [{ role: 'system', content: DEFAULT_SYSTEM_PROMPT, timestamp: Date.now() }, ...history];
+}
+
+function isPrematureStall(text: string): boolean {
+  if (text.length > 250) return false;
+  const l = text.toLowerCase();
+  return l.includes("then i'll") || l.includes("then i will") || l.includes("let me check") || l.includes("i will check");
 }
 
 interface ChatProps {
@@ -84,9 +86,9 @@ const Chat: React.FC<ChatProps> = ({
 
   useInput((inp, key) => {
     if (!isActive || isSelectingModel) return;
-    if (key.ctrl && (inp === 'a' || inp === '\x01')) { setViewMode((v) => (v === 'stream' ? 'accordion' : 'stream')); return; }
-    if (inp === 't' && isChatFocused) { setExpandThinking((p) => !p); return; }
-    if ((key.escape || key.tab) && isChatFocused) setFocus(0);
+    if (key.ctrl && (inp === 'a' || inp === '\x01')) setViewMode((v) => (v === 'stream' ? 'accordion' : 'stream'));
+    else if (inp === 't' && isChatFocused) setExpandThinking((p) => !p);
+    else if ((key.escape || key.tab) && isChatFocused) setFocus(0);
   });
 
   const [history, setHistory] = useState<string[]>(() => {
@@ -100,9 +102,8 @@ const Chat: React.FC<ChatProps> = ({
   const executeSlashCommand = (cmd: string): boolean => {
     if (cmd === '/accordion') { setViewMode((v) => (v === 'stream' ? 'accordion' : 'stream')); return true; }
     return dispatchSlashCommand(cmd, {
-      messages, model: selectedModel, setModel: onSelectModel, models,
+      messages, model: selectedModel, setModel: onSelectModel, models, showToast: show, registry,
       clearMessages: () => onSendMessage('/clear'), setMessages: setMessages ?? (() => {}),
-      showToast: show, registry,
       addSystemCard: (text) => onSendMessage(undefined, text, undefined, { role: 'system', content: text, timestamp: Date.now() }),
     });
   };
@@ -141,22 +142,23 @@ const Chat: React.FC<ChatProps> = ({
     const clean = rawContent.replace(/<function[\s\S]*?<\/function>/g, '').replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim();
     if (clean) {
       onSendMessage(undefined, clean, thinking || undefined);
-      return { done: true as const };
+      return { done: true as const, content: clean };
     }
     return { done: false as const, needsSynthesis: true as const };
   };
 
   const runAgentLoop = async (initialHistory: ChatMessage[]) => {
     let currentHistory = initialHistory;
-    const MAX_TURNS = 6;
+    const MAX_TOOL_TURNS = 5;
     let isDone = false;
     try {
-      for (let turn = 0; turn < MAX_TURNS; turn++) {
-        const res = await executeSingleTurn(currentHistory, turn < MAX_TURNS - 1);
-        if (res.done) { isDone = true; break; }
-        if (res.needsSynthesis) {
-          const req: ChatMessage = { role: 'user', content: 'Please answer directly in plain text now without tools.', timestamp: Date.now() };
-          await executeSingleTurn([...currentHistory, req], false);
+      for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
+        const res = await executeSingleTurn(currentHistory, true);
+        if (res.done) {
+          if (res.content && isPrematureStall(res.content)) {
+            currentHistory = [...currentHistory, { role: 'assistant', content: res.content, timestamp: Date.now() }];
+            break;
+          }
           isDone = true;
           break;
         }
@@ -166,7 +168,12 @@ const Chat: React.FC<ChatProps> = ({
       if (!isDone) {
         show('Synthesizing final response...', 'info', 3000);
         resetStream('thinking');
-        await executeSingleTurn(currentHistory, false);
+        const synth: ChatMessage = {
+          role: 'user',
+          content: 'You have finished exploring. Now output the complete, comprehensive response to the original user request in full detail. Do not mention checking or searching further.',
+          timestamp: Date.now(),
+        };
+        await executeSingleTurn([...currentHistory, synth], false);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -185,18 +192,13 @@ const Chat: React.FC<ChatProps> = ({
         if (sel) { if (sel.args && trimmed === '/') { setInput(sel.name + ' '); return; } cmd = sel.name; }
       }
       setHistory((prev) => (prev[prev.length - 1] === cmd ? prev : [...prev, cmd]));
-      appendLocalHistory(cmd);
-      setInput('');
-      setSelectedCmdIndex(0);
+      appendLocalHistory(cmd); setInput(''); setSelectedCmdIndex(0);
       if (!executeSlashCommand(cmd)) show(`Unknown command: ${cmd}. Type /help for manual`, 'error', 3000);
       return;
     }
     setHistory((prev) => (prev[prev.length - 1] === trimmed ? prev : [...prev, trimmed]));
-    appendLocalHistory(trimmed);
-    setInput('');
-    setScrollOffset(Infinity);
-    onSendMessage(trimmed);
-    resetStream('thinking');
+    appendLocalHistory(trimmed); setInput(''); setScrollOffset(Infinity);
+    onSendMessage(trimmed); resetStream('thinking');
     await runAgentLoop([...messages, { role: 'user', content: trimmed, timestamp: Date.now() }]);
   };
 
@@ -205,14 +207,13 @@ const Chat: React.FC<ChatProps> = ({
     setSelectedCmdIndex((p) => (d === 1 ? (p + 1) % matchingCommands.length : p <= 0 ? matchingCommands.length - 1 : p - 1));
     return true;
   };
-
   const handleTab = (): boolean => {
     if (input.startsWith('/') && matchingCommands.length > 0) {
       const cmd = matchingCommands[selectedCmdIndex] || matchingCommands[0];
       if (cmd) { setInput(cmd.name + ' '); setSelectedCmdIndex(0); }
       return true;
     }
-    if (input === '') { setFocus(1); return true; }
+    if (input === '') setFocus(1);
     return true;
   };
 

@@ -45,7 +45,10 @@ export function renderMessageHeader(msg: ChatMessage, idx: number): React.ReactE
 
 function renderMessageContent(msg: ChatMessage, idx: number, opts: TurnOptions): React.ReactElement[] {
   if (msg.role === 'tool') {
-    return [<Box key={`tr-${idx}`} paddingLeft={2}><Text color="cyan" dimColor>Result: {msg.content.slice(0, 100)}{msg.content.length > 100 ? '...' : ''}</Text></Box>];
+    const preview = msg.content.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+    const maxW = Math.max(20, opts.maxWidth - 12);
+    const text = preview.length > maxW ? `${preview.slice(0, maxW - 3)}...` : preview;
+    return [<Box key={`tr-${idx}`} paddingLeft={2}><Text color="cyan" dimColor>Result: {text}</Text></Box>];
   }
   const nodes = msg.role === 'user'
     ? msg.content.split('\n').flatMap((l, li) => wrapTextLine(l, opts.maxWidth).map((wl, wli) => <Text key={`${li}-${wli}`}>{wl || ' '}</Text>))
