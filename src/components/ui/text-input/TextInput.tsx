@@ -174,15 +174,15 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
       return;
     }
     if (key.escape && onEscape && onEscape()) return;
-    if (key.tab && onTab && onTab()) return;
-    if (key.pageUp && onPageUp && onPageUp()) return;
-    if (key.pageDown && onPageDown && onPageDown()) return;
     if ((key.tab || (key.rightArrow && cursor === value.length)) && activeSuggestion) {
       const full = value + activeSuggestion;
       onChange(full);
       setCursor(full.length);
       return;
     }
+    if (key.tab && onTab && onTab()) return;
+    if (key.pageUp && onPageUp && onPageUp()) return;
+    if (key.pageDown && onPageDown && onPageDown()) return;
     if (key.upArrow) {
       if (onUpArrow && onUpArrow()) return;
       navigate(-1);
@@ -254,7 +254,7 @@ export const TextInput: React.FC<TextInputProps> = ({
         )}
       </Box>
 
-      {showCounter && value.length > 0 && !disabled && (
+      {showCounter && !disabled && (
         <Box marginLeft={2}>
           <Text color={theme.colors.muted} dimColor>
             {`${value.length}c · ~${Math.ceil(value.length / 4)}t`}

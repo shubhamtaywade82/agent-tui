@@ -40,23 +40,22 @@ function isPrematureStall(text: string): boolean {
 }
 
 interface ChatProps {
-  client: OllamaClient | null;
-  messages: ChatMessage[];
+  client: OllamaClient | null; messages: ChatMessage[];
   onSendMessage: (u?: string, a?: string, t?: string, x?: Partial<ChatMessage>) => void;
   setMessages?: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
   models?: string[]; isConnected?: boolean; theme?: any; isActive?: boolean;
-  columns?: number; rows?: number; selectedModel?: string; onSelectModel?: (m: string) => void; isSelectingModel?: boolean;
+  columns?: number; rows?: number; selectedModel?: string; onSelectModel?: (m: string) => void;
+  isSelectingModel?: boolean; onOpenModal?: (m: 'model' | 'tools' | 'mcp' | 'clear') => void;
 }
 
 const Chat: React.FC<ChatProps> = ({
   client, messages, onSendMessage, setMessages, models = [], theme, isActive = true,
-  columns: propCols, rows: propRows, selectedModel: propModel, isSelectingModel = false, onSelectModel,
+  columns: propCols, rows: propRows, selectedModel: propModel, isSelectingModel = false, onSelectModel, onOpenModal,
 }) => {
   const [input, setInput] = useState('');
   const [selectedCmdIndex, setSelectedCmdIndex] = useState(0);
   const [phase, setPhase] = useState<'idle' | 'thinking' | 'responding' | 'executing-tools'>('idle');
-  const [streamedThinking, setStreamedThinking] = useState('');
-  const [streamedContent, setStreamedContent] = useState('');
+  const [streamedThinking, setStreamedThinking] = useState(''); const [streamedContent, setStreamedContent] = useState('');
   const [viewMode, setViewMode] = useState<'stream' | 'accordion'>('stream');
   const [expandThinking, setExpandThinking] = useState(false);
   const [registry, setRegistry] = useState<any>(null);
@@ -105,6 +104,7 @@ const Chat: React.FC<ChatProps> = ({
       messages, model: selectedModel, setModel: onSelectModel, models, showToast: show, registry,
       clearMessages: () => onSendMessage('/clear'), setMessages: setMessages ?? (() => {}),
       addSystemCard: (text) => onSendMessage(undefined, text, undefined, { role: 'system', content: text, timestamp: Date.now() }),
+      openModal: onOpenModal,
     });
   };
 
@@ -280,7 +280,7 @@ const Chat: React.FC<ChatProps> = ({
           onTab={handleTab} onEscape={() => { if (input.startsWith('/')) { setInput(''); setSelectedCmdIndex(0); return true; } return false; }}
           history={history} focus={isActive && !isSelectingModel && isInputFocused} theme={theme}
           placeholder={phase === 'thinking' ? '⚡ Thinking... [Esc stop]' : phase === 'executing-tools' ? '🔧 Running tools...' : phase === 'responding' ? 'Streaming... [Esc stop]' : 'Type prompt or /command...'}
-          disabled={phase !== 'idle'} showCounter={true}
+          disabled={phase !== 'idle'} showCounter={true} suggestions={SLASH_COMMANDS.map((c) => c.name)}
           onCancel={() => { if (phase !== 'idle') { resetStream('idle'); show('Cancelled', 'warning', 2000); } }}
         />
       </Box>

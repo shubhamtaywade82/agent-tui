@@ -6,12 +6,16 @@ import { Select } from './components/ui/select/index.js';
 import { Tabs } from './components/ui/tabs/index.js';
 import type { Tab } from './components/ui/tabs/index.js';
 import { Divider } from './components/ui/divider/index.js';
+import { Dialog } from './components/ui/dialog/index.js';
 import Chat, { type ChatMessage } from './components/Chat.js';
 import StatusBar from './components/StatusBar.js';
 import { useOllama } from './hooks/useOllama.js';
 import { useTerminalSize } from './components/ui/hooks/index.js';
 import { myTheme } from './theme.js';
-import { closeMcpServers } from './tools.js';
+import { closeMcpServers, MCP_SERVERS, getActiveToolRegistry } from './tools.js';
+import type { ToolRegistry } from '@nemesis-oss/ollama-sdk';
+
+export type ModalType = 'model' | 'tools' | 'mcp' | 'clear' | null;
 
 const TABS: Tab[] = [
   { key: 'chat', label: '💬 Chat' },
@@ -22,12 +26,12 @@ const App: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [activeTab, setActiveTab] = useState<string>('chat');
-
+  const [activeModal, setActiveModal] = useState<ModalType>(null);
+  const [registry, setRegistry] = useState<ToolRegistry | null>(null);
 
   const { client, models, isLoading } = useOllama();
   const { columns, rows } = useTerminalSize();
   const [selectedModel, setSelectedModel] = useState<string>('');
-  const [isSelectingModel, setIsSelectingModel] = useState(false);
 
   useEffect(() => {
     if (client) setIsConnected(true);
@@ -40,36 +44,21 @@ const App: React.FC = () => {
     }
   }, [models, selectedModel]);
 
+  useEffect(() => { void getActiveToolRegistry().then(setRegistry).catch(() => undefined); }, []);
+
   useInput((input, key) => {
-    // Global tab switcher with Ctrl+T or F1/F2
+    if (activeModal && key.escape) { setActiveModal(null); return; }
     if ((key.ctrl && input === 't') || input === '\x14') {
-      setIsSelectingModel(false);
+      setActiveModal(null);
       setActiveTab((prev) => (prev === 'chat' ? 'system' : 'chat'));
       return;
     }
-    if (input === '\x1bOP') { setIsSelectingModel(false); setActiveTab('chat'); return; }
-    if (input === '\x1bOQ') { setIsSelectingModel(false); setActiveTab('system'); return; }
-
-    // Toggle model selector with Ctrl+O or F3
     if ((key.ctrl && input === 'o') || input === '\x0f' || input === '\x1bOR') {
-      if (models.length > 0) {
-        setIsSelectingModel((prev) => !prev);
-        return;
-      }
+      if (models.length > 0) setActiveModal((p) => (p === 'model' ? null : 'model'));
     }
-
-    if (isSelectingModel && key.escape) {
-      setIsSelectingModel(false);
-      return;
-    }
-
-    // On system tab, allow quick navigation
-    if (activeTab === 'system' && !isSelectingModel) {
-      if (input === '1' || input === 'c' || key.escape || key.leftArrow) {
-        setActiveTab('chat');
-      } else if (input === 'm' || input === 'o') {
-        setIsSelectingModel(true);
-      }
+    if (activeTab === 'system' && !activeModal) {
+      if (input === '1' || input === 'c' || key.escape || key.leftArrow) setActiveTab('chat');
+      else if (input === 'm' || input === 'o') setActiveModal('model');
     }
   });
 
@@ -143,7 +132,7 @@ const App: React.FC = () => {
               tabs={TABS}
               activeKey={activeTab}
               onChange={(tab) => {
-                setIsSelectingModel(false);
+                setActiveModal(null);
                 setActiveTab(tab);
               }}
               variant="pills"
@@ -160,7 +149,7 @@ const App: React.FC = () => {
             />
             <Badge variant="success">MCP Active</Badge>
             <Box flexDirection="row" gap={1} alignItems="center">
-              <Text bold color={isSelectingModel ? (myTheme.colors.focus ?? 'green') : 'cyan'}>
+              <Text bold color={activeModal === 'model' ? (myTheme.colors.focus ?? 'green') : 'cyan'}>
                 Model: <Text color="white">{selectedModel || 'none'}</Text>
               </Text>
               <Badge variant="info">{String(models.length || 0)}</Badge>
@@ -169,63 +158,84 @@ const App: React.FC = () => {
 
           {columns >= 90 && (
             <Box flexDirection="row" alignItems="center">
-              <Text color="gray" dimColor>
-                {isSelectingModel ? '[↑/↓ Choose • Enter • Esc]' : '[Ctrl+O Model • Ctrl+T View]'}
-              </Text>
+              <Text color="gray" dimColor>{activeModal ? '[Esc Close Modal]' : '[Ctrl+O Model • Ctrl+T View]'}</Text>
             </Box>
           )}
         </Box>
+      </Box>
+      <Divider width={columns} theme={myTheme} style={activeModal ? 'bold' : 'single'} />
 
-        {/* Expandable model selector */}
-        {isSelectingModel && models.length > 0 && (
-          <Box marginTop={1} flexDirection="column">
-            <Select
-              items={models.map((m) => ({ label: m, value: m }))}
-              onSelect={(item) => {
-                setSelectedModel(item.value);
-                setIsSelectingModel(false);
-              }}
-              focus={isSelectingModel}
-              theme={myTheme}
-              maxVisible={5}
+      {activeModal ? (
+        <Box height={Math.max(6, rows - 5)} width={columns} alignItems="center" justifyContent="center">
+          {activeModal === 'model' && (
+            <Box flexDirection="column" borderStyle="round" borderColor={myTheme.colors.primary} paddingX={2} paddingY={1} width={Math.min(64, columns - 4)}>
+              <Text bold color={myTheme.colors.primary}>Select Ollama Model</Text>
+              <Text color="gray" dimColor>Current: {selectedModel || 'none'}</Text>
+              <Box marginTop={1}>
+                <Select
+                  items={models.map((m) => ({ label: `${m === selectedModel ? '● ' : '○ '}${m}${m === selectedModel ? ' (active)' : ''}`, value: m }))}
+                  onSelect={(item) => { setSelectedModel(item.value); setActiveModal(null); }}
+                  focus={true} theme={myTheme} maxVisible={6}
+                />
+              </Box>
+              <Box marginTop={1}><Text color="gray" dimColor>[↑/↓ Navigate • Enter Select • Esc Close]</Text></Box>
+            </Box>
+          )}
+
+          {activeModal === 'clear' && (
+            <Dialog
+              isOpen={true} title="Clear Chat History" message="Are you sure you want to clear all chat messages?"
+              actions={[{ label: 'Clear History', value: 'clear' }, { label: 'Cancel', value: 'cancel' }]}
+              onAction={(a) => { if (a.value === 'clear') setMessages([]); setActiveModal(null); }}
+              onDismiss={() => setActiveModal(null)} theme={myTheme}
+            />
+          )}
+
+          {activeModal === 'tools' && (
+            <Box flexDirection="column" borderStyle="round" borderColor={myTheme.colors.primary} paddingX={2} paddingY={1} width={Math.min(70, columns - 4)}>
+              <Text bold color={myTheme.colors.primary}>Active Tools ({registry?.definitions().length || 0})</Text>
+              <Box marginTop={1} flexDirection="column">
+                {(registry?.definitions() || []).slice(0, 6).map((t: any) => (
+                  <Box key={t.function.name} flexDirection="row" gap={1}>
+                    <Text color="cyan" bold>• {t.function.name}:</Text>
+                    <Text color="gray">{t.function.description?.slice(0, 42) || 'Active'}</Text>
+                  </Box>
+                ))}
+              </Box>
+              <Box marginTop={1}><Text color="gray" dimColor>[Esc Close]</Text></Box>
+            </Box>
+          )}
+
+          {activeModal === 'mcp' && (
+            <Box flexDirection="column" borderStyle="round" borderColor={myTheme.colors.primary} paddingX={2} paddingY={1} width={Math.min(70, columns - 4)}>
+              <Text bold color={myTheme.colors.primary}>MCP Servers Status</Text>
+              <Box marginTop={1} flexDirection="column">
+                {MCP_SERVERS.map((s) => (
+                  <Box key={s.id} flexDirection="row" justifyContent="space-between">
+                    <Text color="white">• {s.name}</Text>
+                    <Badge variant={s.enabled ? 'success' : 'default'}>{s.enabled ? 'Active' : 'Disabled'}</Badge>
+                  </Box>
+                ))}
+              </Box>
+              <Box marginTop={1}><Text color="gray" dimColor>[Esc Close]</Text></Box>
+            </Box>
+          )}
+        </Box>
+      ) : (
+        <>
+          <Box display={activeTab === 'chat' ? 'flex' : 'none'} width={columns}>
+            <Chat
+              client={client} messages={messages} onSendMessage={handleSendMessage} setMessages={setMessages}
+              models={models} isConnected={isConnected} theme={myTheme} isActive={activeTab === 'chat'}
+              columns={columns} rows={rows} selectedModel={selectedModel} onSelectModel={setSelectedModel}
+              isSelectingModel={Boolean(activeModal)} onOpenModal={(m) => setActiveModal(m)}
             />
           </Box>
-        )}
-      </Box>
-      <Divider
-        width={columns}
-        theme={myTheme}
-        style={isSelectingModel ? 'bold' : 'single'}
-      />
-
-      {/* Primary Chat View */}
-      <Box display={activeTab === 'chat' ? 'flex' : 'none'} width={columns}>
-        <Chat
-          client={client}
-          messages={messages}
-          onSendMessage={handleSendMessage}
-          setMessages={setMessages}
-          models={models}
-          isConnected={isConnected}
-          theme={myTheme}
-          isActive={activeTab === 'chat'}
-          columns={columns}
-          rows={rows}
-          selectedModel={selectedModel}
-          onSelectModel={setSelectedModel}
-          isSelectingModel={isSelectingModel}
-        />
-      </Box>
-
-      {/* Dedicated System & Telemetry Tab */}
-      <Box display={activeTab === 'system' ? 'flex' : 'none'} width={columns}>
-        <StatusBar
-          client={client}
-          tokenCount={calculateTokenCount()}
-          theme={myTheme}
-          width={columns}
-        />
-      </Box>
+          <Box display={activeTab === 'system' ? 'flex' : 'none'} width={columns}>
+            <StatusBar client={client} tokenCount={calculateTokenCount()} theme={myTheme} width={columns} />
+          </Box>
+        </>
+      )}
     </Box>
   );
 };

@@ -174,6 +174,7 @@ export interface CommandContext {
   showToast: (msg: string, type: 'info' | 'error' | 'warning', duration?: number) => void;
   addSystemCard: (text: string) => void;
   registry?: ToolRegistry | null;
+  openModal?: (modal: 'model' | 'tools' | 'mcp' | 'clear') => void;
 }
 
 function handleContextCmd(ctx: CommandContext): void {
@@ -228,14 +229,24 @@ export function dispatchSlashCommand(rawInput: string, ctx: CommandContext): boo
   const [cmd, ...rest] = rawInput.trim().split(/\s+/);
   const arg = rest.join(' ');
   switch (cmd?.toLowerCase()) {
-    case '/clear': ctx.clearMessages(); ctx.showToast('Chat history cleared', 'info', 2000); return true;
+    case '/clear':
+      if (ctx.openModal) ctx.openModal('clear');
+      else { ctx.clearMessages(); ctx.showToast('Chat history cleared', 'info', 2000); }
+      return true;
     case '/context': handleContextCmd(ctx); return true;
     case '/compact': handleCompactCmd(ctx); return true;
     case '/save': handleSaveCmd(ctx, arg); return true;
-    case '/tools': ctx.addSystemCard(formatToolsList(ctx.registry)); return true;
-    case '/mcp': ctx.addSystemCard(formatMcpServersList()); return true;
+    case '/tools':
+      if (ctx.openModal) ctx.openModal('tools');
+      else ctx.addSystemCard(formatToolsList(ctx.registry));
+      return true;
+    case '/mcp':
+      if (ctx.openModal) ctx.openModal('mcp');
+      else ctx.addSystemCard(formatMcpServersList());
+      return true;
     case '/model':
       if (arg && ctx.setModel) { ctx.setModel(arg); ctx.showToast(`Switched to ${arg}`, 'info', 2000); }
+      else if (ctx.openModal) ctx.openModal('model');
       else ctx.addSystemCard(`Model: ${ctx.model}\nAvailable: ${(ctx.models || []).join(', ')}`);
       return true;
     case '/system':
