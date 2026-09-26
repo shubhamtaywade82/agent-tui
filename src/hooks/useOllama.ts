@@ -41,12 +41,11 @@ export const useOllama = () => {
                 ]
               : []),
           ],
-          timeoutMs: 30000,
+          timeoutMs: 120000,
           retries: 3,
-          // Health check strategy
           endpointHealth: {
             strategy: 'least-connections',
-            maxConcurrentPerEndpoint: 1
+            maxConcurrentPerEndpoint: 4
           }
         });
 

@@ -146,8 +146,12 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
   const { exit } = useApp();
   const [cursor, setCursor] = useState(value.length);
   const { navigate, reset } = useHistoryNav(history, value, onChange, setCursor);
+  const prevLenRef = React.useRef(value.length);
 
-  React.useEffect(() => { setCursor((c) => Math.min(c, value.length)); }, [value.length]);
+  React.useEffect(() => {
+    setCursor((c) => (c >= prevLenRef.current ? value.length : Math.min(c, value.length)));
+    prevLenRef.current = value.length;
+  }, [value.length]);
 
   const activeSuggestion = React.useMemo(() => {
     if (password || !value) return undefined;
@@ -162,11 +166,12 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
   const confirmWord = () => {
     const m = activeSuggestion?.match(/^(\s*\S+)/);
     const chunk = m ? m[1]! : activeSuggestion!;
-    onChange(value + chunk); setCursor(value.length + chunk.length);
+    const next = value + chunk;
+    prevLenRef.current = next.length; onChange(next); setCursor(next.length);
   };
   const confirmFull = () => {
     const full = value + activeSuggestion!;
-    onChange(full); setCursor(full.length);
+    prevLenRef.current = full.length; onChange(full); setCursor(full.length);
   };
 
   useInput((input, key) => {
@@ -179,7 +184,7 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
       onChange(res.text); return setCursor(res.cursor);
     }
 
-    const isWordNav = (key.ctrl && key.rightArrow) || (key.meta && key.rightArrow) || input === '\x1b[1;5C' || input === '\x1b[5C' || input === '\x1b[1;3C';
+    const isWordNav = (key.ctrl && key.rightArrow) || (key.meta && (key.rightArrow || input === 'f')) || input === '\x1b[1;5C' || input === '\x1b[5C' || input === '\x1b[1;3C' || input === '\x1bf';
     const isSingleRight = key.rightArrow && !key.ctrl && !key.meta && !key.shift;
 
     if (isWordNav) {
@@ -189,6 +194,7 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
     }
     if (key.escape && onEscape?.()) return;
     if (key.tab && onTab?.()) return;
+    if (isSingleRight && cursor === value.length && onTab?.()) return;
     if ((key.tab || (isSingleRight && cursor === value.length)) && activeSuggestion) return confirmFull();
     if (key.pageUp && onPageUp?.()) return;
     if (key.pageDown && onPageDown?.()) return;

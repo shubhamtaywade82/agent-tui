@@ -24,15 +24,34 @@ const cleanContinuation = (inp: string, acc: string): string => {
   return c;
 };
 
-const DEFAULT_PROMPTS = ['tell me about the architecture of this agent', 'tell me about available MCP tools and skills', 'how to test and run the agent', 'what tools and skills are available', 'why did the last command fail', 'create a new ruby agent skill', 'refactor this component for KISS', 'write unit tests for this function'];
+const DEFAULT_PROMPTS = [
+  'tell me about rails models and controllers', 'tell me about the architecture of this agent', 'tell me about available MCP tools and skills',
+  'how to test and run the agent', 'what tools and skills are available', 'refactor this component for KISS', 'write unit tests for this function',
+];
 
-function getMenuOptions(input: string, models: string[]): Array<{ name: string; args?: string; desc: string }> {
-  if (!input.startsWith('/')) return [];
+function getMenuOptions(input: string, models: string[], ghost?: string, pool: string[] = []): Array<{ name: string; args?: string; desc: string }> {
+  if (!input) return [];
   const low = input.toLowerCase();
-  if (!input.includes(' ')) return SLASH_COMMANDS.filter((c) => c.name.startsWith(low));
-  if (input.startsWith('/model ')) return models.filter((m) => m.toLowerCase().includes(input.slice(7).toLowerCase())).map((m) => ({ name: `/model ${m}`, desc: `Switch to ${m}` }));
-  if (input.startsWith('/skills ')) return loadAvailableSkills().filter((s) => s.name.includes(input.slice(8).toLowerCase())).slice(0, 10).map((s) => ({ name: `/skills ${s.name}`, desc: `${s.family}` }));
-  return input.startsWith('/style ') ? ['box', 'line'].filter((s) => s.startsWith(input.slice(7))).map((s) => ({ name: `/style ${s}`, desc: `Style: ${s}` })) : [];
+  if (input.startsWith('/')) {
+    if (!input.includes(' ')) return SLASH_COMMANDS.filter((c) => c.name.startsWith(low));
+    if (input.startsWith('/model ')) return models.filter((m) => m.toLowerCase().includes(input.slice(7).toLowerCase())).map((m) => ({ name: `/model ${m}`, desc: `Switch to ${m}` }));
+    if (input.startsWith('/skills ')) return loadAvailableSkills().filter((s) => s.name.includes(input.slice(8).toLowerCase())).slice(0, 10).map((s) => ({ name: `/skills ${s.name}`, desc: `${s.family}` }));
+    return input.startsWith('/style ') ? ['box', 'line'].filter((s) => s.startsWith(input.slice(7))).map((s) => ({ name: `/style ${s}`, desc: `Style: ${s}` })) : [];
+  }
+  if (input.trim().length < 2) return [];
+  const items: Array<{ name: string; desc: string }> = [];
+  if (ghost && ghost !== input && ghost.toLowerCase().startsWith(low)) items.push({ name: ghost, desc: 'AI completion' });
+  const seen = new Set(items.map((i) => i.name.toLowerCase()));
+  const words = low.trim().split(/\s+/).filter(Boolean);
+  for (const p of pool) {
+    const pLow = p.toLowerCase();
+    if (p !== input && words.every((w) => pLow.includes(w)) && !seen.has(pLow)) {
+      items.push({ name: p, desc: pLow.startsWith(low) ? 'Prompt template' : 'History match' });
+      seen.add(pLow);
+      if (items.length >= 4) break;
+    }
+  }
+  return items;
 }
 
 interface ChatProps {
@@ -60,14 +79,12 @@ const Chat: React.FC<ChatProps> = ({
   const { isFocused, setFocus } = useFocusManager({ count: 2, initialIndex: 0, nextKey: 'none', prevKey: 'none' });
   const isInputFocused = isFocused(0); const isChatFocused = isFocused(1);
   const [history, setHistory] = useState<string[]>(() => Array.from(new Set([...loadHistory(), ...messages.filter((m) => m.role === 'user' && m.content.trim()).map((m) => m.content.trim())])));
-  const [ghostText, setGhostText] = useState(''); const lastReq = React.useRef(0); const abortRef = React.useRef<AbortController | null>(null);
+  const [ghostText, setGhostText] = useState(''); const [dismissedInput, setDismissedInput] = useState('');
+  const lastReq = React.useRef(0); const abortRef = React.useRef<AbortController | null>(null);
 
-  const activeMenu = useMemo(() => getMenuOptions(input, models), [input, models]);
-  const promptSuggestions = useMemo(() => input.startsWith('/')
-    ? (activeMenu.length > 0 ? activeMenu.map((m) => m.name) : SLASH_COMMANDS.map((c) => c.name))
-    : Array.from(new Set([...history.filter((h) => !h.startsWith('/')), ...DEFAULT_PROMPTS])).reverse(), [input, activeMenu, history]);
-  const menuOverhead = activeMenu.length > 0 ? Math.min(activeMenu.length, 4) + 2 : 0;
-  const chatHeight = Math.max(3, rows - 7 - menuOverhead - (toasts.length > 0 ? 1 : 0));
+  const promptPool = useMemo(() => Array.from(new Set([...history.filter((h) => !h.startsWith('/')), ...DEFAULT_PROMPTS])), [history]);
+  const activeMenu = useMemo(() => dismissedInput === input ? [] : getMenuOptions(input, models, ghostText, promptPool), [input, models, ghostText, promptPool, dismissedInput]);
+  const menuOverhead = activeMenu.length > 0 ? 7 : 0; const chatHeight = Math.max(3, rows - 7 - menuOverhead - (toasts.length > 0 ? 2 : 0));
 
   useEffect(() => {
     setSelectedCmdIndex(0); abortRef.current?.abort();
@@ -127,12 +144,11 @@ const Chat: React.FC<ChatProps> = ({
     if (!registry && reg) setRegistry(reg);
     const stream = await client!.chatStream({
       model: selectedModel, messages: prepareMessages(chatHistory),
-      think: 'high', tools: (allowTools && reg) ? reg.definitions() : undefined, options: { temperature: 0.7, num_ctx: 16384 },
+      think: 'high', tools: (allowTools && reg) ? reg.definitions() : undefined, options: { temperature: 0.7, num_ctx: 8192 }, timeoutMs: 120000,
     });
     const { thinking, content } = await consumeStream(stream, (d) => setStreamedThinking((p) => p + d), (d) => { setPhase('responding'); setStreamedContent((p) => p + d); });
     const final = await stream.finalResult;
-    let toolCalls = final.message?.tool_calls;
-    let rawContent = final.message?.content || content;
+    let toolCalls = final.message?.tool_calls; let rawContent = final.message?.content || content;
     if ((!toolCalls || !toolCalls.length) && rawContent) {
       const parsed = parseTextToolCalls(rawContent);
       if (parsed.length) { toolCalls = parsed; rawContent = rawContent.replace(/<function[\s\S]*?<\/function>|<tool_call>[\s\S]*?<\/tool_call>/g, '').trim(); }
@@ -150,46 +166,39 @@ const Chat: React.FC<ChatProps> = ({
   };
 
   const runAgentLoop = async (initialHistory: ChatMessage[]) => {
-    let currentHistory = initialHistory;
-    let isDone = false;
+    let currentHistory = initialHistory; let isDone = false;
     try {
       for (let turn = 0; turn < 5; turn++) {
         const res = await executeSingleTurn(currentHistory, true);
-        if (res.done) {
-          (res.content && isPrematureStall(res.content)) ? (currentHistory = [...currentHistory, { role: 'assistant', content: res.content, timestamp: Date.now() }]) : (isDone = true);
-          break;
-        }
+        if (res.done) { (res.content && isPrematureStall(res.content)) ? (currentHistory = [...currentHistory, { role: 'assistant', content: res.content, timestamp: Date.now() }]) : (isDone = true); break; }
         if (res.asst && res.toolMsgs) currentHistory = [...currentHistory, res.asst, ...res.toolMsgs];
         resetStream('thinking');
       }
       if (!isDone) {
         show('Synthesizing final response...', 'info', 3000); resetStream('thinking');
-        const synth: ChatMessage = { role: 'user', content: 'Output final comprehensive response in full detail.', timestamp: Date.now() };
-        await executeSingleTurn([...currentHistory, synth], false);
+        await executeSingleTurn([...currentHistory, { role: 'user', content: 'Output final comprehensive response in full detail.', timestamp: Date.now() }], false);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      show(`Error: ${msg}`, 'error', 4000); onSendMessage(undefined, `⚠️ Error: ${msg}`);
+      const msg = err instanceof Error ? err.message : String(err); show(`Error: ${msg}`, 'error', 4000); onSendMessage(undefined, `⚠️ Error: ${msg}`);
     } finally { resetStream('idle'); }
   };
 
   const handleSendMessage = async (message: string) => {
     const trimmed = message.trim();
     if (!trimmed || !client || phase !== 'idle') return;
-    setGhostText('');
+    abortRef.current?.abort(); setGhostText('');
     const saveEntry = (t: string) => { setHistory((p) => p[p.length - 1] === t ? p : [...p, t]); appendHistory(t); };
     let cmd = trimmed;
     if (trimmed.startsWith('/')) {
       if (trimmed === '/' || !SLASH_COMMANDS.some((c) => c.name === trimmed.split(/\s+/)[0])) {
         const sel = activeMenu[selectedCmdIndex] || activeMenu[0];
-        if (sel) { if (sel.args && trimmed === '/') { setInput(sel.name + ' '); return; } cmd = sel.name; }
+        if (sel) { if (sel.args && trimmed === '/') return setInput(sel.name + ' '); cmd = sel.name; }
       }
       saveEntry(cmd); setInput(''); setSelectedCmdIndex(0);
       if (!executeSlashCommand(cmd)) show(`Unknown command: ${cmd}. Type /help for manual`, 'error', 3000);
       return;
     }
-    saveEntry(trimmed); setInput(''); setScrollOffset(Infinity);
-    onSendMessage(trimmed); resetStream('thinking');
+    saveEntry(trimmed); setInput(''); setScrollOffset(Infinity); onSendMessage(trimmed); resetStream('thinking');
     await runAgentLoop([...messages, { role: 'user', content: trimmed, timestamp: Date.now() }]);
   };
 
@@ -206,8 +215,7 @@ const Chat: React.FC<ChatProps> = ({
 
   const maxWidth = Math.max(20, columns - 8);
   const messageRows = useMemo(() => {
-    const opts = { theme, maxWidth, expandThinking };
-    const rows = messages.flatMap((msg, mi) => renderSingleTurn(msg, mi, opts));
+    const opts = { theme, maxWidth, expandThinking }; const rows = messages.flatMap((msg, mi) => renderSingleTurn(msg, mi, opts));
     if (phase !== 'idle') {
       if (messages.length > 0) rows.push(<Box key="st-gap"><Text>{' '}</Text></Box>);
       rows.push(...renderStreamingRows({ phase, model: selectedModel, thinking: streamedThinking, content: streamedContent }, opts));
@@ -221,12 +229,13 @@ const Chat: React.FC<ChatProps> = ({
 
   const textInputNode = (
     <TextInput
-      value={input} onChange={setInput} onSubmit={handleSendMessage} onUpArrow={() => handleArrow(-1)} onDownArrow={() => handleArrow(1)}
-      onPageUp={() => { setScrollOffset((p) => Math.max(0, p - 6)); return true; }} onPageDown={() => { setScrollOffset((p) => Math.min(maxScrollOffset, p + 6)); return true; }}
-      onTab={handleTab} onEscape={() => { if (input.startsWith('/')) { setInput(''); setSelectedCmdIndex(0); return true; } return false; }}
+      value={input} onChange={(v) => { setInput(v); if (dismissedInput && dismissedInput !== v) setDismissedInput(''); }}
+      onSubmit={handleSendMessage} onUpArrow={() => handleArrow(-1)} onDownArrow={() => handleArrow(1)}
+      onPageUp={() => (setScrollOffset((p) => Math.max(0, p - 6)), true)} onPageDown={() => (setScrollOffset((p) => Math.min(maxScrollOffset, p + 6)), true)}
+      onTab={handleTab} onEscape={() => activeMenu.length > 0 ? (setDismissedInput(input), true) : input.startsWith('/') ? (setInput(''), setSelectedCmdIndex(0), true) : false}
       history={history} focus={isActive && !isSelectingModel && isInputFocused} theme={theme}
       placeholder={isChatFocused ? 'Chat scroll focused — Press Tab or Esc to type...' : phase === 'thinking' ? '⚡ Thinking... [Esc stop]' : phase === 'executing-tools' ? '🔧 Running tools...' : phase === 'responding' ? 'Streaming... [Esc stop]' : 'Type prompt or /command...'}
-      disabled={phase !== 'idle'} showCounter={true} suggestions={promptSuggestions} ghostText={ghostText}
+      disabled={phase !== 'idle'} showCounter={true} suggestions={activeMenu[selectedCmdIndex] ? [activeMenu[selectedCmdIndex]!.name, ...promptPool] : promptPool} ghostText={ghostText}
       onCancel={() => { if (phase !== 'idle') { resetStream('idle'); show('Cancelled', 'warning', 2000); } }}
     />
   );
@@ -246,30 +255,25 @@ const Chat: React.FC<ChatProps> = ({
         ) : viewMode === 'accordion' ? (
           <ChatAccordion messages={messages} height={chatHeight} width={columns - 4} focus={isActive && isChatFocused} theme={theme} />
         ) : (
-          <ScrollArea height={chatHeight} width="100%" scrollOffset={scrollOffset} onScrollOffsetChange={setScrollOffset} focus={isActive && isChatFocused} autoScroll={true} theme={theme}>
-            {messageRows}
-          </ScrollArea>
+          <ScrollArea height={chatHeight} width="100%" scrollOffset={scrollOffset} onScrollOffsetChange={setScrollOffset} focus={isActive && isChatFocused} autoScroll={true} theme={theme}>{messageRows}</ScrollArea>
         )}
       </Box>
 
-      {toasts.length > 0 && <Box paddingX={1} width={columns}><ToastStack toasts={toasts.slice(-1)} onDismiss={dismiss} theme={theme} /></Box>}
+      {toasts.length > 0 && <Box flexDirection="column" paddingX={1} width={columns}><Text>{' '}</Text><ToastStack toasts={toasts.slice(-1)} onDismiss={dismiss} theme={theme} /></Box>}
 
       {activeMenu.length > 0 && (
-        <Box borderStyle="round" borderColor="cyan" paddingX={1} flexDirection="column" width={columns}>
+        <Box borderStyle="round" borderColor="cyan" paddingX={1} flexDirection="column" width={columns} height={7}>
           <Box flexDirection="row" justifyContent="space-between">
             <Text bold color="cyan">⚡ Suggestions & Commands</Text>
             <Text color="gray" dimColor>↑/↓ Nav • Tab Select • Enter Run • Esc Close ({selectedCmdIndex + 1}/{activeMenu.length})</Text>
           </Box>
-          {visibleCommands.map((c) => {
-            const sel = c === activeMenu[selectedCmdIndex];
-            return (
-              <Box key={c.name} flexDirection="row" gap={1}>
-                <Text bold color={sel ? 'cyan' : 'yellow'} inverse={sel}>{sel ? '❯ ' : '  '}{c.name}</Text>
-                {c.args && <Text color={sel ? 'white' : 'gray'}>{c.args}</Text>}
-                <Text color="gray" dimColor={!sel}>— {c.desc}</Text>
-              </Box>
-            );
-          })}
+          {visibleCommands.map((c) => (
+            <Box key={c.name} flexDirection="row" gap={1}>
+              <Text bold color={c === activeMenu[selectedCmdIndex] ? 'cyan' : 'yellow'} inverse={c === activeMenu[selectedCmdIndex]}>{c === activeMenu[selectedCmdIndex] ? '❯ ' : '  '}{c.name}</Text>
+              {c.args && <Text color={c === activeMenu[selectedCmdIndex] ? 'white' : 'gray'}>{c.args}</Text>}
+              <Text color="gray" dimColor={c !== activeMenu[selectedCmdIndex]}>— {c.desc}</Text>
+            </Box>
+          ))}
         </Box>
       )}
 
@@ -284,9 +288,7 @@ const Chat: React.FC<ChatProps> = ({
       )}
 
       <Box paddingX={1} width={columns} flexDirection="row" justifyContent="space-between">
-        <Text color="gray" dimColor>
-          {isChatFocused ? '↑/↓ Scroll • Esc/Tab Type' : `PgUp/PgDn Scroll • Tab/→ Complete • Ctrl+→ Word • ↑/↓ History • Ctrl+B Style [${inputStyle}]`}
-        </Text>
+        <Text color="gray" dimColor>{isChatFocused ? '↑/↓ Scroll • Esc/Tab Type' : `PgUp/PgDn Scroll • Tab/→ Complete • Ctrl+→ Word • ↑/↓ History • Ctrl+B Style [${inputStyle}]`}</Text>
         <Box flexDirection="row" gap={1}>
           {viewMode === 'stream' && scrollOffset > 0 && <Text color="yellow">▲ Above (PgUp)</Text>}{viewMode === 'stream' && scrollOffset < maxScrollOffset && <Text color="yellow">▼ Below (PgDn)</Text>}
           {viewMode === 'accordion' && <Text color="cyan">[Accordion]</Text>}
