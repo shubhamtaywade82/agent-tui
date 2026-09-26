@@ -9,16 +9,9 @@ import {
 import { StdioTransport, StreamableHttpTransport, McpClient } from '@nemesis-oss/agentic-runtime/mcp';
 
 export interface McpServerConfig {
-  id: string;
-  name: string;
-  command?: string;
-  args?: string[];
-  url?: string;
-  transport?: 'stdio' | 'http';
-  env?: Record<string, string>;
-  enabled: boolean;
-  disabledReason?: string;
-  description: string;
+  id: string; name: string; command?: string; args?: string[]; url?: string;
+  transport?: 'stdio' | 'http'; env?: Record<string, string>; enabled: boolean;
+  disabledReason?: string; description: string;
 }
 
 export const MCP_SERVERS: McpServerConfig[] = [
@@ -59,6 +52,19 @@ export function loadAvailableSkills(): Array<{ name: string; family: string; pat
   } catch { return []; }
 }
 
+export interface UserConfig { model?: string; systemPrompt?: string; }
+const CONFIG_FILE = '.config.json';
+export function loadUserConfig(): UserConfig {
+  if (!existsSync(CONFIG_FILE)) return {};
+  try { return JSON.parse(readFileSync(CONFIG_FILE, 'utf8')); } catch { return {}; }
+}
+export function saveUserConfig(patch: Partial<UserConfig>): void {
+  try {
+    const next = { ...loadUserConfig(), ...patch };
+    writeFileSync(CONFIG_FILE, JSON.stringify(next, null, 2), 'utf8');
+  } catch {}
+}
+
 export const listSkillsTool = defineTool({
   name: 'list_skills',
   description: 'List available engineering skills from ruby-agent-skills pack (Ruby, Rails, OOP, Clean Code).',
@@ -84,10 +90,8 @@ export const readSkillTool = defineTool({
 });
 
 const CORE_BINANCE_TOOLS = new Set([
-  'futures_klines', 'futures_ticker_price', 'futures_ticker_24hr', 'futures_order_book',
-  'spot_klines', 'spot_ticker_price', 'spot_ticker_24hr', 'spot_order_book',
-  'futures_account_balance', 'spot_account_info', 'futures_funding_rate', 'futures_open_interest',
-  'futures_exchange_info', 'spot_exchange_info',
+  'futures_klines', 'futures_ticker_price', 'futures_ticker_24hr', 'futures_order_book', 'spot_klines', 'spot_ticker_price',
+  'spot_ticker_24hr', 'spot_order_book', 'futures_account_balance', 'spot_account_info', 'futures_funding_rate', 'futures_open_interest', 'futures_exchange_info', 'spot_exchange_info',
 ]);
 
 function createMcpAdapter(client: McpClient, serverId?: string): McpClientLike {
@@ -139,30 +143,16 @@ export async function closeMcpServers(): Promise<void> {
   registryPromise = null;
 }
 
-export async function consumeStream(
-  stream: AsyncIterable<any>,
-  onThinking: (delta: string) => void,
-  onToken: (delta: string) => void,
-): Promise<{ thinking: string; content: string }> {
-  let thinking = '';
-  let content = '';
+export async function consumeStream(stream: AsyncIterable<any>, onThinking: (d: string) => void, onToken: (d: string) => void): Promise<{ thinking: string; content: string }> {
+  let thinking = ''; let content = '';
   for await (const event of stream) {
-    if (event.type === 'thinking' && event.data?.delta) {
-      thinking += event.data.delta;
-      onThinking(event.data.delta);
-    } else if (event.type === 'token' && event.data?.delta) {
-      content += event.data.delta;
-      onToken(event.data.delta);
-    }
+    if (event.type === 'thinking' && event.data?.delta) { thinking += event.data.delta; onThinking(event.data.delta); }
+    else if (event.type === 'token' && event.data?.delta) { content += event.data.delta; onToken(event.data.delta); }
   }
   return { thinking, content };
 }
 
-export interface SlashCommandInfo {
-  name: string;
-  args?: string;
-  desc: string;
-}
+export interface SlashCommandInfo { name: string; args?: string; desc: string; }
 
 export const SLASH_COMMANDS: SlashCommandInfo[] = [
   { name: '/help', args: '[cmd]', desc: 'Show command manual & shortcuts' },
@@ -254,13 +244,23 @@ export function dispatchSlashCommand(rawInput: string, ctx: CommandContext): boo
       else ctx.addSystemCard(`Available Skills:\n${loadAvailableSkills().slice(0, 15).map((s) => `• ${s.name}`).join('\n')}`);
       return true;
     case '/model':
-      if (arg && ctx.setModel) { ctx.setModel(arg); ctx.showToast(`Switched to ${arg}`, 'info', 2000); }
+      if (arg && ctx.setModel) { ctx.setModel(arg); saveUserConfig({ model: arg }); ctx.showToast(`Switched to ${arg}`, 'info', 2000); }
       else if (ctx.openModal) ctx.openModal('model');
       else ctx.addSystemCard(`Model: ${ctx.model}\nAvailable: ${(ctx.models || []).join(', ')}`);
       return true;
     case '/system':
-      if (arg) { ctx.setMessages((prev) => [{ role: 'system', content: arg, timestamp: Date.now() }, ...prev]); ctx.showToast('System prompt updated', 'info', 2000); }
-      else { const s = ctx.messages.find((m) => m.role === 'system'); ctx.addSystemCard(`System Prompt:\n${s ? s.content : 'Default system instructions active'}`); }
+      if (arg === 'reset' || arg === 'clear') {
+        ctx.setMessages((prev) => prev.filter((m) => m.role !== 'system'));
+        saveUserConfig({ systemPrompt: undefined });
+        ctx.showToast('System prompt reset to default', 'info', 2000);
+      } else if (arg) {
+        ctx.setMessages((prev) => [{ role: 'system', content: arg, timestamp: Date.now() }, ...prev]);
+        saveUserConfig({ systemPrompt: arg });
+        ctx.showToast('System prompt updated', 'info', 2000);
+      } else {
+        const s = ctx.messages.find((m) => m.role === 'system');
+        ctx.addSystemCard(`System Prompt:\n${s ? s.content : 'Default system instructions active'}`);
+      }
       return true;
     case '/help':
       ctx.addSystemCard(`Commands:\n${SLASH_COMMANDS.map((c) => `${c.name} ${c.args || ''} — ${c.desc}`).join('\n')}\n\nKeybindings: Tab: Complete/Scroll • Esc: Cancel • Ctrl+O: Model • Ctrl+T: View`);

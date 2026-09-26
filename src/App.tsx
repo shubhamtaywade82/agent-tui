@@ -13,7 +13,7 @@ import { useOllama } from './hooks/useOllama.js';
 import { useTerminalSize } from './components/ui/hooks/index.js';
 import { myTheme } from './theme.js';
 import { existsSync, readFileSync } from 'node:fs';
-import { closeMcpServers, MCP_SERVERS, getActiveToolRegistry, loadAvailableSkills } from './tools.js';
+import { closeMcpServers, MCP_SERVERS, getActiveToolRegistry, loadAvailableSkills, loadUserConfig, saveUserConfig } from './tools.js';
 import type { ToolRegistry } from '@nemesis-oss/ollama-sdk';
 
 export type ModalType = 'model' | 'tools' | 'mcp' | 'clear' | 'skills' | null;
@@ -24,7 +24,10 @@ const TABS: Tab[] = [
 ];
 
 const App: React.FC = () => {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    const saved = loadUserConfig();
+    return saved.systemPrompt ? [{ role: 'system', content: saved.systemPrompt, timestamp: Date.now() }] : [];
+  });
   const [isConnected, setIsConnected] = useState(false);
   const [activeTab, setActiveTab] = useState<string>('chat');
   const [activeModal, setActiveModal] = useState<ModalType>(null);
@@ -32,7 +35,7 @@ const App: React.FC = () => {
 
   const { client, models, isLoading } = useOllama();
   const { columns, rows } = useTerminalSize();
-  const [selectedModel, setSelectedModel] = useState<string>('');
+  const [selectedModel, setSelectedModel] = useState<string>(() => loadUserConfig().model || '');
 
   useEffect(() => {
     if (client) setIsConnected(true);
@@ -41,7 +44,10 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (models.length > 0 && (!selectedModel || !models.includes(selectedModel))) {
-      setSelectedModel(models[0]!);
+      const saved = loadUserConfig().model;
+      const initial = saved && models.includes(saved) ? saved : models[0]!;
+      setSelectedModel(initial);
+      saveUserConfig({ model: initial });
     }
   }, [models, selectedModel]);
 
@@ -175,7 +181,7 @@ const App: React.FC = () => {
               <Box marginTop={1}>
                 <Select
                   items={models.map((m) => ({ label: `${m === selectedModel ? '● ' : '○ '}${m}${m === selectedModel ? ' (active)' : ''}`, value: m }))}
-                  onSelect={(item) => { setSelectedModel(item.value); setActiveModal(null); }}
+                  onSelect={(item) => { setSelectedModel(item.value); saveUserConfig({ model: item.value }); setActiveModal(null); }}
                   focus={true} theme={myTheme} maxVisible={6}
                 />
               </Box>
@@ -249,7 +255,7 @@ const App: React.FC = () => {
             <Chat
               client={client} messages={messages} onSendMessage={handleSendMessage} setMessages={setMessages}
               models={models} isConnected={isConnected} theme={myTheme} isActive={activeTab === 'chat'}
-              columns={columns} rows={rows} selectedModel={selectedModel} onSelectModel={setSelectedModel}
+              columns={columns} rows={rows} selectedModel={selectedModel} onSelectModel={(m) => { setSelectedModel(m); saveUserConfig({ model: m }); }}
               isSelectingModel={Boolean(activeModal)} onOpenModal={(m) => setActiveModal(m)}
             />
           </Box>
