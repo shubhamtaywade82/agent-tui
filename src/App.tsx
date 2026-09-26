@@ -105,7 +105,7 @@ const App: React.FC = () => {
       <Box flexDirection="column" width={columns}>
         <Box paddingX={1} flexDirection="row" justifyContent="space-between" alignItems="center" width={columns}>
           <Text bold color={myTheme.colors.primary}>
-            ⚡ Ollama TUI <Text color="gray" dimColor>v1.0.0</Text>
+            ⚡ Agentic TUI <Text color="gray" dimColor>v1.0.0</Text>
           </Text>
         </Box>
         <Divider width={columns} theme={myTheme} />
@@ -127,7 +127,7 @@ const App: React.FC = () => {
         <Box flexDirection="row" justifyContent="space-between" alignItems="center">
           <Box flexDirection="row" gap={2} alignItems="center">
             <Text bold color={myTheme.colors.primary}>
-              ⚡ Ollama TUI
+              ⚡ Agentic TUI
             </Text>
             <Tabs
               tabs={TABS}

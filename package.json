@@ -1,7 +1,7 @@
 {
-  "name": "my-agent",
+  "name": "agentic-tui",
   "version": "1.0.0",
-  "description": "",
+  "description": "Agentic Terminal User Interface powered by Ollama and InkUI",
   "main": "src/index.ts",
   "scripts": {
     "start": "tsx src/index.tsx",
@@ -10,7 +10,7 @@
     "build": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
+  "keywords": ["ai", "agent", "ollama", "tui", "ink", "mcp"],
   "author": "",
   "license": "ISC",
   "type": "module",
@@ -20,7 +20,6 @@
     "@nemesis-oss/ollama-sdk": "^1.3.0",
     "dotenv": "^17.4.2",
     "ink": "^7.1.1",
-    "ink-ui": "^0.4.0",
     "react": "^19.3.0",
     "zod": "^3.25.76"
   },
