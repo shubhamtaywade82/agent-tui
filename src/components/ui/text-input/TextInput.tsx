@@ -89,15 +89,15 @@ const InputDisplay: React.FC<DisplayProps> = ({
   }
   const atEnd = cursor === display.length;
   const cursorChar = atEnd && suggestionSuffix ? suggestionSuffix[0] : (display[cursor] ?? ' ');
-  const remainder = atEnd && suggestionSuffix ? suggestionSuffix.slice(1) : suggestionSuffix;
+  const remainder = atEnd && suggestionSuffix ? suggestionSuffix.slice(1) : undefined;
   return (
     <Box>
       {cursor > 0 && <Text>{display.slice(0, cursor)}</Text>}
       <CursorChar char={cursorChar} color={theme.colors.focus} />
       {cursor < display.length - 1 && <Text>{display.slice(cursor + 1)}</Text>}
-      {remainder && (
-        <Text color={theme.colors.muted} dimColor>
-          {remainder} <Text color="gray" dimColor>[Tab]</Text>
+      {atEnd && suggestionSuffix && (
+        <Text color="gray">
+          {remainder} <Text dimColor>[Tab]</Text>
         </Text>
       )}
     </Box>
