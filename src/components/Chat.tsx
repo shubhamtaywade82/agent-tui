@@ -276,9 +276,9 @@ const Chat: React.FC<ChatProps> = ({
         </Box>
       ) : (
         <Box flexDirection="column" width={columns}>
-          <Divider width={columns} theme={theme} style={isInputFocused ? 'bold' : 'single'} />
+          <Divider width={columns} theme={theme} color={isInputFocused ? (theme?.colors?.focus ?? 'cyan') : undefined} />
           <Box paddingX={1} width={columns}>{textInputNode}</Box>
-          <Divider width={columns} theme={theme} />
+          <Divider width={columns} theme={theme} color={isInputFocused ? (theme?.colors?.focus ?? 'cyan') : undefined} />
         </Box>
       )}
 

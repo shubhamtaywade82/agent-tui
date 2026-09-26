@@ -11,6 +11,7 @@ export interface DividerProps {
   /** Defaults to terminal width */
   width?: number;
   theme?: InkUITheme;
+  color?: string;
 }
 
 const CHARS: Record<DividerStyle, string> = {
@@ -25,6 +26,7 @@ export const Divider: React.FC<DividerProps> = ({
   style = 'single',
   width,
   theme = darkTheme,
+  color,
 }) => {
   const { stdout } = useStdout();
   const totalWidth = width ?? (stdout?.columns ?? 80);
@@ -44,7 +46,7 @@ export const Divider: React.FC<DividerProps> = ({
 
   return (
     <Box>
-      <Text color={theme.colors.border}>{line}</Text>
+      <Text color={color ?? theme.colors.border}>{line}</Text>
     </Box>
   );
 };

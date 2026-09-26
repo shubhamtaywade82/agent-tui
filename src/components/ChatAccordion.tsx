@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
-import { Badge } from './ui/badge/index.js';
 import { Spinner } from './ui/spinner/index.js';
 import { Stepper, type Step } from './ui/stepper/index.js';
 import { parseMarkdownBlocks, wrapTextLine } from './ui/markdown/index.js';
@@ -36,11 +35,28 @@ const STEPS: Step[] = [
   { key: 'responding', title: 'Respond' },
 ];
 
-export function renderMessageHeader(msg: ChatMessage, idx: number): React.ReactElement {
-  const v = msg.role === 'user' ? 'info' : msg.role === 'tool' ? 'warning' : msg.role === 'system' ? 'default' : 'success';
-  const l = msg.role === 'user' ? 'You' : msg.role === 'tool' ? 'Tool' : msg.role === 'system' ? 'System' : 'AI';
-  const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : '';
-  return <Box key={`h-${idx}`} flexDirection="row" gap={1} alignItems="center"><Badge variant={v}>{l}</Badge>{time && <Text color="gray" dimColor>{time}</Text>}</Box>;
+const formatTime = (ts?: number): string => {
+  if (!ts) return '';
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+};
+
+export function renderMessageHeader(msg: ChatMessage, idx: number, showTime = true): React.ReactElement {
+  const conf = msg.role === 'user'
+    ? { icon: '❯', label: 'You', color: 'cyan' }
+    : msg.role === 'tool'
+    ? { icon: '⚙', label: 'Tool Output', color: 'yellow' }
+    : msg.role === 'system'
+    ? { icon: '◈', label: 'System', color: 'gray' }
+    : { icon: '✦', label: 'Agent', color: 'green' };
+  const time = msg.timestamp ? formatTime(msg.timestamp) : '';
+  return (
+    <Box key={`h-${idx}`} flexDirection="row" gap={1} alignItems="center">
+      <Text bold color={conf.color}>{conf.icon}</Text>
+      <Text bold color={conf.color === 'gray' ? 'gray' : 'white'}>{conf.label}</Text>
+      {showTime && time && <Text color="gray" dimColor>· {time}</Text>}
+    </Box>
+  );
 }
 
 function renderMessageContent(msg: ChatMessage, idx: number, opts: TurnOptions): React.ReactElement[] {
@@ -48,7 +64,7 @@ function renderMessageContent(msg: ChatMessage, idx: number, opts: TurnOptions):
     const preview = msg.content.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
     const maxW = Math.max(20, opts.maxWidth - 12);
     const text = preview.length > maxW ? `${preview.slice(0, maxW - 3)}...` : preview;
-    return [<Box key={`tr-${idx}`} paddingLeft={2}><Text color="cyan" dimColor>Result: {text}</Text></Box>];
+    return [<Box key={`tr-${idx}`} paddingLeft={2}><Text color="cyan" dimColor>↳ {text}</Text></Box>];
   }
   const nodes = msg.role === 'user'
     ? msg.content.split('\n').flatMap((l, li) => wrapTextLine(l, opts.maxWidth).map((wl, wli) => <Text key={`${li}-${wli}`}>{wl || ' '}</Text>))
@@ -108,7 +124,7 @@ export function renderStreamingRows(s: StreamState, opts: TurnOptions): React.Re
     return [stepper, <Box key="st-tool" flexDirection="row" gap={1} alignItems="center" paddingLeft={2}><Spinner type="dots" /><Text color="cyan"> Executing MCP tool call...</Text></Box>];
   }
   if (s.phase === 'responding') {
-    const head = <Box key="st-head" flexDirection="row" gap={1} alignItems="center"><Badge variant="success">AI</Badge><Text color="green" dimColor>streaming</Text><Spinner type="dots" /></Box>;
+    const head = <Box key="st-head" flexDirection="row" gap={1} alignItems="center"><Text bold color="green">✦ Agent</Text><Text color="green" dimColor>streaming</Text><Spinner type="dots" /></Box>;
     return [stepper, head, ...parseMarkdownBlocks(`${s.content}█`, opts.theme, opts.maxWidth).map((n, bi) => <Box key={`sb-${bi}`} paddingLeft={2}>{n}</Box>)];
   }
   return [];
@@ -180,7 +196,7 @@ interface AccordionItemProps {
 }
 
 function renderAccordionItem(p: AccordionItemProps): React.ReactElement {
-  const time = p.msg.timestamp ? new Date(p.msg.timestamp).toLocaleTimeString() : '';
+  const time = p.msg.timestamp ? formatTime(p.msg.timestamp) : '';
   const toolName = p.msg.tool_calls?.[0]?.function?.name;
   const rawPreview = p.msg.content.replace(/\n/g, ' ').trim() || (toolName ? `Tool: ${toolName}` : '');
   const preview = rawPreview.slice(0, 45);
@@ -190,7 +206,7 @@ function renderAccordionItem(p: AccordionItemProps): React.ReactElement {
     <Box key={`turn-${p.absIdx}`} flexDirection="column">
       <Box flexDirection="row" gap={1} alignItems="center" backgroundColor={p.isSelected ? (p.theme?.colors?.selection ?? 'blue') : undefined}>
         <Text bold color={p.isSelected ? 'cyan' : 'gray'}>{p.isOpen ? '▾' : '▸'}</Text>
-        {renderMessageHeader(p.msg, p.absIdx)}
+        {renderMessageHeader(p.msg, p.absIdx, false)}
         <Text bold={p.isSelected} color={p.isSelected ? 'white' : 'gray'}>{preview}{rawPreview.length > 45 ? '…' : ''}</Text>
         <Text color="gray" dimColor>({tokens} tok{time ? ` • ${time}` : ''})</Text>
       </Box>
