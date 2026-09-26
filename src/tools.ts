@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { z } from 'zod';
 import {
   defineTool,
@@ -21,7 +21,6 @@ export interface McpServerConfig {
   description: string;
 }
 
-// Complete catalogue of reference and example servers from modelcontextprotocol.io/examples
 export const MCP_SERVERS: McpServerConfig[] = [
   { id: 'memory', name: 'Knowledge Graph Memory', command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'], enabled: true, description: 'Graph persistent memory' },
   { id: 'filesystem', name: 'Local Filesystem', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', process.cwd()], enabled: true, description: 'File operations' },
@@ -29,13 +28,8 @@ export const MCP_SERVERS: McpServerConfig[] = [
   { id: 'fetch', name: 'Web Fetcher', command: 'uvx', args: ['mcp-server-fetch'], enabled: true, description: 'Web HTML to markdown' },
   { id: 'git', name: 'Git Repository', command: 'uvx', args: ['mcp-server-git', '--repository', process.cwd()], enabled: true, description: 'Git repo operations' },
   { id: 'sequential-thinking', name: 'Sequential Thinking', command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking'], enabled: true, description: 'Thought sequences' },
-  { id: 'sqlite', name: 'SQLite Database', command: 'uvx', args: ['mcp-server-sqlite', '--db-path', process.env['SQLITE_DB_PATH'] || 'data.db'], enabled: false, disabledReason: 'Incompatible with Python 3.13', description: 'SQLite query runner' },
   { id: 'binance-sdk', name: 'Binance Local SDK', command: 'node', args: ['./node_modules/@nemesis-oss/binance-sdk/dist/mcp/index.js'], enabled: true, description: 'Binance Spot, Futures, Margin SDK' },
   { id: 'binance-cloud', name: 'Binance Agentic Cloud', url: process.env['BINANCE_MCP_URL'] || 'https://agent.binance.com/mcp/agentic', transport: 'http', enabled: Boolean(process.env['BINANCE_OAUTH_TOKEN']), disabledReason: 'Requires OAuth token in BINANCE_OAUTH_TOKEN', description: 'Binance Cloud trading & market data' },
-  { id: 'everything', name: 'Everything Reference', command: 'npx', args: ['-y', '@modelcontextprotocol/server-everything'], enabled: false, disabledReason: 'Test reference mock server', description: 'Reference test server' },
-  { id: 'brave-search', name: 'Brave Search', command: 'npx', args: ['-y', '@modelcontextprotocol/server-brave-search'], enabled: Boolean(process.env['BRAVE_API_KEY']), disabledReason: 'Missing BRAVE_API_KEY', description: 'Brave web search' },
-  { id: 'github', name: 'GitHub', command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], enabled: Boolean(process.env['GITHUB_PERSONAL_ACCESS_TOKEN']), disabledReason: 'Missing GITHUB_PERSONAL_ACCESS_TOKEN', description: 'GitHub repos and PRs' },
-  { id: 'postgres', name: 'PostgreSQL', command: 'npx', args: ['-y', '@modelcontextprotocol/server-postgres'], enabled: Boolean(process.env['POSTGRES_URL']), disabledReason: 'Missing POSTGRES_URL', description: 'Postgres database' },
 ];
 
 export const calculator = defineTool({
@@ -45,6 +39,47 @@ export const calculator = defineTool({
   execute: async ({ expression }: { expression: string }) => {
     const result = Function(`"use strict"; return (${expression})`)();
     return String(result);
+  },
+});
+
+const SKILLS_DIR = process.env['SKILLS_PATH'] || `${process.env['HOME']}/projects/agent-skills/ruby-agent-skills`;
+
+export function loadAvailableSkills(): Array<{ name: string; family: string; path: string; triggers: string }> {
+  const manifest = `${SKILLS_DIR}/skill-manifest.yml`;
+  if (!existsSync(manifest)) return [];
+  try {
+    const raw = readFileSync(manifest, 'utf8');
+    const skills: Array<{ name: string; family: string; path: string; triggers: string }> = [];
+    const re = /^\s{2}([a-z0-9\-]+):\s*\n\s+family:\s*([^\n]+)\n\s+path:\s*([^\n]+)\n(?:\s+triggers:\s*\[([^\]]*)\])?/gm;
+    let m;
+    while ((m = re.exec(raw)) !== null) {
+      skills.push({ name: m[1]!, family: m[2]!.trim(), path: m[3]!.trim(), triggers: m[4]?.trim() || '' });
+    }
+    return skills;
+  } catch { return []; }
+}
+
+export const listSkillsTool = defineTool({
+  name: 'list_skills',
+  description: 'List available engineering skills from ruby-agent-skills pack (Ruby, Rails, OOP, Clean Code).',
+  schema: z.object({ query: z.string().optional().describe('Keyword or topic to filter skills') }),
+  execute: async ({ query }: { query?: string }) => {
+    const skills = loadAvailableSkills();
+    const q = query?.toLowerCase();
+    const list = q ? skills.filter((s) => s.name.includes(q) || s.family.includes(q) || s.triggers.toLowerCase().includes(q)) : skills;
+    if (!list.length) return `No skills matched "${query}". Available count: ${skills.length}`;
+    return list.slice(0, 25).map((s) => `• ${s.name} (${s.family}): ${s.triggers || 'standard'}`).join('\n');
+  },
+});
+
+export const readSkillTool = defineTool({
+  name: 'read_skill',
+  description: 'Read the full guidelines and rules from a specific engineering skill (e.g. "ruby-oop").',
+  schema: z.object({ name: z.string().describe('Skill name (e.g. ruby-oop, ruby-clean-code)') }),
+  execute: async ({ name }: { name: string }) => {
+    const file = `${SKILLS_DIR}/skills/${name}/SKILL.md`;
+    if (!existsSync(file)) return `Skill "${name}" not found at ${file}. Use list_skills to find valid names.`;
+    return readFileSync(file, 'utf8');
   },
 });
 
@@ -59,44 +94,23 @@ function createMcpAdapter(client: McpClient, serverId?: string): McpClientLike {
   return {
     listTools: async () => {
       const tools = await client.listTools();
-      const filtered = serverId === 'binance-sdk'
-        ? tools.filter((t) => CORE_BINANCE_TOOLS.has(t.name))
-        : tools;
-      return {
-        tools: filtered.map((t) => ({
-          name: t.name,
-          description: t.description,
-          inputSchema: t.inputSchema as Record<string, unknown>,
-        })),
-      };
+      const filtered = serverId === 'binance-sdk' ? tools.filter((t) => CORE_BINANCE_TOOLS.has(t.name)) : tools;
+      return { tools: filtered.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema as Record<string, unknown> })) };
     },
     callTool: async ({ name, arguments: args }) => {
       const res = await client.callTool(name, args ?? {});
-      return {
-        content: res.content.map((c) => ({
-          type: c.type,
-          text: c.type === 'text' ? c.text : JSON.stringify(c),
-        })),
-        isError: res.isError,
-      };
+      return { content: res.content.map((c) => ({ type: c.type, text: c.type === 'text' ? c.text : JSON.stringify(c) })), isError: res.isError };
     },
   };
 }
 
 async function connectServer(cfg: McpServerConfig): Promise<McpClient | null> {
   try {
-    const transport = cfg.url || cfg.transport === 'http'
-      ? new StreamableHttpTransport({ url: cfg.url! })
-      : new StdioTransport({ command: cfg.command!, args: cfg.args, env: cfg.env });
+    const transport = cfg.url || cfg.transport === 'http' ? new StreamableHttpTransport({ url: cfg.url! }) : new StdioTransport({ command: cfg.command!, args: cfg.args, env: cfg.env });
     const client = new McpClient({ serverId: cfg.id, transport });
-    await Promise.race([
-      client.connect(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000)),
-    ]);
+    await Promise.race([client.connect(), new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))]);
     return client;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 let registryPromise: Promise<ToolRegistry> | null = null;
@@ -105,9 +119,8 @@ const activeClients: McpClient[] = [];
 export async function getActiveToolRegistry(): Promise<ToolRegistry> {
   if (registryPromise) return registryPromise;
   registryPromise = (async () => {
-    const registry = new ToolRegistry({ tools: [calculator], timeoutMs: 15_000, maxConcurrency: 4, maxOutputChars: 15_000 });
-    const enabled = MCP_SERVERS.filter((s) => s.enabled);
-    await Promise.allSettled(enabled.map(async (cfg) => {
+    const registry = new ToolRegistry({ tools: [calculator, listSkillsTool, readSkillTool], timeoutMs: 15_000, maxConcurrency: 4, maxOutputChars: 15_000 });
+    await Promise.allSettled(MCP_SERVERS.filter((s) => s.enabled).map(async (cfg) => {
       const client = await connectServer(cfg);
       if (!client) return;
       activeClients.push(client);
@@ -153,6 +166,7 @@ export interface SlashCommandInfo {
 
 export const SLASH_COMMANDS: SlashCommandInfo[] = [
   { name: '/help', args: '[cmd]', desc: 'Show command manual & shortcuts' },
+  { name: '/skills', args: '[name]', desc: 'Browse & load ruby-agent-skills' },
   { name: '/clear', desc: 'Clear conversation history' },
   { name: '/mcp', args: '[list]', desc: 'Inspect MCP servers & connection health' },
   { name: '/tools', desc: 'List active tools & parameter schemas' },
@@ -174,25 +188,18 @@ export interface CommandContext {
   showToast: (msg: string, type: 'info' | 'error' | 'warning', duration?: number) => void;
   addSystemCard: (text: string) => void;
   registry?: ToolRegistry | null;
-  openModal?: (modal: 'model' | 'tools' | 'mcp' | 'clear') => void;
+  openModal?: (modal: 'model' | 'tools' | 'mcp' | 'clear' | 'skills') => void;
 }
 
 function handleContextCmd(ctx: CommandContext): void {
   const tokens = ctx.messages.reduce((s, m) => s + (m.tokens ?? Math.ceil(m.content.length / 4)), 0);
-  const toolDefs = ctx.registry?.definitions() || [];
-  ctx.addSystemCard(`📊 Context & Telemetry:\n• Model: ${ctx.model}\n• Messages: ${ctx.messages.length}\n• Est. Tokens: ~${tokens}\n• Tools Loaded: ${toolDefs.length}`);
+  ctx.addSystemCard(`📊 Context & Telemetry:\n• Model: ${ctx.model}\n• Messages: ${ctx.messages.length}\n• Est. Tokens: ~${tokens}\n• Tools Loaded: ${ctx.registry?.definitions().length || 0}`);
 }
 
 function handleCompactCmd(ctx: CommandContext): void {
-  if (ctx.messages.length <= 3) {
-    ctx.showToast('Conversation too short to compact', 'warning', 2500);
-    return;
-  }
+  if (ctx.messages.length <= 3) { ctx.showToast('Conversation too short to compact', 'warning', 2500); return; }
   const olderCount = ctx.messages.length - 2;
-  ctx.setMessages((prev) => [
-    { role: 'system', content: `[Compacted context: ${olderCount} earlier turns summarized]`, timestamp: Date.now() },
-    ...prev.slice(-2),
-  ]);
+  ctx.setMessages((prev) => [{ role: 'system', content: `[Compacted context: ${olderCount} earlier turns summarized]`, timestamp: Date.now() }, ...prev.slice(-2)]);
   ctx.showToast(`Compacted ${olderCount} turns`, 'info', 2500);
 }
 
@@ -201,26 +208,18 @@ function handleSaveCmd(ctx: CommandContext, arg: string): void {
   const body = ctx.messages.map((m) => `### ${m.role.toUpperCase()}\n\n${m.content}\n`).join('\n---\n\n');
   try {
     writeFileSync(file, `# Chat Transcript (${new Date().toLocaleString()})\n\n${body}`, 'utf8');
-    ctx.showToast(`Saved to ${file}`, 'info', 3000);
-    ctx.addSystemCard(`Transcript saved to ${file}`);
-  } catch (err) {
-    ctx.showToast(`Failed to save: ${String(err)}`, 'error', 4000);
-  }
+    ctx.showToast(`Saved to ${file}`, 'info', 3000); ctx.addSystemCard(`Transcript saved to ${file}`);
+  } catch (err) { ctx.showToast(`Failed to save: ${String(err)}`, 'error', 4000); }
 }
 
 function formatToolsList(registry?: ToolRegistry | null): string {
   const defs = registry?.definitions() || [];
-  const list = defs.map((d: any) => `• ${d.function.name}: ${d.function.description || 'no desc'}`).join('\n');
-  return `Active Tools (${defs.length}):\n${list || 'None'}`;
+  return `Active Tools (${defs.length}):\n${defs.map((d: any) => `• ${d.function.name}: ${d.function.description || 'no desc'}`).join('\n') || 'None'}`;
 }
 
 function formatMcpServersList(): string {
   const activeCount = MCP_SERVERS.filter((s) => s.enabled).length;
-  const list = MCP_SERVERS.map((s) => {
-    if (s.enabled) return `• ${s.name} (${s.id}): Active`;
-    const reason = s.disabledReason ? ` (${s.disabledReason})` : '';
-    return `• ${s.name} (${s.id}): Disabled${reason}`;
-  }).join('\n');
+  const list = MCP_SERVERS.map((s) => `• ${s.name} (${s.id}): ${s.enabled ? 'Active' : `Disabled${s.disabledReason ? ` (${s.disabledReason})` : ''}`}`).join('\n');
   return `MCP Servers (${activeCount}/${MCP_SERVERS.length} active):\n${list}`;
 }
 
@@ -244,6 +243,16 @@ export function dispatchSlashCommand(rawInput: string, ctx: CommandContext): boo
       if (ctx.openModal) ctx.openModal('mcp');
       else ctx.addSystemCard(formatMcpServersList());
       return true;
+    case '/skills':
+      if (arg) {
+        const file = `${SKILLS_DIR}/skills/${arg}/SKILL.md`;
+        if (existsSync(file)) {
+          ctx.setMessages((prev) => [{ role: 'system', content: `[Skill loaded: ${arg}]\n\n${readFileSync(file, 'utf8')}`, timestamp: Date.now() }, ...prev]);
+          ctx.showToast(`Loaded skill: ${arg}`, 'info', 2500);
+        } else ctx.showToast(`Skill ${arg} not found`, 'error', 3000);
+      } else if (ctx.openModal) ctx.openModal('skills');
+      else ctx.addSystemCard(`Available Skills:\n${loadAvailableSkills().slice(0, 15).map((s) => `• ${s.name}`).join('\n')}`);
+      return true;
     case '/model':
       if (arg && ctx.setModel) { ctx.setModel(arg); ctx.showToast(`Switched to ${arg}`, 'info', 2000); }
       else if (ctx.openModal) ctx.openModal('model');
@@ -261,13 +270,14 @@ export function dispatchSlashCommand(rawInput: string, ctx: CommandContext): boo
   }
 }
 
+const parseArgs = (a: unknown): any => (typeof a === 'string' ? (() => { try { return JSON.parse(a); } catch { return {}; } })() : a ?? {});
+
 function resolveToolName(name: string, registry: ToolRegistry): string {
   if (registry.get(name)) return name;
-  const normalized = name.toLowerCase().replace(/^get_market_/, '').replace(/^get_/, '');
-  const defs = registry.definitions();
-  const match = defs.find((d: any) => {
+  const n = name.toLowerCase().replace(/^(get_market_|get_)/, '');
+  const match = registry.definitions().find((d: any) => {
     const fn = d.function.name.toLowerCase();
-    return fn === normalized || fn.endsWith(`_${normalized}`) || fn.includes(normalized);
+    return fn === n || fn.endsWith(`_${n}`) || fn.includes(n);
   });
   return match ? (match as any).function.name : name;
 }
@@ -278,10 +288,7 @@ export async function executeMcpCalls(
 ): Promise<Array<{ role: 'tool'; content: string; tool_call_id?: string; timestamp: number }>> {
   const resolved = toolCalls.map((tc) => ({
     ...tc,
-    function: {
-      ...tc.function,
-      name: resolveToolName(tc.function?.name || '', registry),
-    },
+    function: { ...tc.function, name: resolveToolName(tc.function?.name || '', registry), arguments: parseArgs(tc.function?.arguments) },
   }));
   const results = await registry.executeToolCalls(resolved);
   return results.map((res) => ({

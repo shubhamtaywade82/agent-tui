@@ -12,10 +12,11 @@ import StatusBar from './components/StatusBar.js';
 import { useOllama } from './hooks/useOllama.js';
 import { useTerminalSize } from './components/ui/hooks/index.js';
 import { myTheme } from './theme.js';
-import { closeMcpServers, MCP_SERVERS, getActiveToolRegistry } from './tools.js';
+import { existsSync, readFileSync } from 'node:fs';
+import { closeMcpServers, MCP_SERVERS, getActiveToolRegistry, loadAvailableSkills } from './tools.js';
 import type { ToolRegistry } from '@nemesis-oss/ollama-sdk';
 
-export type ModalType = 'model' | 'tools' | 'mcp' | 'clear' | null;
+export type ModalType = 'model' | 'tools' | 'mcp' | 'clear' | 'skills' | null;
 
 const TABS: Tab[] = [
   { key: 'chat', label: '💬 Chat' },
@@ -218,6 +219,27 @@ const App: React.FC = () => {
                 ))}
               </Box>
               <Box marginTop={1}><Text color="gray" dimColor>[Esc Close]</Text></Box>
+            </Box>
+          )}
+
+          {activeModal === 'skills' && (
+            <Box flexDirection="column" borderStyle="round" borderColor={myTheme.colors.primary} paddingX={2} paddingY={1} width={Math.min(74, columns - 4)}>
+              <Text bold color={myTheme.colors.primary}>Engineering Skills Pack (ruby-agent-skills)</Text>
+              <Text color="gray" dimColor>Select a skill to load into session instructions:</Text>
+              <Box marginTop={1}>
+                <Select
+                  items={loadAvailableSkills().map((s) => ({ label: `${s.name} [${s.family}] - ${s.triggers.slice(0, 28) || 'standard'}`, value: s.name }))}
+                  onSelect={(item) => {
+                    const file = `${process.env['SKILLS_PATH'] || `${process.env['HOME']}/projects/agent-skills/ruby-agent-skills`}/skills/${item.value}/SKILL.md`;
+                    if (existsSync(file)) {
+                      setMessages((prev) => [{ role: 'system', content: `[Skill loaded: ${item.value}]\n\n${readFileSync(file, 'utf8')}`, timestamp: Date.now() }, ...prev]);
+                    }
+                    setActiveModal(null);
+                  }}
+                  focus={true} theme={myTheme} maxVisible={6}
+                />
+              </Box>
+              <Box marginTop={1}><Text color="gray" dimColor>[↑/↓ Navigate • Enter Load Skill • Esc Close]</Text></Box>
             </Box>
           )}
         </Box>

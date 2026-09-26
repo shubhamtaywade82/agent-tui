@@ -26,7 +26,7 @@ function loadLocalHistory(): string[] {
 const appendLocalHistory = (p: string) => { try { appendFileSync(HISTORY_FILE, JSON.stringify(p) + '\n', 'utf-8'); } catch {} };
 
 const DEFAULT_SYSTEM_PROMPT =
-  `You are an expert AI assistant. Current workspace directory: ${process.cwd()}. Answer questions directly using your knowledge. Only use tools when specifically required to inspect workspace files, run calculations, or access real-time data requested by the user. Do not call filesystem tools for general programming, conceptual, or educational questions. If tools return errors or are unnecessary, proceed directly to answering the question with your own knowledge.`;
+  `You are an expert AI assistant. Current workspace: ${process.cwd()}. Answer questions directly using your knowledge. When working on Ruby, Rails, OOP, or system architecture tasks, check and use available skills from ruby-agent-skills via list_skills and read_skill. Only use filesystem MCP tools when inspecting existing files in the current workspace.`;
 
 function prepareMessages(history: ChatMessage[]): ChatMessage[] {
   if (history.some((m) => m.role === 'system')) return history;
@@ -45,7 +45,7 @@ interface ChatProps {
   setMessages?: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
   models?: string[]; isConnected?: boolean; theme?: any; isActive?: boolean;
   columns?: number; rows?: number; selectedModel?: string; onSelectModel?: (m: string) => void;
-  isSelectingModel?: boolean; onOpenModal?: (m: 'model' | 'tools' | 'mcp' | 'clear') => void;
+  isSelectingModel?: boolean; onOpenModal?: (m: 'model' | 'tools' | 'mcp' | 'clear' | 'skills') => void;
 }
 
 const Chat: React.FC<ChatProps> = ({
@@ -70,11 +70,24 @@ const Chat: React.FC<ChatProps> = ({
   const isInputFocused = isFocused(0);
   const isChatFocused = isFocused(1);
 
+  const [history, setHistory] = useState<string[]>(() => {
+    const loaded = loadLocalHistory();
+    const initial = messages.filter((m) => m.role === 'user' && m.content.trim()).map((m) => m.content.trim());
+    return Array.from(new Set([...loaded, ...initial]));
+  });
+
   const matchingCommands = useMemo(() => {
-    if (!input.startsWith('/')) return [];
-    const query = input.split(/\s+/)[0]?.toLowerCase() || '/';
-    return SLASH_COMMANDS.filter((c) => c.name.startsWith(query));
+    if (!input.startsWith('/') || input.includes(' ')) return [];
+    return SLASH_COMMANDS.filter((c) => c.name.startsWith(input.toLowerCase()));
   }, [input]);
+
+  const promptSuggestions = useMemo(() => {
+    if (input.startsWith('/')) {
+      const active = matchingCommands[selectedCmdIndex]?.name;
+      return active ? [active, ...SLASH_COMMANDS.map((c) => c.name)] : SLASH_COMMANDS.map((c) => c.name);
+    }
+    return [...new Set(history.filter((h) => !h.startsWith('/')))].reverse();
+  }, [input, matchingCommands, selectedCmdIndex, history]);
 
   const selectOverhead = isSelectingModel ? 1 + Math.min(models.length || 1, 5) + (models.length > 5 ? 1 : 0) : 0;
   const menuOverhead = input.startsWith('/') && matchingCommands.length > 0 ? Math.min(matchingCommands.length, 4) + 2 : 0;
@@ -88,12 +101,6 @@ const Chat: React.FC<ChatProps> = ({
     if (key.ctrl && (inp === 'a' || inp === '\x01')) setViewMode((v) => (v === 'stream' ? 'accordion' : 'stream'));
     else if (inp === 't' && isChatFocused) setExpandThinking((p) => !p);
     else if ((key.escape || key.tab) && isChatFocused) setFocus(0);
-  });
-
-  const [history, setHistory] = useState<string[]>(() => {
-    const loaded = loadLocalHistory();
-    const initial = messages.filter((m) => m.role === 'user' && m.content.trim()).map((m) => m.content.trim());
-    return Array.from(new Set([...loaded, ...initial]));
   });
 
   const resetStream = (p: typeof phase = 'idle') => { setPhase(p); setStreamedThinking(''); setStreamedContent(''); };
@@ -166,19 +173,13 @@ const Chat: React.FC<ChatProps> = ({
         resetStream('thinking');
       }
       if (!isDone) {
-        show('Synthesizing final response...', 'info', 3000);
-        resetStream('thinking');
-        const synth: ChatMessage = {
-          role: 'user',
-          content: 'You have finished exploring. Now output the complete, comprehensive response to the original user request in full detail. Do not mention checking or searching further.',
-          timestamp: Date.now(),
-        };
+        show('Synthesizing final response...', 'info', 3000); resetStream('thinking');
+        const synth: ChatMessage = { role: 'user', content: 'You have finished exploring. Now output the complete, comprehensive response to the original user request in full detail. Do not mention checking or searching further.', timestamp: Date.now() };
         await executeSingleTurn([...currentHistory, synth], false);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      show(`Error: ${msg}`, 'error', 4000);
-      onSendMessage(undefined, `⚠️ Error: ${msg}`);
+      show(`Error: ${msg}`, 'error', 4000); onSendMessage(undefined, `⚠️ Error: ${msg}`);
     } finally { resetStream('idle'); }
   };
 
@@ -210,11 +211,10 @@ const Chat: React.FC<ChatProps> = ({
   const handleTab = (): boolean => {
     if (input.startsWith('/') && matchingCommands.length > 0) {
       const cmd = matchingCommands[selectedCmdIndex] || matchingCommands[0];
-      if (cmd) { setInput(cmd.name + ' '); setSelectedCmdIndex(0); }
-      return true;
+      if (cmd) { setInput(cmd.name + ' '); setSelectedCmdIndex(0); return true; }
     }
-    if (input === '') setFocus(1);
-    return true;
+    if (input === '') { setFocus(1); return true; }
+    return false;
   };
 
   const maxWidth = Math.max(20, columns - 8);
@@ -279,8 +279,8 @@ const Chat: React.FC<ChatProps> = ({
           onPageDown={() => { setScrollOffset((p) => Math.min(maxScrollOffset, p + Math.max(1, Math.floor(chatHeight / 2)))); return true; }}
           onTab={handleTab} onEscape={() => { if (input.startsWith('/')) { setInput(''); setSelectedCmdIndex(0); return true; } return false; }}
           history={history} focus={isActive && !isSelectingModel && isInputFocused} theme={theme}
-          placeholder={phase === 'thinking' ? '⚡ Thinking... [Esc stop]' : phase === 'executing-tools' ? '🔧 Running tools...' : phase === 'responding' ? 'Streaming... [Esc stop]' : 'Type prompt or /command...'}
-          disabled={phase !== 'idle'} showCounter={true} suggestions={SLASH_COMMANDS.map((c) => c.name)}
+          placeholder={isChatFocused ? 'Chat scroll focused — Press Tab or Esc to type...' : phase === 'thinking' ? '⚡ Thinking... [Esc stop]' : phase === 'executing-tools' ? '🔧 Running tools...' : phase === 'responding' ? 'Streaming... [Esc stop]' : 'Type prompt or /command...'}
+          disabled={phase !== 'idle'} showCounter={true} suggestions={promptSuggestions}
           onCancel={() => { if (phase !== 'idle') { resetStream('idle'); show('Cancelled', 'warning', 2000); } }}
         />
       </Box>

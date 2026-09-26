@@ -87,14 +87,17 @@ const InputDisplay: React.FC<DisplayProps> = ({
       </Box>
     );
   }
+  const atEnd = cursor === display.length;
+  const cursorChar = atEnd && suggestionSuffix ? suggestionSuffix[0] : (display[cursor] ?? ' ');
+  const remainder = atEnd && suggestionSuffix ? suggestionSuffix.slice(1) : suggestionSuffix;
   return (
     <Box>
       {cursor > 0 && <Text>{display.slice(0, cursor)}</Text>}
-      <CursorChar char={display[cursor] ?? ' '} color={theme.colors.focus} />
+      <CursorChar char={cursorChar} color={theme.colors.focus} />
       {cursor < display.length - 1 && <Text>{display.slice(cursor + 1)}</Text>}
-      {suggestionSuffix && (
+      {remainder && (
         <Text color={theme.colors.muted} dimColor>
-          {suggestionSuffix} <Text color="gray" dimColor>[Tab]</Text>
+          {remainder} <Text color="gray" dimColor>[Tab]</Text>
         </Text>
       )}
     </Box>
@@ -174,13 +177,13 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
       return;
     }
     if (key.escape && onEscape && onEscape()) return;
+    if (key.tab && onTab && onTab()) return;
     if ((key.tab || (key.rightArrow && cursor === value.length)) && activeSuggestion) {
       const full = value + activeSuggestion;
       onChange(full);
       setCursor(full.length);
       return;
     }
-    if (key.tab && onTab && onTab()) return;
     if (key.pageUp && onPageUp && onPageUp()) return;
     if (key.pageDown && onPageDown && onPageDown()) return;
     if (key.upArrow) {
