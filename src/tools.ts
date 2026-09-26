@@ -52,18 +52,15 @@ export function loadAvailableSkills(): Array<{ name: string; family: string; pat
   } catch { return []; }
 }
 
-export interface UserConfig { model?: string; systemPrompt?: string; }
+export interface UserConfig { model?: string; systemPrompt?: string; inputStyle?: 'box' | 'line'; }
 const CONFIG_FILE = '.config.json';
-export function loadUserConfig(): UserConfig {
+export const loadUserConfig = (): UserConfig => {
   if (!existsSync(CONFIG_FILE)) return {};
   try { return JSON.parse(readFileSync(CONFIG_FILE, 'utf8')); } catch { return {}; }
-}
-export function saveUserConfig(patch: Partial<UserConfig>): void {
-  try {
-    const next = { ...loadUserConfig(), ...patch };
-    writeFileSync(CONFIG_FILE, JSON.stringify(next, null, 2), 'utf8');
-  } catch {}
-}
+};
+export const saveUserConfig = (patch: Partial<UserConfig>): void => {
+  try { writeFileSync(CONFIG_FILE, JSON.stringify({ ...loadUserConfig(), ...patch }, null, 2), 'utf8'); } catch {}
+};
 
 export const listSkillsTool = defineTool({
   name: 'list_skills',
@@ -156,6 +153,7 @@ export interface SlashCommandInfo { name: string; args?: string; desc: string; }
 
 export const SLASH_COMMANDS: SlashCommandInfo[] = [
   { name: '/help', args: '[cmd]', desc: 'Show command manual & shortcuts' },
+  { name: '/style', args: '[box|line]', desc: 'Toggle input style (rounded box vs divider lines)' },
   { name: '/skills', args: '[name]', desc: 'Browse & load ruby-agent-skills' },
   { name: '/clear', desc: 'Clear conversation history' },
   { name: '/mcp', args: '[list]', desc: 'Inspect MCP servers & connection health' },
@@ -178,7 +176,7 @@ export interface CommandContext {
   showToast: (msg: string, type: 'info' | 'error' | 'warning', duration?: number) => void;
   addSystemCard: (text: string) => void;
   registry?: ToolRegistry | null;
-  openModal?: (modal: 'model' | 'tools' | 'mcp' | 'clear' | 'skills') => void;
+  openModal?: (modal: 'model' | 'clear' | 'skills') => void;
 }
 
 function handleContextCmd(ctx: CommandContext): void {
@@ -204,13 +202,13 @@ function handleSaveCmd(ctx: CommandContext, arg: string): void {
 
 function formatToolsList(registry?: ToolRegistry | null): string {
   const defs = registry?.definitions() || [];
-  return `Active Tools (${defs.length}):\n${defs.map((d: any) => `• ${d.function.name}: ${d.function.description || 'no desc'}`).join('\n') || 'None'}`;
+  if (!defs.length) return 'Active Tools: None loaded or MCP servers still connecting.';
+  return `Active Tools (${defs.length}):\n${defs.map((d: any) => `• ${d?.function?.name || d?.name || 'tool'}: ${d?.function?.description || d?.description || 'Active'}`).join('\n')}`;
 }
 
 function formatMcpServersList(): string {
   const activeCount = MCP_SERVERS.filter((s) => s.enabled).length;
-  const list = MCP_SERVERS.map((s) => `• ${s.name} (${s.id}): ${s.enabled ? 'Active' : `Disabled${s.disabledReason ? ` (${s.disabledReason})` : ''}`}`).join('\n');
-  return `MCP Servers (${activeCount}/${MCP_SERVERS.length} active):\n${list}`;
+  return `MCP Servers (${activeCount}/${MCP_SERVERS.length} active):\n${MCP_SERVERS.map((s) => `• ${s.name} (${s.id}): ${s.enabled ? 'Active' : `Disabled${s.disabledReason ? ` (${s.disabledReason})` : ''}`}`).join('\n')}`;
 }
 
 export function dispatchSlashCommand(rawInput: string, ctx: CommandContext): boolean {
@@ -226,13 +224,13 @@ export function dispatchSlashCommand(rawInput: string, ctx: CommandContext): boo
     case '/compact': handleCompactCmd(ctx); return true;
     case '/save': handleSaveCmd(ctx, arg); return true;
     case '/tools':
-      if (ctx.openModal) ctx.openModal('tools');
-      else ctx.addSystemCard(formatToolsList(ctx.registry));
+      if (ctx.registry) ctx.addSystemCard(formatToolsList(ctx.registry));
+      else {
+        ctx.showToast('Fetching tools...', 'info', 1500);
+        void getActiveToolRegistry().then((r) => ctx.addSystemCard(formatToolsList(r))).catch((e) => ctx.showToast(`Error: ${String(e)}`, 'error', 3000));
+      }
       return true;
-    case '/mcp':
-      if (ctx.openModal) ctx.openModal('mcp');
-      else ctx.addSystemCard(formatMcpServersList());
-      return true;
+    case '/mcp': ctx.addSystemCard(formatMcpServersList()); return true;
     case '/skills':
       if (arg) {
         const file = `${SKILLS_DIR}/skills/${arg}/SKILL.md`;

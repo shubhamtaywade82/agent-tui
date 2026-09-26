@@ -13,10 +13,9 @@ import { useOllama } from './hooks/useOllama.js';
 import { useTerminalSize } from './components/ui/hooks/index.js';
 import { myTheme } from './theme.js';
 import { existsSync, readFileSync } from 'node:fs';
-import { closeMcpServers, MCP_SERVERS, getActiveToolRegistry, loadAvailableSkills, loadUserConfig, saveUserConfig } from './tools.js';
-import type { ToolRegistry } from '@nemesis-oss/ollama-sdk';
+import { closeMcpServers, loadAvailableSkills, loadUserConfig, saveUserConfig } from './tools.js';
 
-export type ModalType = 'model' | 'tools' | 'mcp' | 'clear' | 'skills' | null;
+export type ModalType = 'model' | 'clear' | 'skills' | null;
 
 const TABS: Tab[] = [
   { key: 'chat', label: '💬 Chat' },
@@ -31,7 +30,6 @@ const App: React.FC = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [activeTab, setActiveTab] = useState<string>('chat');
   const [activeModal, setActiveModal] = useState<ModalType>(null);
-  const [registry, setRegistry] = useState<ToolRegistry | null>(null);
 
   const { client, models, isLoading } = useOllama();
   const { columns, rows } = useTerminalSize();
@@ -50,8 +48,6 @@ const App: React.FC = () => {
       saveUserConfig({ model: initial });
     }
   }, [models, selectedModel]);
-
-  useEffect(() => { void getActiveToolRegistry().then(setRegistry).catch(() => undefined); }, []);
 
   useInput((input, key) => {
     if (activeModal && key.escape) { setActiveModal(null); return; }
@@ -159,8 +155,12 @@ const App: React.FC = () => {
 
   return (
     <Box flexDirection="column" width={columns}>
+      {/* Top Header */}
+      {renderStatusLine()}
+      <Divider width={columns} theme={myTheme} style={activeModal ? 'bold' : 'single'} />
+
       {activeModal ? (
-        <Box height={Math.max(6, rows - 3)} width={columns} alignItems="center" justifyContent="center">
+        <Box height={Math.max(6, rows - 4)} width={columns} alignItems="center" paddingTop={Math.max(1, Math.floor((rows - 16) / 2))}>
           {activeModal === 'model' && (
             <Box flexDirection="column" borderStyle="round" borderColor={myTheme.colors.primary} paddingX={2} paddingY={1} width={Math.min(64, columns - 4)}>
               <Text bold color={myTheme.colors.primary}>Select Ollama Model</Text>
@@ -183,36 +183,6 @@ const App: React.FC = () => {
               onAction={(a) => { if (a.value === 'clear') setMessages([]); setActiveModal(null); }}
               onDismiss={() => setActiveModal(null)} theme={myTheme}
             />
-          )}
-
-          {activeModal === 'tools' && (
-            <Box flexDirection="column" borderStyle="round" borderColor={myTheme.colors.primary} paddingX={2} paddingY={1} width={Math.min(70, columns - 4)}>
-              <Text bold color={myTheme.colors.primary}>Active Tools ({registry?.definitions().length || 0})</Text>
-              <Box marginTop={1} flexDirection="column">
-                {(registry?.definitions() || []).slice(0, 6).map((t: any) => (
-                  <Box key={t.function.name} flexDirection="row" gap={1}>
-                    <Text color="cyan" bold>• {t.function.name}:</Text>
-                    <Text color="gray">{t.function.description?.slice(0, 42) || 'Active'}</Text>
-                  </Box>
-                ))}
-              </Box>
-              <Box marginTop={1}><Text color="gray" dimColor>[Esc Close]</Text></Box>
-            </Box>
-          )}
-
-          {activeModal === 'mcp' && (
-            <Box flexDirection="column" borderStyle="round" borderColor={myTheme.colors.primary} paddingX={2} paddingY={1} width={Math.min(70, columns - 4)}>
-              <Text bold color={myTheme.colors.primary}>MCP Servers Status</Text>
-              <Box marginTop={1} flexDirection="column">
-                {MCP_SERVERS.map((s) => (
-                  <Box key={s.id} flexDirection="row" justifyContent="space-between">
-                    <Text color="white">• {s.name}</Text>
-                    <Badge variant={s.enabled ? 'success' : 'default'}>{s.enabled ? 'Active' : 'Disabled'}</Badge>
-                  </Box>
-                ))}
-              </Box>
-              <Box marginTop={1}><Text color="gray" dimColor>[Esc Close]</Text></Box>
-            </Box>
           )}
 
           {activeModal === 'skills' && (
@@ -244,12 +214,10 @@ const App: React.FC = () => {
               models={models} isConnected={isConnected} theme={myTheme} isActive={activeTab === 'chat'}
               columns={columns} rows={rows} selectedModel={selectedModel} onSelectModel={(m) => { setSelectedModel(m); saveUserConfig({ model: m }); }}
               isSelectingModel={Boolean(activeModal)} onOpenModal={(m) => setActiveModal(m)}
-              statusLine={renderStatusLine()}
             />
           </Box>
           <Box display={activeTab === 'system' ? 'flex' : 'none'} width={columns} flexDirection="column">
             <StatusBar client={client} tokenCount={calculateTokenCount()} theme={myTheme} width={columns} />
-            {renderStatusLine()}
           </Box>
         </>
       )}
