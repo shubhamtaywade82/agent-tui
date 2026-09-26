@@ -43,12 +43,8 @@ function getMenuOptions(input: string, models: string[]): Array<{ name: string; 
   if (!input.startsWith('/')) return [];
   const low = input.toLowerCase();
   if (!input.includes(' ')) return SLASH_COMMANDS.filter((c) => c.name.startsWith(low));
-  if (input.startsWith('/model ')) {
-    return models.filter((m) => m.toLowerCase().includes(input.slice(7).toLowerCase())).map((m) => ({ name: `/model ${m}`, desc: `Switch to ${m}` }));
-  }
-  if (input.startsWith('/skills ')) {
-    return loadAvailableSkills().filter((s) => s.name.includes(input.slice(8).toLowerCase())).slice(0, 10).map((s) => ({ name: `/skills ${s.name}`, desc: `${s.family}: ${s.triggers.slice(0, 24) || 'standard'}` }));
-  }
+  if (input.startsWith('/model ')) return models.filter((m) => m.toLowerCase().includes(input.slice(7).toLowerCase())).map((m) => ({ name: `/model ${m}`, desc: `Switch to ${m}` }));
+  if (input.startsWith('/skills ')) return loadAvailableSkills().filter((s) => s.name.includes(input.slice(8).toLowerCase())).slice(0, 10).map((s) => ({ name: `/skills ${s.name}`, desc: `${s.family}: ${s.triggers.slice(0, 24) || 'standard'}` }));
   if (input.startsWith('/save ')) return ['chat.md', 'transcript.md'].filter((f) => f.includes(input.slice(6))).map((f) => ({ name: `/save ${f}`, desc: 'Save transcript' }));
   if (input.startsWith('/system ')) return ['reset', 'You are a pragmatic senior software engineer.'].filter((s) => s.toLowerCase().includes(input.slice(8).toLowerCase())).map((s) => ({ name: `/system ${s}`, desc: 'Set system instructions' }));
   return [];
@@ -61,11 +57,12 @@ interface ChatProps {
   models?: string[]; isConnected?: boolean; theme?: any; isActive?: boolean;
   columns?: number; rows?: number; selectedModel?: string; onSelectModel?: (m: string) => void;
   isSelectingModel?: boolean; onOpenModal?: (m: 'model' | 'tools' | 'mcp' | 'clear' | 'skills') => void;
+  statusLine?: React.ReactNode;
 }
 
 const Chat: React.FC<ChatProps> = ({
   client, messages, onSendMessage, setMessages, models = [], theme, isActive = true,
-  columns: propCols, rows: propRows, selectedModel: propModel, isSelectingModel = false, onSelectModel, onOpenModal,
+  columns: propCols, rows: propRows, selectedModel: propModel, isSelectingModel = false, onSelectModel, onOpenModal, statusLine,
 }) => {
   const [input, setInput] = useState('');
   const [selectedCmdIndex, setSelectedCmdIndex] = useState(0);
@@ -97,7 +94,7 @@ const Chat: React.FC<ChatProps> = ({
   }, [input, activeMenu, history]);
   const selectOverhead = isSelectingModel ? 1 + Math.min(models.length || 1, 5) + (models.length > 5 ? 1 : 0) : 0;
   const menuOverhead = activeMenu.length > 0 ? Math.min(activeMenu.length, 4) + 2 : 0;
-  const chatHeight = Math.max(3, rows - 6 - selectOverhead - menuOverhead - (toasts.length > 0 ? 1 : 0));
+  const chatHeight = Math.max(3, rows - 5 - selectOverhead - menuOverhead - (toasts.length > 0 ? 1 : 0));
 
   useEffect(() => { setSelectedCmdIndex(0); }, [input]);
   useEffect(() => { getActiveToolRegistry().then(setRegistry).catch(() => undefined); }, []);
@@ -238,7 +235,27 @@ const Chat: React.FC<ChatProps> = ({
       <Box paddingX={1} width={columns}>
         {messages.length === 0 ? (
           <Box height={chatHeight} width="100%" flexDirection="column" alignItems="center" justifyContent="center">
-            <Typewriter text="Ready. Type prompt or /command... (Ctrl+A for Accordion)" speed={45} cursorChar="▌" theme={theme} />
+            <Box borderStyle="round" borderColor="cyan" paddingX={2} paddingY={1} flexDirection="column" alignItems="center" width={Math.min(76, columns - 4)}>
+              <Box flexDirection="row" gap={1} marginBottom={1}>
+                <Text bold color="cyan">⚡ AGENTIC TUI</Text>
+                <Text color="gray">│</Text>
+                <Text bold color="white">Autonomous Agent Harness</Text>
+                <Text color="gray">v1.0.0</Text>
+              </Box>
+              <Box flexDirection="row" gap={2} marginBottom={1}>
+                <Text color="gray">Model: <Text color="cyan" bold>{selectedModel}</Text></Text>
+                <Text color="gray">•</Text>
+                <Text color="gray">Context: <Text color="white">16k tokens</Text></Text>
+                <Text color="gray">•</Text>
+                <Text color="green">● MCP Active</Text>
+              </Box>
+              <Box flexDirection="column" width="100%">
+                <Text color="gray"><Text color="yellow">❯ </Text><Text color="white">Type an engineering prompt to begin reasoning & tool execution</Text></Text>
+                <Text color="gray"><Text color="yellow">❯ </Text>Type <Text color="cyan">/model</Text> to switch models or <Text color="cyan">/skills</Text> to load ruby-agent-skills</Text>
+                <Text color="gray"><Text color="yellow">❯ </Text>Type <Text color="cyan">/tools</Text> or <Text color="cyan">/mcp</Text> to inspect capabilities, <Text color="cyan">/help</Text> for manual</Text>
+              </Box>
+              <Box marginTop={1}><Text color="gray" dimColor>[Tab Autocomplete • Ctrl+O Switch Model • Ctrl+T Telemetry • Ctrl+A Accordion]</Text></Box>
+            </Box>
           </Box>
         ) : viewMode === 'accordion' ? (
           <ChatAccordion messages={messages} height={chatHeight} width={columns - 4} focus={isActive && isChatFocused} theme={theme} />

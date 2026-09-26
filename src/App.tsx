@@ -106,6 +106,37 @@ const App: React.FC = () => {
     );
   };
 
+  const renderStatusLine = () => (
+    <Box paddingX={1} width={columns} flexDirection="row" justifyContent="space-between" alignItems="center">
+      <Box flexDirection="row" gap={2} alignItems="center">
+        <Text bold color={myTheme.colors.primary}>⚡ Agentic TUI</Text>
+        <Tabs
+          tabs={TABS}
+          activeKey={activeTab}
+          onChange={(tab) => { setActiveModal(null); setActiveTab(tab); }}
+          variant="pills"
+          focus={false}
+          theme={myTheme}
+        />
+      </Box>
+      <Box flexDirection="row" gap={2} alignItems="center">
+        <StatusIndicator status={isConnected ? 'online' : 'offline'} label={isConnected ? 'Online' : 'Offline'} theme={myTheme} />
+        <Badge variant="success">MCP Active</Badge>
+        <Box flexDirection="row" gap={1} alignItems="center">
+          <Text bold color={activeModal === 'model' ? (myTheme.colors.focus ?? 'green') : 'cyan'}>
+            Model: <Text color="white">{selectedModel || 'none'}</Text>
+          </Text>
+          <Badge variant="info">{String(models.length || 0)}</Badge>
+        </Box>
+      </Box>
+      {columns >= 90 && (
+        <Box flexDirection="row" alignItems="center">
+          <Text color="gray" dimColor>{activeModal ? '[Esc Close Modal]' : '[Ctrl+O Model • Ctrl+T View]'}</Text>
+        </Box>
+      )}
+    </Box>
+  );
+
   if (isLoading) {
     return (
       <Box flexDirection="column" width={columns}>
@@ -128,52 +159,8 @@ const App: React.FC = () => {
 
   return (
     <Box flexDirection="column" width={columns}>
-      {/* Flat top nav — title, tabs, status, model on one line */}
-      <Box paddingX={1} flexDirection="column" width={columns}>
-        <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-          <Box flexDirection="row" gap={2} alignItems="center">
-            <Text bold color={myTheme.colors.primary}>
-              ⚡ Agentic TUI
-            </Text>
-            <Tabs
-              tabs={TABS}
-              activeKey={activeTab}
-              onChange={(tab) => {
-                setActiveModal(null);
-                setActiveTab(tab);
-              }}
-              variant="pills"
-              focus={false}
-              theme={myTheme}
-            />
-          </Box>
-
-          <Box flexDirection="row" gap={2} alignItems="center">
-            <StatusIndicator
-              status={isConnected ? 'online' : 'offline'}
-              label={isConnected ? 'Online' : 'Offline'}
-              theme={myTheme}
-            />
-            <Badge variant="success">MCP Active</Badge>
-            <Box flexDirection="row" gap={1} alignItems="center">
-              <Text bold color={activeModal === 'model' ? (myTheme.colors.focus ?? 'green') : 'cyan'}>
-                Model: <Text color="white">{selectedModel || 'none'}</Text>
-              </Text>
-              <Badge variant="info">{String(models.length || 0)}</Badge>
-            </Box>
-          </Box>
-
-          {columns >= 90 && (
-            <Box flexDirection="row" alignItems="center">
-              <Text color="gray" dimColor>{activeModal ? '[Esc Close Modal]' : '[Ctrl+O Model • Ctrl+T View]'}</Text>
-            </Box>
-          )}
-        </Box>
-      </Box>
-      <Divider width={columns} theme={myTheme} style={activeModal ? 'bold' : 'single'} />
-
       {activeModal ? (
-        <Box height={Math.max(6, rows - 5)} width={columns} alignItems="center" justifyContent="center">
+        <Box height={Math.max(6, rows - 3)} width={columns} alignItems="center" justifyContent="center">
           {activeModal === 'model' && (
             <Box flexDirection="column" borderStyle="round" borderColor={myTheme.colors.primary} paddingX={2} paddingY={1} width={Math.min(64, columns - 4)}>
               <Text bold color={myTheme.colors.primary}>Select Ollama Model</Text>
@@ -257,10 +244,12 @@ const App: React.FC = () => {
               models={models} isConnected={isConnected} theme={myTheme} isActive={activeTab === 'chat'}
               columns={columns} rows={rows} selectedModel={selectedModel} onSelectModel={(m) => { setSelectedModel(m); saveUserConfig({ model: m }); }}
               isSelectingModel={Boolean(activeModal)} onOpenModal={(m) => setActiveModal(m)}
+              statusLine={renderStatusLine()}
             />
           </Box>
-          <Box display={activeTab === 'system' ? 'flex' : 'none'} width={columns}>
+          <Box display={activeTab === 'system' ? 'flex' : 'none'} width={columns} flexDirection="column">
             <StatusBar client={client} tokenCount={calculateTokenCount()} theme={myTheme} width={columns} />
+            {renderStatusLine()}
           </Box>
         </>
       )}
