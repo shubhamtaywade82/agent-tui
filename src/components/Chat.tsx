@@ -1,43 +1,38 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { existsSync, readFileSync, appendFileSync } from 'fs';
-import { Box, Text, useInput } from 'ink';
-import { TextInput } from './ui/text-input/index.js';
-import { Divider } from './ui/divider/index.js';
-import { OllamaClient, Message } from '@nemesis-oss/ollama-sdk';
-import { ToastStack, useToast } from './ui/toast/index.js';
-import { ScrollArea } from './ui/scroll-area/index.js';
+import { existsSync, readFileSync, appendFileSync } from 'fs'; import { Box, Text, useInput } from 'ink';
+import { TextInput } from './ui/text-input/index.js'; import { Divider } from './ui/divider/index.js';
+import { OllamaClient, Message } from '@nemesis-oss/ollama-sdk'; import { ToastStack, useToast } from './ui/toast/index.js'; import { ScrollArea } from './ui/scroll-area/index.js';
 import { useFocusManager, useTerminalSize } from './ui/hooks/index.js';
 import { getActiveToolRegistry, consumeStream, dispatchSlashCommand, SLASH_COMMANDS, executeMcpCalls, loadAvailableSkills, loadUserConfig, saveUserConfig } from '../tools.js';
 import { ChatAccordion, renderSingleTurn, renderStreamingRows, parseTextToolCalls } from './ChatAccordion.js';
 
 export interface ChatMessage extends Message { timestamp?: number; thinking?: string; tokens?: number; }
 
-const HISTORY_FILE = '.history'; const MAX_HISTORY = 500;
-const loadLocalHistory = (): string[] => {
-  if (!existsSync(HISTORY_FILE)) return [];
-  try { return readFileSync(HISTORY_FILE, 'utf-8').split('\n').filter(Boolean).slice(-MAX_HISTORY).map((l) => { try { return JSON.parse(l); } catch { return l; } }); } catch { return []; }
-};
-const appendLocalHistory = (p: string) => { try { appendFileSync(HISTORY_FILE, JSON.stringify(p) + '\n', 'utf-8'); } catch {} };
+const HIST = '.history'; const appendHistory = (p: string) => { try { appendFileSync(HIST, JSON.stringify(p) + '\n', 'utf-8'); } catch {} };
+const loadHistory = (): string[] => existsSync(HIST) ? readFileSync(HIST, 'utf-8').split('\n').filter(Boolean).slice(-500).map((l) => { try { return JSON.parse(l); } catch { return l; } }) : [];
 
-const DEFAULT_SYSTEM_PROMPT =
-  `You are an expert AI assistant. Workspace: ${process.cwd()}. Use ruby-agent-skills via list_skills/read_skill and filesystem MCP tools when inspecting files.`;
-
-const prepareMessages = (h: ChatMessage[]): ChatMessage[] =>
-  h.some((m) => m.role === 'system') ? h : [{ role: 'system', content: DEFAULT_SYSTEM_PROMPT, timestamp: Date.now() }, ...h];
-
+const DEFAULT_SYSTEM_PROMPT = `You are an expert AI assistant. Workspace: ${process.cwd()}. Use ruby-agent-skills via list_skills/read_skill and filesystem MCP tools when inspecting files.`;
+const prepareMessages = (h: ChatMessage[]): ChatMessage[] => h.some((m) => m.role === 'system') ? h : [{ role: 'system', content: DEFAULT_SYSTEM_PROMPT, timestamp: Date.now() }, ...h];
 const isPrematureStall = (t: string): boolean => t.length <= 250 && /then i('ll| will)|(let me|i will) check/i.test(t);
+const cleanContinuation = (inp: string, acc: string): string => {
+  const norm = inp.trim().toLowerCase();
+  const c = acc.replace(/^["']|["']$/g, '').split('\n')[0]?.trim() || '';
+  if (!c || norm.startsWith(c.toLowerCase())) return '';
+  if (c.toLowerCase().startsWith(norm)) return c.slice(norm.length).trimStart();
+  const inW = norm.split(/\s+/); const accW = c.toLowerCase().split(/\s+/);
+  for (let i = Math.min(inW.length, accW.length); i > 0; i--) if (inW.slice(-i).join(' ') === accW.slice(0, i).join(' ')) return c.split(/\s+/).slice(i).join(' ');
+  return c;
+};
 
-const DEFAULT_PROMPTS = ['Create a Guide on Ruby OOPs', 'Explain architecture', 'Explore ruby-agent-skills', 'Refactor for KISS', 'Write unit tests'];
+const DEFAULT_PROMPTS = ['tell me about the architecture of this agent', 'tell me about available MCP tools and skills', 'how to test and run the agent', 'what tools and skills are available', 'why did the last command fail', 'create a new ruby agent skill', 'refactor this component for KISS', 'write unit tests for this function'];
 
 function getMenuOptions(input: string, models: string[]): Array<{ name: string; args?: string; desc: string }> {
   if (!input.startsWith('/')) return [];
   const low = input.toLowerCase();
   if (!input.includes(' ')) return SLASH_COMMANDS.filter((c) => c.name.startsWith(low));
   if (input.startsWith('/model ')) return models.filter((m) => m.toLowerCase().includes(input.slice(7).toLowerCase())).map((m) => ({ name: `/model ${m}`, desc: `Switch to ${m}` }));
-  if (input.startsWith('/skills ')) return loadAvailableSkills().filter((s) => s.name.includes(input.slice(8).toLowerCase())).slice(0, 10).map((s) => ({ name: `/skills ${s.name}`, desc: `${s.family}: ${s.triggers.slice(0, 24) || 'standard'}` }));
-  if (input.startsWith('/save ')) return ['chat.md', 'transcript.md'].filter((f) => f.includes(input.slice(6))).map((f) => ({ name: `/save ${f}`, desc: 'Save transcript' }));
-  if (input.startsWith('/style ')) return ['box', 'line'].filter((s) => s.startsWith(input.slice(7))).map((s) => ({ name: `/style ${s}`, desc: `Switch input style to ${s}` }));
-  return [];
+  if (input.startsWith('/skills ')) return loadAvailableSkills().filter((s) => s.name.includes(input.slice(8).toLowerCase())).slice(0, 10).map((s) => ({ name: `/skills ${s.name}`, desc: `${s.family}` }));
+  return input.startsWith('/style ') ? ['box', 'line'].filter((s) => s.startsWith(input.slice(7))).map((s) => ({ name: `/style ${s}`, desc: `Style: ${s}` })) : [];
 }
 
 interface ChatProps {
@@ -61,21 +56,45 @@ const Chat: React.FC<ChatProps> = ({
   const [inputStyle, setInputStyle] = useState<'box' | 'line'>(() => loadUserConfig().inputStyle || 'line');
   const selectedModel = propModel || models[0] || 'qwen3:8b'; const { toasts, show, dismiss } = useToast();
 
-  const termSize = useTerminalSize();
-  const columns = propCols ?? termSize.columns; const rows = propRows ?? termSize.rows;
+  const term = useTerminalSize(); const columns = propCols ?? term.columns; const rows = propRows ?? term.rows;
   const { isFocused, setFocus } = useFocusManager({ count: 2, initialIndex: 0, nextKey: 'none', prevKey: 'none' });
   const isInputFocused = isFocused(0); const isChatFocused = isFocused(1);
-  const [history, setHistory] = useState<string[]>(() => Array.from(new Set([...loadLocalHistory(), ...messages.filter((m) => m.role === 'user' && m.content.trim()).map((m) => m.content.trim())])));
+  const [history, setHistory] = useState<string[]>(() => Array.from(new Set([...loadHistory(), ...messages.filter((m) => m.role === 'user' && m.content.trim()).map((m) => m.content.trim())])));
+  const [ghostText, setGhostText] = useState(''); const lastReq = React.useRef(0); const abortRef = React.useRef<AbortController | null>(null);
 
   const activeMenu = useMemo(() => getMenuOptions(input, models), [input, models]);
-  const promptSuggestions = useMemo(() => {
-    if (!input.startsWith('/')) return Array.from(new Set([...history.filter((h) => !h.startsWith('/')), ...DEFAULT_PROMPTS])).reverse();
-    return activeMenu.length > 0 ? activeMenu.map((m) => m.name) : SLASH_COMMANDS.map((c) => c.name);
-  }, [input, activeMenu, history]);
+  const promptSuggestions = useMemo(() => input.startsWith('/')
+    ? (activeMenu.length > 0 ? activeMenu.map((m) => m.name) : SLASH_COMMANDS.map((c) => c.name))
+    : Array.from(new Set([...history.filter((h) => !h.startsWith('/')), ...DEFAULT_PROMPTS])).reverse(), [input, activeMenu, history]);
   const menuOverhead = activeMenu.length > 0 ? Math.min(activeMenu.length, 4) + 2 : 0;
   const chatHeight = Math.max(3, rows - 7 - menuOverhead - (toasts.length > 0 ? 1 : 0));
 
-  useEffect(() => { setSelectedCmdIndex(0); }, [input]);
+  useEffect(() => {
+    setSelectedCmdIndex(0); abortRef.current?.abort();
+    if (!input || input.startsWith('/') || phase !== 'idle' || !client) { setGhostText(''); return; }
+    const timer = setTimeout(async () => {
+      if (input.trim().length < 2) return;
+      const id = ++lastReq.current; const ac = new AbortController(); abortRef.current = ac;
+      try {
+        const comp = models.find((m) => /0\.[58]b|1b|tiny/i.test(m)) || selectedModel;
+        const prompt = `Instruction: Autocomplete prefix with 3 to 6 words.\n\nInput: How do I\nCompletion: install ruby gems\n\nInput: ${input}\nCompletion:`;
+        const stream = await client.generateStream({
+          model: comp, prompt, options: { num_predict: 8, temperature: 0.2, stop: ['\n', 'Input:', 'Completion:'] },
+          signal: ac.signal,
+        });
+        let acc = '';
+        for await (const chunk of stream) {
+          if (id !== lastReq.current || ac.signal.aborted) break;
+          if (chunk.type === 'token' && chunk.data?.delta) {
+            acc += chunk.data.delta;
+            const c = cleanContinuation(input, acc);
+            if (c) { const b = input.endsWith(' ') ? input : input + ' '; setGhostText(b + c.replace(/^\s+/, '')); }
+          }
+        }
+      } catch {}
+    }, 100);
+    return () => { lastReq.current++; abortRef.current?.abort(); clearTimeout(timer); };
+  }, [input, client, selectedModel, models, phase]);
   useEffect(() => { getActiveToolRegistry().then(setRegistry).catch(() => undefined); }, []);
 
   const toggleStyle = (target?: 'box' | 'line') => {
@@ -85,25 +104,21 @@ const Chat: React.FC<ChatProps> = ({
 
   useInput((inp, key) => {
     if (!isActive || isSelectingModel) return;
-    if (key.ctrl && (inp === 'a' || inp === '\x01')) setViewMode((v) => (v === 'stream' ? 'accordion' : 'stream'));
-    else if (key.ctrl && (inp === 'b' || inp === '\x02')) toggleStyle();
-    else if (inp === 't' && isChatFocused) setExpandThinking((p) => !p);
-    else if ((key.escape || key.tab) && isChatFocused) setFocus(0);
+    if (key.ctrl && (inp === 'a' || inp === '\x01')) return setViewMode((v) => (v === 'stream' ? 'accordion' : 'stream'));
+    if (key.ctrl && (inp === 'b' || inp === '\x02')) return toggleStyle();
+    if (inp === 't' && isChatFocused) return setExpandThinking((p) => !p);
+    if ((key.escape || key.tab) && isChatFocused) setFocus(0);
   });
 
   const resetStream = (p: typeof phase = 'idle') => { setPhase(p); setStreamedThinking(''); setStreamedContent(''); };
 
   const executeSlashCommand = (cmd: string): boolean => {
-    if (cmd === '/accordion') { setViewMode((v) => (v === 'stream' ? 'accordion' : 'stream')); return true; }
-    if (cmd.startsWith('/style')) {
-      const a = cmd.split(/\s+/)[1];
-      toggleStyle(a === 'box' || a === 'line' ? a : undefined); return true;
-    }
+    if (cmd === '/accordion') return (setViewMode((v) => (v === 'stream' ? 'accordion' : 'stream')), true);
+    if (cmd.startsWith('/style')) { const a = cmd.split(/\s+/)[1]; toggleStyle(a === 'box' || a === 'line' ? a : undefined); return true; }
     return dispatchSlashCommand(cmd, {
       messages, model: selectedModel, setModel: onSelectModel, models, showToast: show, registry,
       clearMessages: () => onSendMessage('/clear'), setMessages: setMessages ?? (() => {}),
-      addSystemCard: (text) => onSendMessage(undefined, text, undefined, { role: 'system', content: text, timestamp: Date.now() }),
-      openModal: onOpenModal,
+      addSystemCard: (t) => onSendMessage(undefined, t, undefined, { role: 'system', content: t, timestamp: Date.now() }), openModal: onOpenModal,
     });
   };
 
@@ -124,16 +139,14 @@ const Chat: React.FC<ChatProps> = ({
     }
     if (allowTools && toolCalls?.length && reg) {
       const asst: ChatMessage = { role: 'assistant', content: rawContent, thinking: thinking || undefined, tool_calls: toolCalls, timestamp: Date.now() };
-      onSendMessage(undefined, asst.content, asst.thinking, asst);
-      setPhase('executing-tools');
+      onSendMessage(undefined, asst.content, asst.thinking, asst); setPhase('executing-tools');
       show(`Executing: ${toolCalls.map((tc: any) => tc.function?.name || 'tool').join(', ')}...`, 'info', 2500);
       const toolMsgs = await executeMcpCalls(reg, toolCalls);
       toolMsgs.forEach((tm) => onSendMessage(undefined, tm.content, undefined, tm));
       return { asst, toolMsgs, done: false as const };
     }
     const clean = rawContent.replace(/<function[\s\S]*?<\/function>|<tool_call>[\s\S]*?<\/tool_call>/g, '').trim();
-    if (clean) { onSendMessage(undefined, clean, thinking || undefined); return { done: true as const, content: clean }; }
-    return { done: false as const, needsSynthesis: true as const };
+    return clean ? (onSendMessage(undefined, clean, thinking || undefined), { done: true as const, content: clean }) : { done: false as const, needsSynthesis: true as const };
   };
 
   const runAgentLoop = async (initialHistory: ChatMessage[]) => {
@@ -143,8 +156,7 @@ const Chat: React.FC<ChatProps> = ({
       for (let turn = 0; turn < 5; turn++) {
         const res = await executeSingleTurn(currentHistory, true);
         if (res.done) {
-          if (res.content && isPrematureStall(res.content)) currentHistory = [...currentHistory, { role: 'assistant', content: res.content, timestamp: Date.now() }];
-          else isDone = true;
+          (res.content && isPrematureStall(res.content)) ? (currentHistory = [...currentHistory, { role: 'assistant', content: res.content, timestamp: Date.now() }]) : (isDone = true);
           break;
         }
         if (res.asst && res.toolMsgs) currentHistory = [...currentHistory, res.asst, ...res.toolMsgs];
@@ -152,7 +164,7 @@ const Chat: React.FC<ChatProps> = ({
       }
       if (!isDone) {
         show('Synthesizing final response...', 'info', 3000); resetStream('thinking');
-        const synth: ChatMessage = { role: 'user', content: 'You have finished exploring. Now output the complete, comprehensive response to the original user request in full detail. Do not mention checking or searching further.', timestamp: Date.now() };
+        const synth: ChatMessage = { role: 'user', content: 'Output final comprehensive response in full detail.', timestamp: Date.now() };
         await executeSingleTurn([...currentHistory, synth], false);
       }
     } catch (err) {
@@ -164,19 +176,19 @@ const Chat: React.FC<ChatProps> = ({
   const handleSendMessage = async (message: string) => {
     const trimmed = message.trim();
     if (!trimmed || !client || phase !== 'idle') return;
+    setGhostText('');
+    const saveEntry = (t: string) => { setHistory((p) => p[p.length - 1] === t ? p : [...p, t]); appendHistory(t); };
+    let cmd = trimmed;
     if (trimmed.startsWith('/')) {
-      let cmd = trimmed;
       if (trimmed === '/' || !SLASH_COMMANDS.some((c) => c.name === trimmed.split(/\s+/)[0])) {
         const sel = activeMenu[selectedCmdIndex] || activeMenu[0];
         if (sel) { if (sel.args && trimmed === '/') { setInput(sel.name + ' '); return; } cmd = sel.name; }
       }
-      setHistory((prev) => (prev[prev.length - 1] === cmd ? prev : [...prev, cmd]));
-      appendLocalHistory(cmd); setInput(''); setSelectedCmdIndex(0);
+      saveEntry(cmd); setInput(''); setSelectedCmdIndex(0);
       if (!executeSlashCommand(cmd)) show(`Unknown command: ${cmd}. Type /help for manual`, 'error', 3000);
       return;
     }
-    setHistory((prev) => (prev[prev.length - 1] === trimmed ? prev : [...prev, trimmed]));
-    appendLocalHistory(trimmed); setInput(''); setScrollOffset(Infinity);
+    saveEntry(trimmed); setInput(''); setScrollOffset(Infinity);
     onSendMessage(trimmed); resetStream('thinking');
     await runAgentLoop([...messages, { role: 'user', content: trimmed, timestamp: Date.now() }]);
   };
@@ -187,12 +199,9 @@ const Chat: React.FC<ChatProps> = ({
     return true;
   };
   const handleTab = (): boolean => {
-    if (activeMenu.length > 0) {
-      const sel = activeMenu[selectedCmdIndex] || activeMenu[0];
-      if (sel) { setInput(sel.name.includes(' ') || !sel.args ? sel.name : sel.name + ' '); setSelectedCmdIndex(0); return true; }
-    }
-    if (input === '') { setFocus(1); return true; }
-    return false;
+    const sel = activeMenu[selectedCmdIndex] || activeMenu[0];
+    if (sel) { setInput(sel.name.includes(' ') || !sel.args ? sel.name : sel.name + ' '); setSelectedCmdIndex(0); return true; }
+    return input === '' ? (setFocus(1), true) : false;
   };
 
   const maxWidth = Math.max(20, columns - 8);
@@ -212,13 +221,12 @@ const Chat: React.FC<ChatProps> = ({
 
   const textInputNode = (
     <TextInput
-      value={input} onChange={setInput} onSubmit={handleSendMessage}
-      onUpArrow={() => handleArrow(-1)} onDownArrow={() => handleArrow(1)}
+      value={input} onChange={setInput} onSubmit={handleSendMessage} onUpArrow={() => handleArrow(-1)} onDownArrow={() => handleArrow(1)}
       onPageUp={() => { setScrollOffset((p) => Math.max(0, p - 6)); return true; }} onPageDown={() => { setScrollOffset((p) => Math.min(maxScrollOffset, p + 6)); return true; }}
       onTab={handleTab} onEscape={() => { if (input.startsWith('/')) { setInput(''); setSelectedCmdIndex(0); return true; } return false; }}
       history={history} focus={isActive && !isSelectingModel && isInputFocused} theme={theme}
       placeholder={isChatFocused ? 'Chat scroll focused — Press Tab or Esc to type...' : phase === 'thinking' ? '⚡ Thinking... [Esc stop]' : phase === 'executing-tools' ? '🔧 Running tools...' : phase === 'responding' ? 'Streaming... [Esc stop]' : 'Type prompt or /command...'}
-      disabled={phase !== 'idle'} showCounter={true} suggestions={promptSuggestions}
+      disabled={phase !== 'idle'} showCounter={true} suggestions={promptSuggestions} ghostText={ghostText}
       onCancel={() => { if (phase !== 'idle') { resetStream('idle'); show('Cancelled', 'warning', 2000); } }}
     />
   );
@@ -228,16 +236,10 @@ const Chat: React.FC<ChatProps> = ({
       <Box paddingX={1} width={columns}>
         {messages.length === 0 ? (
           <Box height={chatHeight} width="100%" flexDirection="column" alignItems="center" justifyContent="center">
-            <Box borderStyle="round" borderColor="cyan" paddingX={2} paddingY={0} flexDirection="column" alignItems="center" width={Math.min(74, columns - 4)}>
-              <Box flexDirection="row" gap={1}>
-                <Text bold color="cyan">⚡ AGENTIC HARNESS</Text>
-                <Text color="gray">│ <Text color="white" bold>Autonomous Agent Cockpit</Text> v1.0.0</Text>
-              </Box>
-              <Text color="gray">Model: <Text color="cyan" bold>{selectedModel}</Text> • Context: <Text color="white">16k tokens</Text> • <Text color="green">● MCP Active</Text></Text>
-              <Box flexDirection="column" width="100%">
-                <Text color="gray"><Text color="yellow">❯ </Text><Text color="white">Type an engineering prompt to begin reasoning & tool execution</Text></Text>
-                <Text color="gray"><Text color="yellow">❯ </Text>Type <Text color="cyan">/model</Text> switch model • <Text color="cyan">/skills</Text> load skills • <Text color="cyan">/tools</Text> inspect tools</Text>
-              </Box>
+            <Box borderStyle="round" borderColor="cyan" paddingX={2} flexDirection="column" alignItems="center" width={Math.min(74, columns - 4)}>
+              <Box flexDirection="row" gap={1}><Text bold color="cyan">⚡ AGENTIC HARNESS</Text><Text color="gray">│ <Text color="white" bold>Autonomous Agent Cockpit</Text></Text></Box>
+              <Text color="gray">Model: <Text color="cyan" bold>{selectedModel}</Text> • <Text color="green">● MCP Active</Text></Text>
+              <Text color="gray"><Text color="yellow">❯ </Text>Type prompt to reason & tools • <Text color="cyan">/model</Text> switch • <Text color="cyan">/skills</Text> load</Text>
               <Text color="gray" dimColor>[Tab Autocomplete • Ctrl+O Model • Ctrl+T View • Ctrl+A Accordion]</Text>
             </Box>
           </Box>
@@ -258,22 +260,21 @@ const Chat: React.FC<ChatProps> = ({
             <Text bold color="cyan">⚡ Suggestions & Commands</Text>
             <Text color="gray" dimColor>↑/↓ Nav • Tab Select • Enter Run • Esc Close ({selectedCmdIndex + 1}/{activeMenu.length})</Text>
           </Box>
-          {visibleCommands.map((c) => (
-            <Box key={c.name} flexDirection="row" gap={1}>
-              <Text bold color={c === activeMenu[selectedCmdIndex] ? 'cyan' : 'yellow'} inverse={c === activeMenu[selectedCmdIndex]}>
-                {c === activeMenu[selectedCmdIndex] ? '❯ ' : '  '}{c.name}
-              </Text>
-              {c.args && <Text color={c === activeMenu[selectedCmdIndex] ? 'white' : 'gray'}>{c.args}</Text>}
-              <Text color="gray" dimColor={c !== activeMenu[selectedCmdIndex]}>— {c.desc}</Text>
-            </Box>
-          ))}
+          {visibleCommands.map((c) => {
+            const sel = c === activeMenu[selectedCmdIndex];
+            return (
+              <Box key={c.name} flexDirection="row" gap={1}>
+                <Text bold color={sel ? 'cyan' : 'yellow'} inverse={sel}>{sel ? '❯ ' : '  '}{c.name}</Text>
+                {c.args && <Text color={sel ? 'white' : 'gray'}>{c.args}</Text>}
+                <Text color="gray" dimColor={!sel}>— {c.desc}</Text>
+              </Box>
+            );
+          })}
         </Box>
       )}
 
       {inputStyle === 'box' ? (
-        <Box borderStyle="round" borderColor={isInputFocused ? (theme?.colors?.focus ?? 'cyan') : (theme?.colors?.border ?? 'gray')} paddingX={1} width={columns}>
-          {textInputNode}
-        </Box>
+        <Box borderStyle="round" borderColor={isInputFocused ? (theme?.colors?.focus ?? 'cyan') : (theme?.colors?.border ?? 'gray')} paddingX={1} width={columns}>{textInputNode}</Box>
       ) : (
         <Box flexDirection="column" width={columns}>
           <Divider width={columns} theme={theme} color={isInputFocused ? (theme?.colors?.focus ?? 'cyan') : undefined} />
@@ -284,11 +285,10 @@ const Chat: React.FC<ChatProps> = ({
 
       <Box paddingX={1} width={columns} flexDirection="row" justifyContent="space-between">
         <Text color="gray" dimColor>
-          {isChatFocused ? '↑/↓ Scroll • Esc/Tab Type' : `PgUp/PgDn Scroll • Tab Complete • ↑/↓ History • Ctrl+B Style [${inputStyle}]`}
+          {isChatFocused ? '↑/↓ Scroll • Esc/Tab Type' : `PgUp/PgDn Scroll • Tab/→ Complete • Ctrl+→ Word • ↑/↓ History • Ctrl+B Style [${inputStyle}]`}
         </Text>
         <Box flexDirection="row" gap={1}>
-          {viewMode === 'stream' && scrollOffset > 0 && <Text color="yellow">▲ Above (PgUp)</Text>}
-          {viewMode === 'stream' && scrollOffset < maxScrollOffset && <Text color="yellow">▼ Below (PgDn)</Text>}
+          {viewMode === 'stream' && scrollOffset > 0 && <Text color="yellow">▲ Above (PgUp)</Text>}{viewMode === 'stream' && scrollOffset < maxScrollOffset && <Text color="yellow">▼ Below (PgDn)</Text>}
           {viewMode === 'accordion' && <Text color="cyan">[Accordion]</Text>}
         </Box>
       </Box>

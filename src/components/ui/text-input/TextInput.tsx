@@ -44,6 +44,8 @@ export interface TextInputProps {
   onCancel?: () => void;
   /** Maximum length limit */
   maxLength?: number;
+  /** Ghost autocomplete text to display after cursor */
+  ghostText?: string;
 }
 
 // ─── shared display ──────────────────────────────────────────────────────────
@@ -76,9 +78,7 @@ const InputDisplay: React.FC<DisplayProps> = ({
   value, placeholder, password, isFocused, cursor, theme, suggestionSuffix,
 }) => {
   const display = password ? '*'.repeat(value.length) : value;
-  if (!isFocused) {
-    return <Text color={value.length === 0 ? theme.colors.muted : undefined}>{value.length === 0 ? placeholder : display}</Text>;
-  }
+  if (!isFocused) return <Text color={value.length === 0 ? theme.colors.muted : undefined}>{value.length === 0 ? placeholder : display}</Text>;
   if (value.length === 0) {
     return (
       <Box>
@@ -95,11 +95,7 @@ const InputDisplay: React.FC<DisplayProps> = ({
       {cursor > 0 && <Text>{display.slice(0, cursor)}</Text>}
       <CursorChar char={cursorChar} color={theme.colors.focus} />
       {cursor < display.length - 1 && <Text>{display.slice(cursor + 1)}</Text>}
-      {atEnd && suggestionSuffix && (
-        <Text color="gray">
-          {remainder} <Text dimColor>[Tab]</Text>
-        </Text>
-      )}
+      {atEnd && suggestionSuffix && <Text color={theme.colors.muted}>{remainder} <Text dimColor>[Tab/→]</Text></Text>}
     </Box>
   );
 };
@@ -107,10 +103,8 @@ const InputDisplay: React.FC<DisplayProps> = ({
 // ─── history navigation hook ─────────────────────────────────────────────────
 
 function useHistoryNav(
-  history: string[] | undefined,
-  value: string,
-  onChange: (val: string) => void,
-  setCursor: (pos: number) => void,
+  history: string[] | undefined, value: string,
+  onChange: (val: string) => void, setCursor: (pos: number) => void,
 ) {
   const [index, setIndex] = useState(-1);
   const draftRef = React.useRef('');
@@ -123,8 +117,7 @@ function useHistoryNav(
       if (index === -1) draftRef.current = value;
       setIndex(target);
       const val = history[target]!;
-      onChange(val);
-      setCursor(val.length);
+      onChange(val); setCursor(val.length);
       return true;
     }
     if (index === -1) return false;
@@ -132,8 +125,7 @@ function useHistoryNav(
     const isDraft = target >= history.length;
     setIndex(isDraft ? -1 : target);
     const val = isDraft ? draftRef.current : history[target]!;
-    onChange(val);
-    setCursor(val.length);
+    onChange(val); setCursor(val.length);
     return true;
   };
 
@@ -149,66 +141,71 @@ interface FocusedInputProps extends TextInputProps {
 
 const FocusedInput: React.FC<FocusedInputProps> = ({
   value, onChange, onSubmit, onUpArrow, onDownArrow, onPageUp, onPageDown, onTab, onEscape, history, placeholder = '', password = false, theme,
-  suggestions, maxLength,
+  suggestions, maxLength, ghostText,
 }) => {
   const { exit } = useApp();
   const [cursor, setCursor] = useState(value.length);
   const { navigate, reset } = useHistoryNav(history, value, onChange, setCursor);
 
-  React.useEffect(() => {
-    setCursor((c) => Math.min(c, value.length));
-  }, [value.length]);
+  React.useEffect(() => { setCursor((c) => Math.min(c, value.length)); }, [value.length]);
 
   const activeSuggestion = React.useMemo(() => {
-    if (!suggestions || !value || password) return undefined;
+    if (password || !value) return undefined;
+    if (ghostText && ghostText.length > value.length && ghostText.toLowerCase().startsWith(value.toLowerCase())) {
+      return ghostText.slice(value.length);
+    }
+    if (!suggestions) return undefined;
     const match = suggestions.find((s) => s.toLowerCase().startsWith(value.toLowerCase()) && s.length > value.length);
     return match ? match.slice(value.length) : undefined;
-  }, [suggestions, value, password]);
+  }, [ghostText, suggestions, value, password]);
+
+  const confirmWord = () => {
+    const m = activeSuggestion?.match(/^(\s*\S+)/);
+    const chunk = m ? m[1]! : activeSuggestion!;
+    onChange(value + chunk); setCursor(value.length + chunk.length);
+  };
+  const confirmFull = () => {
+    const full = value + activeSuggestion!;
+    onChange(full); setCursor(full.length);
+  };
 
   useInput((input, key) => {
-    if (key.ctrl && input === 'c') { exit(); return; }
-    if (key.ctrl && input === 'a') { setCursor(0); return; }
-    if (key.ctrl && input === 'e') { setCursor(value.length); return; }
-    if (key.ctrl && (input === 'u' || input === 'k')) { onChange(''); setCursor(0); return; }
+    if (key.ctrl && input === 'c') return exit();
+    if (key.ctrl && input === 'a') return setCursor(0);
+    if (key.ctrl && input === 'e') return setCursor(value.length);
+    if (key.ctrl && (input === 'u' || input === 'k')) { onChange(''); return setCursor(0); }
     if (key.ctrl && input === 'w') {
       const res = deleteWordBackward(value, cursor);
-      onChange(res.text);
-      setCursor(res.cursor);
-      return;
+      onChange(res.text); return setCursor(res.cursor);
     }
-    if (key.escape && onEscape && onEscape()) return;
-    if (key.tab && onTab && onTab()) return;
-    if ((key.tab || (key.rightArrow && cursor === value.length)) && activeSuggestion) {
-      const full = value + activeSuggestion;
-      onChange(full);
-      setCursor(full.length);
-      return;
+
+    const isWordNav = (key.ctrl && key.rightArrow) || (key.meta && key.rightArrow) || input === '\x1b[1;5C' || input === '\x1b[5C' || input === '\x1b[1;3C';
+    const isSingleRight = key.rightArrow && !key.ctrl && !key.meta && !key.shift;
+
+    if (isWordNav) {
+      if (cursor === value.length && activeSuggestion) return confirmWord();
+      const match = value.slice(cursor).match(/^\s*\S+/);
+      return setCursor((c) => (match ? c + match[0].length : value.length));
     }
-    if (key.pageUp && onPageUp && onPageUp()) return;
-    if (key.pageDown && onPageDown && onPageDown()) return;
-    if (key.upArrow) {
-      if (onUpArrow && onUpArrow()) return;
-      navigate(-1);
-      return;
-    }
-    if (key.downArrow) {
-      if (onDownArrow && onDownArrow()) return;
-      navigate(1);
-      return;
-    }
-    if (key.leftArrow)  { setCursor((c) => Math.max(0, c - 1)); return; }
-    if (key.rightArrow) { setCursor((c) => Math.min(value.length, c + 1)); return; }
+    if (key.escape && onEscape?.()) return;
+    if (key.tab && onTab?.()) return;
+    if ((key.tab || (isSingleRight && cursor === value.length)) && activeSuggestion) return confirmFull();
+    if (key.pageUp && onPageUp?.()) return;
+    if (key.pageDown && onPageDown?.()) return;
+    if (key.upArrow) return onUpArrow?.() ? undefined : (navigate(-1), undefined);
+    if (key.downArrow) return onDownArrow?.() ? undefined : (navigate(1), undefined);
+    if (key.leftArrow) return setCursor((c) => Math.max(0, c - 1));
+    if (isSingleRight) return setCursor((c) => Math.min(value.length, c + 1));
     if (key.backspace || key.delete) {
       if (cursor === 0) return;
       onChange(value.slice(0, cursor - 1) + value.slice(cursor));
-      setCursor((c) => c - 1);
-      return;
+      return setCursor((c) => c - 1);
     }
-    if (key.return) { reset(); onSubmit?.(value); return; }
+    if (key.return) { reset(); return onSubmit?.(value); }
     if (key.tab || key.ctrl || key.meta || key.escape) return;
     if (/^\[?<\d+;\d+;\d+[Mm]/.test(input) || /^\[?M.../.test(input)) return;
-
     if (maxLength && value.length + input.length > maxLength) return;
+
     onChange(value.slice(0, cursor) + input + value.slice(cursor));
     setCursor((c) => c + input.length);
   });
@@ -225,7 +222,7 @@ const FocusedInput: React.FC<FocusedInputProps> = ({
 
 export const TextInput: React.FC<TextInputProps> = ({
   value, onChange, onSubmit, onUpArrow, onDownArrow, onPageUp, onPageDown, onTab, onEscape, history, placeholder = '', password = false, focus = true, label,
-  theme = darkTheme, suggestions, disabled = false, showCounter = false, onCancel, maxLength,
+  theme = darkTheme, suggestions, disabled = false, showCounter = false, onCancel, maxLength, ghostText,
 }) => {
   const { isRawModeSupported } = useStdin();
   const canFocus = focus && isRawModeSupported && !disabled;
@@ -248,7 +245,7 @@ export const TextInput: React.FC<TextInputProps> = ({
             value={value} onChange={onChange} onSubmit={onSubmit} onUpArrow={onUpArrow} onDownArrow={onDownArrow}
             onPageUp={onPageUp} onPageDown={onPageDown}
             onTab={onTab} onEscape={onEscape} history={history} placeholder={placeholder} password={password} focus={focus} theme={theme}
-            suggestions={suggestions} maxLength={maxLength}
+            suggestions={suggestions} maxLength={maxLength} ghostText={ghostText}
           />
         ) : (
           <InputDisplay
