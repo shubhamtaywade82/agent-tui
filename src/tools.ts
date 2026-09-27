@@ -1,11 +1,7 @@
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { z } from 'zod';
-import {
-  defineTool,
-  ToolRegistry,
-  registerMcpTools,
-  type McpClientLike,
-} from '@nemesis-oss/ollama-sdk';
+import { defineTool, ToolRegistry, registerMcpTools, type McpClientLike } from '@nemesis-oss/ollama-sdk';
+import { truncateToolOutput } from './utils/context.js';
 import { StdioTransport, StreamableHttpTransport, McpClient } from '@nemesis-oss/agentic-runtime/mcp';
 
 export interface McpServerConfig {
@@ -120,7 +116,7 @@ const activeClients: McpClient[] = [];
 export async function getActiveToolRegistry(): Promise<ToolRegistry> {
   if (registryPromise) return registryPromise;
   registryPromise = (async () => {
-    const registry = new ToolRegistry({ tools: [calculator, listSkillsTool, readSkillTool], timeoutMs: 15_000, maxConcurrency: 4, maxOutputChars: 15_000 });
+    const registry = new ToolRegistry({ tools: [calculator, listSkillsTool, readSkillTool], timeoutMs: 15_000, maxConcurrency: 4, maxOutputChars: 4000 });
     await Promise.allSettled(MCP_SERVERS.filter((s) => s.enabled).map(async (cfg) => {
       const client = await connectServer(cfg);
       if (!client) return;
@@ -291,7 +287,7 @@ export async function executeMcpCalls(
   const results = await registry.executeToolCalls(resolved);
   return results.map((res) => ({
     role: 'tool' as const,
-    content: res.outputString || (res.success ? 'Success' : 'Execution error'),
+    content: truncateToolOutput(res.outputString || (res.success ? 'Success' : 'Execution error'), 3500),
     tool_call_id: res.toolCallId,
     timestamp: Date.now(),
   }));

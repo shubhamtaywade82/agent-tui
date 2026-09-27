@@ -5,6 +5,7 @@ import { OllamaClient, Message } from '@nemesis-oss/ollama-sdk'; import { ToastS
 import { useFocusManager, useTerminalSize } from './ui/hooks/index.js';
 import { getActiveToolRegistry, consumeStream, dispatchSlashCommand, SLASH_COMMANDS, executeMcpCalls, loadAvailableSkills, loadUserConfig, saveUserConfig } from '../tools.js';
 import { ChatAccordion, renderSingleTurn, renderStreamingRows, parseTextToolCalls } from './ChatAccordion.js';
+import { budgetMessages } from '../utils/context.js';
 
 export interface ChatMessage extends Message { timestamp?: number; thinking?: string; tokens?: number; }
 
@@ -12,7 +13,7 @@ const HIST = '.history'; const appendHistory = (p: string) => { try { appendFile
 const loadHistory = (): string[] => existsSync(HIST) ? readFileSync(HIST, 'utf-8').split('\n').filter(Boolean).slice(-500).map((l) => { try { return JSON.parse(l); } catch { return l; } }) : [];
 
 const DEFAULT_SYSTEM_PROMPT = `You are an expert AI assistant. Workspace: ${process.cwd()}. Use ruby-agent-skills via list_skills/read_skill and filesystem MCP tools when inspecting files.`;
-const prepareMessages = (h: ChatMessage[]): ChatMessage[] => h.some((m) => m.role === 'system') ? h : [{ role: 'system', content: DEFAULT_SYSTEM_PROMPT, timestamp: Date.now() }, ...h];
+const prepareMessages = (h: ChatMessage[]): ChatMessage[] => budgetMessages(h.some((m) => m.role === 'system') ? h : [{ role: 'system', content: DEFAULT_SYSTEM_PROMPT, timestamp: Date.now() }, ...h], 9000);
 const isPrematureStall = (t: string): boolean => t.length <= 250 && /then i('ll| will)|(let me|i will) check/i.test(t);
 const cleanContinuation = (inp: string, acc: string): string => {
   const norm = inp.trim().toLowerCase();
@@ -56,10 +57,8 @@ function getMenuOptions(input: string, models: string[], ghost?: string, pool: s
 
 interface ChatProps {
   client: OllamaClient | null; messages: ChatMessage[]; theme?: any; isActive?: boolean;
-  onSendMessage: (u?: string, a?: string, t?: string, x?: Partial<ChatMessage>) => void;
-  setMessages?: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
-  models?: string[]; isConnected?: boolean; columns?: number; rows?: number;
-  selectedModel?: string; onSelectModel?: (m: string) => void;
+  onSendMessage: (u?: string, a?: string, t?: string, x?: Partial<ChatMessage>) => void; setMessages?: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
+  models?: string[]; isConnected?: boolean; columns?: number; rows?: number; selectedModel?: string; onSelectModel?: (m: string) => void;
   isSelectingModel?: boolean; onOpenModal?: (m: 'model' | 'clear' | 'skills') => void;
 }
 
@@ -144,7 +143,7 @@ const Chat: React.FC<ChatProps> = ({
     if (!registry && reg) setRegistry(reg);
     const stream = await client!.chatStream({
       model: selectedModel, messages: prepareMessages(chatHistory),
-      think: 'high', tools: (allowTools && reg) ? reg.definitions() : undefined, options: { temperature: 0.7, num_ctx: 8192 }, timeoutMs: 120000,
+      think: 'high', tools: (allowTools && reg) ? reg.definitions() : undefined, options: { temperature: 0.7, num_ctx: 16384 }, timeoutMs: 120000,
     });
     const { thinking, content } = await consumeStream(stream, (d) => setStreamedThinking((p) => p + d), (d) => { setPhase('responding'); setStreamedContent((p) => p + d); });
     const final = await stream.finalResult;
@@ -179,7 +178,12 @@ const Chat: React.FC<ChatProps> = ({
         await executeSingleTurn([...currentHistory, { role: 'user', content: 'Output final comprehensive response in full detail.', timestamp: Date.now() }], false);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err); show(`Error: ${msg}`, 'error', 4000); onSendMessage(undefined, `⚠️ Error: ${msg}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/exceed.*context/i.test(msg)) {
+        show('Context limit reached. Compacting & recovering...', 'warning', 3000);
+        try { await executeSingleTurn(prepareMessages(currentHistory.slice(-2)), false); return; } catch {}
+      }
+      show(`Error: ${msg}`, 'error', 4000); onSendMessage(undefined, `⚠️ Error: ${msg}`);
     } finally { resetStream('idle'); }
   };
 
@@ -195,18 +199,13 @@ const Chat: React.FC<ChatProps> = ({
         if (sel) { if (sel.args && trimmed === '/') return setInput(sel.name + ' '); cmd = sel.name; }
       }
       saveEntry(cmd); setInput(''); setSelectedCmdIndex(0);
-      if (!executeSlashCommand(cmd)) show(`Unknown command: ${cmd}. Type /help for manual`, 'error', 3000);
-      return;
+      return executeSlashCommand(cmd) ? undefined : (show(`Unknown command: ${cmd}. Type /help for manual`, 'error', 3000), undefined);
     }
     saveEntry(trimmed); setInput(''); setScrollOffset(Infinity); onSendMessage(trimmed); resetStream('thinking');
     await runAgentLoop([...messages, { role: 'user', content: trimmed, timestamp: Date.now() }]);
   };
 
-  const handleArrow = (d: -1 | 1): boolean => {
-    if (!activeMenu.length) return false;
-    setSelectedCmdIndex((p) => (d === 1 ? (p + 1) % activeMenu.length : p <= 0 ? activeMenu.length - 1 : p - 1));
-    return true;
-  };
+  const handleArrow = (d: -1 | 1): boolean => !activeMenu.length ? false : (setSelectedCmdIndex((p) => (d === 1 ? (p + 1) % activeMenu.length : p <= 0 ? activeMenu.length - 1 : p - 1)), true);
   const handleTab = (): boolean => {
     const sel = activeMenu[selectedCmdIndex] || activeMenu[0];
     if (sel) { setInput(sel.name.includes(' ') || !sel.args ? sel.name : sel.name + ' '); setSelectedCmdIndex(0); return true; }
