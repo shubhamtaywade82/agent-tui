@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { defineTool, ToolRegistry, registerMcpTools, type McpClientLike } from '@nemesis-oss/ollama-sdk';
 import { truncateToolOutput } from './utils/context.js';
 import { StdioTransport, StreamableHttpTransport, McpClient } from '@nemesis-oss/agentic-runtime/mcp';
+import { TASK_SLASH_COMMANDS, handleTasksCommand } from './tasks.js';
 
 export interface McpServerConfig {
   id: string; name: string; command?: string; args?: string[]; url?: string;
@@ -160,6 +161,7 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
   { name: '/save', args: '[file.md]', desc: 'Export chat transcript to disk' },
   { name: '/system', args: '[prompt]', desc: 'View or set system prompt' },
   { name: '/quit', desc: 'Exit the TUI harness gracefully' },
+  ...TASK_SLASH_COMMANDS,
 ];
 
 export interface CommandContext {
@@ -173,6 +175,7 @@ export interface CommandContext {
   addSystemCard: (text: string) => void;
   registry?: ToolRegistry | null;
   openModal?: (modal: 'model' | 'clear' | 'skills') => void;
+  runPrompt?: (text: string) => void;
 }
 
 function handleContextCmd(ctx: CommandContext): void {
@@ -227,6 +230,7 @@ export function dispatchSlashCommand(rawInput: string, ctx: CommandContext): boo
       }
       return true;
     case '/mcp': ctx.addSystemCard(formatMcpServersList()); return true;
+    case '/tasks': return handleTasksCommand(arg, ctx);
     case '/skills':
       if (arg) {
         const file = `${SKILLS_DIR}/skills/${arg}/SKILL.md`;

@@ -128,6 +128,12 @@ const Chat: React.FC<ChatProps> = ({
 
   const resetStream = (p: typeof phase = 'idle') => { setPhase(p); setStreamedThinking(''); setStreamedContent(''); };
 
+  const runPrompt = async (text: string) => {
+    if (phase !== 'idle') { show('Agent is busy; try again once it finishes', 'warning', 2500); return; }
+    onSendMessage(text); resetStream('thinking');
+    await runAgentLoop([...messages, { role: 'user', content: text, timestamp: Date.now() }]);
+  };
+
   const executeSlashCommand = (cmd: string): boolean => {
     if (cmd === '/accordion') return (setViewMode((v) => (v === 'stream' ? 'accordion' : 'stream')), true);
     if (cmd.startsWith('/style')) { const a = cmd.split(/\s+/)[1]; toggleStyle(a === 'box' || a === 'line' ? a : undefined); return true; }
@@ -135,6 +141,7 @@ const Chat: React.FC<ChatProps> = ({
       messages, model: selectedModel, setModel: onSelectModel, models, showToast: show, registry,
       clearMessages: () => onSendMessage('/clear'), setMessages: setMessages ?? (() => {}),
       addSystemCard: (t) => onSendMessage(undefined, t, undefined, { role: 'system', content: t, timestamp: Date.now() }), openModal: onOpenModal,
+      runPrompt: (text) => { void runPrompt(text); },
     });
   };
 
