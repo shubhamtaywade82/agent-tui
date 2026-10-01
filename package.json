@@ -8,14 +8,14 @@
     "dev": "tsx watch src/index.tsx",
     "demo": "tsx src/index.ts",
     "build": "tsc",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --import tsx --test test/tasks.test.ts"
   },
   "keywords": ["ai", "agent", "ollama", "tui", "ink", "mcp"],
   "author": "",
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "@nemesis-oss/agentic-runtime": "file:../agentic-runtime",
+    "@nemesis-oss/agentic-runtime": "^0.2.1",
     "@nemesis-oss/binance-sdk": "^2.0.0",
     "@nemesis-oss/ollama-sdk": "^1.7.0",
     "dotenv": "^17.4.2",

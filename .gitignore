@@ -6,3 +6,4 @@ dist
 *.db
 data.db
 .config.json
+.agent/
