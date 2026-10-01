@@ -1,4 +1,4 @@
-import { Ollama } from "@nemesis-oss/ollama-sdk";
+import { OllamaClient } from "@nemesis-oss/ollama-sdk";
 import {
   OllamaThoughtProcess,
 } from "@nemesis-oss/agentic-runtime/brain";
@@ -18,12 +18,11 @@ import {
 
 import { calculator } from "./tools.js";
 
-const client = new Ollama({
-  model: "openbmb/minicpm5-2b",
-});
+const client = new OllamaClient();
 
 const brain = new OllamaThoughtProcess({
   client,
+  model: "openbmb/minicpm5-2b",
 });
 
 const catalogue = new ToolkitCatalogue([
