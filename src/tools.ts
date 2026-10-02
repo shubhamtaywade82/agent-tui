@@ -5,6 +5,7 @@ import { defineTool, ToolRegistry, registerMcpTools, type McpClientLike } from '
 import { truncateToolOutput } from './utils/context.js';
 import { StdioTransport, StreamableHttpTransport, McpClient } from '@nemesis-oss/agentic-runtime/mcp';
 import { TASK_SLASH_COMMANDS, handleTasksCommand } from './tasks.js';
+import { envList } from './config.js';
 
 export interface McpServerConfig {
   id: string; name: string; command?: string; args?: string[]; url?: string;
@@ -14,7 +15,7 @@ export interface McpServerConfig {
 
 export const MCP_SERVERS: McpServerConfig[] = [
   { id: 'memory', name: 'Knowledge Graph Memory', command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'], enabled: true, description: 'Graph persistent memory' },
-  { id: 'filesystem', name: 'Local Filesystem', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', process.cwd()], enabled: true, description: 'File operations' },
+  { id: 'filesystem', name: 'Local Filesystem', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', process.cwd(), ...envList('AGENT_FS_EXTRA_DIRS', [])], enabled: true, description: 'File operations' },
   { id: 'time', name: 'Time & Timezones', command: 'uvx', args: ['mcp-server-time'], enabled: true, description: 'Time and timezones' },
   { id: 'fetch', name: 'Web Fetcher', command: 'uvx', args: ['mcp-server-fetch'], enabled: true, description: 'Web HTML to markdown' },
   { id: 'git', name: 'Git Repository', command: 'uvx', args: ['mcp-server-git', '--repository', process.cwd()], enabled: true, description: 'Git repo operations' },

@@ -86,7 +86,7 @@ function envInt(key: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function envList(key: string, fallback: string[]): string[] {
+export function envList(key: string, fallback: string[]): string[] {
   const v = process.env[key];
   if (!v) return fallback;
   return v.split(',').map((s) => s.trim()).filter(Boolean);
