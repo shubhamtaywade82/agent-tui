@@ -1,9 +1,27 @@
-node_modules
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Secrets & credentials — NEVER commit
 .env
-.DS_Store
-dist
-.history
-*.db
-data.db
-.config.json
+.env.*
+!.env.example
+github-token.txt
+*.pem
+*.key
+
+# Agent runtime artifacts
 .agent/
+.history
+.config.json
+chat-*.md
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+*.log

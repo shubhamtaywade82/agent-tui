@@ -102,7 +102,7 @@ function createMcpAdapter(client: McpClient, serverId?: string): McpClientLike {
   };
 }
 
-async function connectServer(cfg: McpServerConfig): Promise<McpClient | null> {
+export async function connectMcpServer(cfg: McpServerConfig): Promise<McpClient | null> {
   try {
     const transport = cfg.url || cfg.transport === 'http' ? new StreamableHttpTransport({ url: cfg.url! }) : new StdioTransport({ command: cfg.command!, args: cfg.args, env: cfg.env });
     const client = new McpClient({ serverId: cfg.id, transport });
@@ -119,7 +119,7 @@ export async function getActiveToolRegistry(): Promise<ToolRegistry> {
   registryPromise = (async () => {
     const registry = new ToolRegistry({ tools: [calculator, listSkillsTool, readSkillTool], timeoutMs: 15_000, maxConcurrency: 4, maxOutputChars: 4000 });
     await Promise.allSettled(MCP_SERVERS.filter((s) => s.enabled).map(async (cfg) => {
-      const client = await connectServer(cfg);
+      const client = await connectMcpServer(cfg);
       if (!client) return;
       activeClients.push(client);
       await registerMcpTools(registry, createMcpAdapter(client, cfg.id));
@@ -135,6 +135,11 @@ export async function closeMcpServers(): Promise<void> {
   }
   activeClients.length = 0;
   registryPromise = null;
+}
+
+/** Register all tools from a connected MCP client into a tool registry. */
+export async function registerMcp(registry: ToolRegistry, client: McpClient, serverId?: string): Promise<void> {
+  await registerMcpTools(registry, createMcpAdapter(client, serverId));
 }
 
 export async function consumeStream(stream: AsyncIterable<any>, onThinking: (d: string) => void, onToken: (d: string) => void): Promise<{ thinking: string; content: string }> {

@@ -1,16 +1,33 @@
 {
   "name": "agentic-tui",
-  "version": "1.0.0",
-  "description": "Agentic Terminal User Interface powered by Ollama and InkUI",
+  "version": "2.0.0",
+  "description": "Agentic TUI + Headless CLI + API server — multi-provider AI agent (Ollama, OpenAI, Anthropic, Z.ai) with MCP, RAG, multimodal tools, and session persistence",
   "main": "src/index.ts",
+  "bin": {
+    "agent-tui": "src/index.ts"
+  },
   "scripts": {
     "start": "tsx src/index.tsx",
     "dev": "tsx watch src/index.tsx",
-    "demo": "tsx src/index.ts",
+    "tui": "tsx src/index.tsx",
+    "cli": "tsx src/index.ts",
+    "run": "tsx src/index.ts run",
+    "repl": "tsx src/index.ts repl",
+    "serve": "tsx src/index.ts serve",
+    "doctor": "tsx src/index.ts doctor",
+    "demo": "tsx src/index.ts run 'Use the calculator tool to compute 125 * 38 and explain the result.'",
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/tasks.test.ts"
   },
-  "keywords": ["ai", "agent", "ollama", "tui", "ink", "mcp"],
+  "keywords": [
+    "ai",
+    "agent",
+    "ollama",
+    "tui",
+    "ink",
+    "mcp"
+  ],
   "author": "",
   "license": "ISC",
   "type": "module",
@@ -21,6 +38,7 @@
     "dotenv": "^17.4.2",
     "ink": "^7.1.1",
     "react": "^19.3.0",
+    "z-ai-web-dev-sdk": "^0.0.18",
     "zod": "^3.25.76"
   },
   "devDependencies": {
