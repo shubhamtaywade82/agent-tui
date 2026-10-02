@@ -68,6 +68,17 @@ function loadSystemPrompt(): string {
   return DEFAULT_SYSTEM_PROMPT;
 }
 
+// ponytail: some models emit tool names with a prefix ("functions.run_shell")
+// or a common alias ("bash") instead of the registered name — normalize once
+// here rather than letting a mismatch silently kill the whole tool call.
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  bash: 'run_shell', shell: 'run_shell', sh: 'run_shell', execute_command: 'run_shell', exec: 'run_shell',
+};
+function normalizeToolName(raw: string): string {
+  const stripped = raw.trim().replace(/^(functions?|tools?)\./, '');
+  return TOOL_NAME_ALIASES[stripped] ?? stripped;
+}
+
 /** Execute a batch of tool calls via the registry. */
 async function executeToolCalls(
   toolCalls: ToolCall[],
@@ -77,7 +88,7 @@ async function executeToolCalls(
 ): Promise<ChatMessage[]> {
   const results: ChatMessage[] = [];
   for (const tc of toolCalls) {
-    const name = tc.function.name;
+    const name = normalizeToolName(tc.function.name);
     const args = typeof tc.function.arguments === 'string' ? safeParse(tc.function.arguments) : tc.function.arguments;
     opts.onToolCall?.(name, args);
     metrics.incToolCall();

@@ -1,6 +1,9 @@
 import React from 'react';
 import { render } from 'ink';
 import App from './App.js';
+import { initLogger } from './logger.js';
+
+initLogger();
 
 // Switch to alternate screen buffer to prevent shell scrollback flicker
 if (process.stdout.isTTY) {
