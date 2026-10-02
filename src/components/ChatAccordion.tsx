@@ -66,8 +66,10 @@ function renderMessageContent(msg: ChatMessage, idx: number, opts: TurnOptions):
     const text = preview.length > maxW ? `${preview.slice(0, maxW - 3)}...` : preview;
     return [<Box key={`tr-${idx}`} paddingLeft={2}><Text color="cyan" dimColor>↳ {text}</Text></Box>];
   }
+  const content = msg.role === 'user' ? msg.content.split('\n').slice(1).join('\n') : msg.content;
+  if (msg.role === 'user' && !content) return [];
   const nodes = msg.role === 'user'
-    ? msg.content.split('\n').flatMap((l, li) => wrapTextLine(l, opts.maxWidth).map((wl, wli) => <Text key={`${li}-${wli}`}>{wl || ' '}</Text>))
+    ? content.split('\n').flatMap((l, li) => wrapTextLine(l, opts.maxWidth).map((wl, wli) => <Text key={`${li}-${wli}`}>{wl || ' '}</Text>))
     : parseMarkdownBlocks(msg.content, opts.theme, opts.maxWidth);
   return nodes.map((n, bi) => <Box key={`c-${idx}-${bi}`} paddingLeft={2}>{n}</Box>);
 }
@@ -75,7 +77,19 @@ function renderMessageContent(msg: ChatMessage, idx: number, opts: TurnOptions):
 export function renderSingleTurn(msg: ChatMessage, mi: number, opts: TurnOptions): React.ReactElement[] {
   const items: React.ReactElement[] = [];
   if (mi > 0) items.push(<Box key={`gap-${mi}`}><Text>{' '}</Text></Box>);
-  items.push(renderMessageHeader(msg, mi));
+  if (msg.role === 'user') {
+    const time = msg.timestamp ? formatTime(msg.timestamp) : '';
+    const firstLine = msg.content.split('\n', 1)[0] ?? '';
+    items.push(
+      <Box key={`h-${mi}`} flexDirection="row" width={opts.maxWidth + 2} alignItems="center">
+        <Text bold color="cyan">❯</Text>
+        <Box flexGrow={1}><Text wrap="wrap">{` ${firstLine}`}</Text></Box>
+        {time && <Text color="gray" dimColor>{` · ${time}`}</Text>}
+      </Box>
+    );
+  } else {
+    items.push(renderMessageHeader(msg, mi));
+  }
 
   if (msg.thinking) {
     const tok = Math.ceil(msg.thinking.length / 4);
