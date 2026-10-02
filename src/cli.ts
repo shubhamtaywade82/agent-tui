@@ -41,7 +41,7 @@ COMMANDS:
   tools describe <name>   Show a tool's parameter schema.
   models                 List available models from the active provider.
   doctor                 Diagnose provider/tool/MCP health.
-  bootstrap              Clone the ruby-agent-skills pack into .agent/skills/.
+  bootstrap              Clone all skill packs (ruby, react, node) into .agent/skills/.
   serve [port]           Start the HTTP API server (default 8787).
 
 OPTIONS (apply to run/repl/batch):
@@ -292,32 +292,49 @@ async function cmdDoctor(): Promise<number> {
   return 0;
 }
 
-/** Clone the ruby-agent-skills pack into .agent/skills/ so skills work out-of-the-box. */
+/** Clone all engineering skill packs (ruby, react, node) into .agent/skills/. */
 async function cmdBootstrap(): Promise<number> {
-  const { existsSync, mkdirSync } = await import('node:fs');
+  const { existsSync, mkdirSync, readdirSync } = await import('node:fs');
   const { resolve } = await import('node:path');
   const { execFileSync } = await import('node:child_process');
-  const target = resolve(process.cwd(), '.agent/skills/ruby-agent-skills');
-  if (existsSync(target)) {
-    console.log(`✓ Skills pack already present at ${target}`);
-    try { execFileSync('git', ['-C', target, 'pull', '--ff-only'], { stdio: 'inherit' }); } catch { /* offline is fine */ }
-    return 0;
+  const root = resolve(process.cwd(), '.agent/skills');
+  mkdirSync(root, { recursive: true });
+
+  const packs = [
+    { id: 'ruby-agent-skills', repo: 'https://github.com/shubhamtaywade82/ruby-agent-skills.git' },
+    { id: 'react-agent-skills', repo: 'https://github.com/shubhamtaywade82/react-agent-skills.git' },
+    { id: 'node-agent-skills', repo: 'https://github.com/shubhamtaywade82/node-agent-skills.git' },
+  ];
+
+  let totalSkills = 0;
+  let failed = 0;
+  for (const pack of packs) {
+    const target = resolve(root, pack.id);
+    try {
+      if (existsSync(target)) {
+        console.log(`✓ ${pack.id} already present — pulling latest`);
+        try { execFileSync('git', ['-C', target, 'pull', '--ff-only'], { stdio: 'inherit' }); } catch { /* offline is fine */ }
+      } else {
+        console.log(`Cloning ${pack.id} ...`);
+        execFileSync('git', ['clone', '--depth', '1', pack.repo, target], { stdio: 'inherit' });
+      }
+      const count = readdirSync(resolve(target, 'skills')).filter((d) => !d.startsWith('.')).length;
+      totalSkills += count;
+      console.log(`  → ${count} skills in ${pack.id}`);
+    } catch (e: any) {
+      console.error(`✗ ${pack.id} failed: ${e.message}`);
+      failed++;
+    }
   }
-  mkdirSync(resolve(target, '..'), { recursive: true });
-  console.log(`Cloning ruby-agent-skills into ${target} ...`);
-  try {
-    execFileSync('git', ['clone', '--depth', '1', 'https://github.com/shubhamtaywade82/ruby-agent-skills.git', target], { stdio: 'inherit' });
-    const rev = execFileSync('git', ['-C', target, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim();
-    const { readdirSync } = await import('node:fs');
-    const count = readdirSync(resolve(target, 'skills')).filter((d) => !d.startsWith('.')).length;
-    console.log(`\n✓ Skills pack cloned (rev ${rev}, ${count} skills).`);
-    console.log(`  Skills are now auto-detected — no SKILLS_PATH env needed.`);
-    return 0;
-  } catch (e: any) {
-    console.error(`✗ Clone failed: ${e.message}`);
-    console.error(`  Clone manually: git clone https://github.com/shubhamtaywade82/ruby-agent-skills.git ${target}`);
+
+  if (failed === packs.length) {
+    console.error('\n✗ All skill packs failed to clone.');
     return 1;
   }
+  console.log(`\n✓ Bootstrap complete — ${totalSkills} skills across ${packs.length - failed} packs.`);
+  console.log(`  Skills are auto-detected — no SKILLS_PATH env needed.`);
+  console.log(`  Packs: ${packs.map((p) => p.id).join(', ')}`);
+  return 0;
 }
 
 /** Main CLI entry — returns exit code. */
