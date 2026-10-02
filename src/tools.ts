@@ -116,11 +116,19 @@ export const saveUserConfig = (patch: Partial<UserConfig>): void => {
   try { writeFileSync(CONFIG_FILE, JSON.stringify({ ...loadUserConfig(), ...patch }, null, 2), 'utf8'); } catch {}
 };
 
+// ponytail: weak models re-query list_skills/read_skill endlessly instead of proceeding;
+// hard-cap the lookup budget per process rather than relying on prompt wording.
+const SKILL_LOOKUP_BUDGET = 2;
+let skillLookupCalls = 0;
+export function resetSkillLookupBudget(): void { skillLookupCalls = 0; }
+const SKILL_BUDGET_EXHAUSTED = 'Skill lookup budget exhausted. Stop calling list_skills/read_skill — proceed with the task now using your own knowledge.';
+
 export const listSkillsTool = defineTool({
   name: 'list_skills',
-  description: 'List available engineering skills from ruby-agent-skills pack (Ruby, Rails, OOP, Clean Code).',
+  description: 'List available engineering skills from ruby-agent-skills pack (Ruby, Rails, OOP, Clean Code). Call at most once per task.',
   schema: z.object({ query: z.string().optional().describe('Keyword or topic to filter skills') }),
   execute: async ({ query }: { query?: string }) => {
+    if (skillLookupCalls++ >= SKILL_LOOKUP_BUDGET) return SKILL_BUDGET_EXHAUSTED;
     const skills = loadAvailableSkills();
     const q = query?.toLowerCase();
     const list = q ? skills.filter((s) => s.name.includes(q) || s.family.includes(q) || s.triggers.toLowerCase().includes(q)) : skills;
@@ -131,9 +139,10 @@ export const listSkillsTool = defineTool({
 
 export const readSkillTool = defineTool({
   name: 'read_skill',
-  description: 'Read the full guidelines and rules from a specific engineering skill (e.g. "ruby-oop").',
+  description: 'Read the full guidelines and rules from a specific engineering skill (e.g. "ruby-oop"). Call at most once per task.',
   schema: z.object({ name: z.string().describe('Skill name (e.g. ruby-oop, ruby-clean-code)') }),
   execute: async ({ name }: { name: string }) => {
+    if (skillLookupCalls++ >= SKILL_LOOKUP_BUDGET) return SKILL_BUDGET_EXHAUSTED;
     const file = findSkillFile(name);
     if (!file) return `Skill "${name}" not found in any pack. Use list_skills to find valid names.`;
     return readFileSync(file, 'utf8');

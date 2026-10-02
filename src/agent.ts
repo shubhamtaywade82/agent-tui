@@ -9,6 +9,7 @@
  */
 import { getProviderAsync, parseTextToolCalls, type LLMProvider, type ChatMessage, type ToolCall, type StreamCallbacks } from './providers.js';
 import { getToolRegistry, closeToolRegistry } from './toolbox/index.js';
+import { resetSkillLookupBudget } from './tools.js';
 import { budgetMessages, truncateToolOutput } from './utils/context.js';
 import { loadConfig, type AgentConfig } from './config.js';
 import { log, RunMetrics } from './logger.js';
@@ -123,6 +124,7 @@ export async function runAgent(
   const model = opts.model ?? cfg.provider[cfg.provider.active].defaultModel;
   const maxIter = opts.maxIterations ?? cfg.maxIterations;
   const metrics = new RunMetrics();
+  resetSkillLookupBudget();
 
   log.info('Agent run starting', { provider: provider.name, model, prompt: userPrompt.slice(0, 80), history: history.length });
 
