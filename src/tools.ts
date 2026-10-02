@@ -1,4 +1,5 @@
-import { writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import { resolve, basename } from 'node:path';
 import { z } from 'zod';
 import { defineTool, ToolRegistry, registerMcpTools, type McpClientLike } from '@nemesis-oss/ollama-sdk';
 import { truncateToolOutput } from './utils/context.js';
@@ -32,21 +33,76 @@ export const calculator = defineTool({
   },
 });
 
-const SKILLS_DIR = process.env['SKILLS_PATH'] || `${process.env['HOME']}/projects/agent-skills/ruby-agent-skills`;
-
-export function loadAvailableSkills(): Array<{ name: string; family: string; path: string; triggers: string }> {
-  const manifest = `${SKILLS_DIR}/skill-manifest.yml`;
-  if (!existsSync(manifest)) return [];
-  try {
-    const raw = readFileSync(manifest, 'utf8');
-    const skills: Array<{ name: string; family: string; path: string; triggers: string }> = [];
-    const re = /^\s{2}([a-z0-9\-]+):\s*\n\s+family:\s*([^\n]+)\n\s+path:\s*([^\n]+)\n(?:\s+triggers:\s*\[([^\]]*)\])?/gm;
-    let m;
-    while ((m = re.exec(raw)) !== null) {
-      skills.push({ name: m[1]!, family: m[2]!.trim(), path: m[3]!.trim(), triggers: m[4]?.trim() || '' });
+/** Resolve the list of skill-pack directories.
+ *  Priority: SKILLS_PATH env (colon-separated) → all packs under .agent/skills/ → legacy fallback.
+ */
+function resolveSkillsDirs(): string[] {
+  const dirs: string[] = [];
+  const env = process.env['SKILLS_PATH'];
+  if (env) {
+    for (const p of env.split(':').map((s) => s.trim()).filter(Boolean)) {
+      if (existsSync(p)) dirs.push(p);
     }
-    return skills;
-  } catch { return []; }
+  }
+  // Auto-discover all packs under .agent/skills/
+  const bundledRoot = resolve(process.cwd(), '.agent/skills');
+  if (existsSync(bundledRoot)) {
+    try {
+      for (const entry of readdirSync(bundledRoot)) {
+        const p = resolve(bundledRoot, entry);
+        if (existsSync(resolve(p, 'skill-manifest.yml'))) dirs.push(p);
+      }
+    } catch {}
+  }
+  // Legacy fallback path
+  if (!dirs.length) {
+    const legacy = `${process.env['HOME']}/projects/agent-skills/ruby-agent-skills`;
+    dirs.push(env || legacy);
+  }
+  return dirs;
+}
+
+export const SKILLS_DIRS = resolveSkillsDirs();
+/** Back-compat: first pack (or legacy path) — used by older callers. */
+export const SKILLS_DIR = SKILLS_DIRS[0] ?? '';
+
+export function loadAvailableSkills(): Array<{ name: string; family: string; path: string; triggers: string; pack: string }> {
+  const skills: Array<{ name: string; family: string; path: string; triggers: string; pack: string }> = [];
+  for (const dir of SKILLS_DIRS) {
+    const manifest = resolve(dir, 'skill-manifest.yml');
+    if (!existsSync(manifest)) continue;
+    try {
+      const raw = readFileSync(manifest, 'utf8');
+      const pack = basename(dir);
+      // Format 1 (ruby): "  skill-name:\n    family: X\n    path: Y\n    triggers: [Z]"
+      const re1 = /^\s{2}([a-z0-9\-]+):\s*\n\s+family:\s*([^\n]+)\n\s+path:\s*([^\n]+)\n(?:\s+triggers:\s*\[([^\]]*)\])?/gm;
+      let m: RegExpExecArray | null;
+      while ((m = re1.exec(raw)) !== null) {
+        skills.push({ name: m[1]!, family: m[2]!.trim(), path: m[3]!.trim(), triggers: m[4]?.trim() || '', pack });
+      }
+      if (skills.some((s) => s.pack === pack)) continue; // format 1 matched, skip other formats
+      // Format 2 (react/node): "  - name: X\n    path: Y\n    triggers: [Z]" or "    category: C"
+      const re2 = /^\s*-\s+name:\s*([a-z0-9\-]+)\s*\n(?:\s+(?:path|category|family):\s*([^\n]+)\s*\n)?(?:\s+(?:path|triggers):\s*([^\n]+)\s*\n)?(?:\s+triggers:\s*\[([^\]]*)\])?/gm;
+      while ((m = re2.exec(raw)) !== null) {
+        const name = m[1]!;
+        const fam = (m[2] || m[3] || '').trim();
+        const triggers = m[4]?.trim() || '';
+        if (!skills.some((s) => s.pack === pack && s.name === name)) {
+          skills.push({ name, family: fam || 'general', path: `skills/${name}/SKILL.md`, triggers, pack });
+        }
+      }
+    } catch {}
+  }
+  return skills;
+}
+
+/** Locate a skill's SKILL.md file across all packs. Returns the path or empty string. */
+export function findSkillFile(name: string): string {
+  for (const dir of SKILLS_DIRS) {
+    const file = resolve(dir, 'skills', name, 'SKILL.md');
+    if (existsSync(file)) return file;
+  }
+  return '';
 }
 
 export interface UserConfig { model?: string; systemPrompt?: string; inputStyle?: 'box' | 'line'; }
@@ -77,8 +133,8 @@ export const readSkillTool = defineTool({
   description: 'Read the full guidelines and rules from a specific engineering skill (e.g. "ruby-oop").',
   schema: z.object({ name: z.string().describe('Skill name (e.g. ruby-oop, ruby-clean-code)') }),
   execute: async ({ name }: { name: string }) => {
-    const file = `${SKILLS_DIR}/skills/${name}/SKILL.md`;
-    if (!existsSync(file)) return `Skill "${name}" not found at ${file}. Use list_skills to find valid names.`;
+    const file = findSkillFile(name);
+    if (!file) return `Skill "${name}" not found in any pack. Use list_skills to find valid names.`;
     return readFileSync(file, 'utf8');
   },
 });
@@ -102,7 +158,7 @@ function createMcpAdapter(client: McpClient, serverId?: string): McpClientLike {
   };
 }
 
-async function connectServer(cfg: McpServerConfig): Promise<McpClient | null> {
+export async function connectMcpServer(cfg: McpServerConfig): Promise<McpClient | null> {
   try {
     const transport = cfg.url || cfg.transport === 'http' ? new StreamableHttpTransport({ url: cfg.url! }) : new StdioTransport({ command: cfg.command!, args: cfg.args, env: cfg.env });
     const client = new McpClient({ serverId: cfg.id, transport });
@@ -119,7 +175,7 @@ export async function getActiveToolRegistry(): Promise<ToolRegistry> {
   registryPromise = (async () => {
     const registry = new ToolRegistry({ tools: [calculator, listSkillsTool, readSkillTool], timeoutMs: 15_000, maxConcurrency: 4, maxOutputChars: 4000 });
     await Promise.allSettled(MCP_SERVERS.filter((s) => s.enabled).map(async (cfg) => {
-      const client = await connectServer(cfg);
+      const client = await connectMcpServer(cfg);
       if (!client) return;
       activeClients.push(client);
       await registerMcpTools(registry, createMcpAdapter(client, cfg.id));
@@ -135,6 +191,11 @@ export async function closeMcpServers(): Promise<void> {
   }
   activeClients.length = 0;
   registryPromise = null;
+}
+
+/** Register all tools from a connected MCP client into a tool registry. */
+export async function registerMcp(registry: ToolRegistry, client: McpClient, serverId?: string): Promise<void> {
+  await registerMcpTools(registry, createMcpAdapter(client, serverId));
 }
 
 export async function consumeStream(stream: AsyncIterable<any>, onThinking: (d: string) => void, onToken: (d: string) => void): Promise<{ thinking: string; content: string }> {
@@ -233,13 +294,13 @@ export function dispatchSlashCommand(rawInput: string, ctx: CommandContext): boo
     case '/tasks': return handleTasksCommand(arg, ctx);
     case '/skills':
       if (arg) {
-        const file = `${SKILLS_DIR}/skills/${arg}/SKILL.md`;
-        if (existsSync(file)) {
+        const file = findSkillFile(arg);
+        if (file) {
           ctx.setMessages((prev) => [{ role: 'system', content: `[Skill loaded: ${arg}]\n\n${readFileSync(file, 'utf8')}`, timestamp: Date.now() }, ...prev]);
           ctx.showToast(`Loaded skill: ${arg}`, 'info', 2500);
-        } else ctx.showToast(`Skill ${arg} not found`, 'error', 3000);
+        } else ctx.showToast(`Skill ${arg} not found in any pack`, 'error', 3000);
       } else if (ctx.openModal) ctx.openModal('skills');
-      else ctx.addSystemCard(`Available Skills:\n${loadAvailableSkills().slice(0, 15).map((s) => `• ${s.name}`).join('\n')}`);
+      else ctx.addSystemCard(`Available Skills:\n${loadAvailableSkills().slice(0, 15).map((s) => `• ${s.name} [${s.pack}]`).join('\n')}`);
       return true;
     case '/model':
       if (arg && ctx.setModel) { ctx.setModel(arg); saveUserConfig({ model: arg }); ctx.showToast(`Switched to ${arg}`, 'info', 2000); }

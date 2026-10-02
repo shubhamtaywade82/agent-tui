@@ -1,8 +1,27 @@
-node_modules
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Secrets & credentials — NEVER commit
 .env
-.DS_Store
-dist
+.env.*
+!.env.example
+github-token.txt
+*.pem
+*.key
+
+# Agent runtime artifacts (skills pack is fetched on-demand via `agent-tui bootstrap`)
+.agent/
 .history
-*.db
-data.db
 .config.json
+chat-*.md
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+*.log
