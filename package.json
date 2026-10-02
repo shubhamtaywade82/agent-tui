@@ -34,7 +34,7 @@
   "dependencies": {
     "@nemesis-oss/agentic-runtime": "^0.2.1",
     "@nemesis-oss/binance-sdk": "^2.0.0",
-    "@nemesis-oss/ollama-sdk": "^1.7.0",
+    "@nemesis-oss/ollama-sdk": "^1.8.0",
     "dotenv": "^17.4.2",
     "ink": "^7.1.1",
     "react": "^19.3.0",
