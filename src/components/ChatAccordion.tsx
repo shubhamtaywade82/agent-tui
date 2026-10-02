@@ -41,7 +41,7 @@ const formatTime = (ts?: number): string => {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 };
 
-export function renderMessageHeader(msg: ChatMessage, idx: number, showTime = true): React.ReactElement {
+export function renderMessageHeader(msg: ChatMessage, idx: number, showTime = true, width?: number): React.ReactElement {
   const conf = msg.role === 'user'
     ? { icon: '❯', label: undefined, color: 'cyan' }
     : msg.role === 'tool'
@@ -51,9 +51,11 @@ export function renderMessageHeader(msg: ChatMessage, idx: number, showTime = tr
     : { icon: '✦', label: undefined, color: 'green' };
   const time = msg.timestamp ? formatTime(msg.timestamp) : '';
   return (
-    <Box key={`h-${idx}`} flexDirection="row" gap={1} alignItems="center">
-      <Text bold color={conf.color}>{conf.icon}</Text>
-      {conf.label && <Text bold color={conf.color === 'gray' ? 'gray' : 'white'}>{conf.label}</Text>}
+    <Box key={`h-${idx}`} flexDirection="row" width={width} justifyContent={width && !conf.label ? 'space-between' : undefined} alignItems="center">
+      <Box flexDirection="row" gap={1} alignItems="center">
+        <Text bold color={conf.color}>{conf.icon}</Text>
+        {conf.label && <Text bold color={conf.color === 'gray' ? 'gray' : 'white'}>{conf.label}</Text>}
+      </Box>
       {showTime && time && <Text color="gray" dimColor>· {time}</Text>}
     </Box>
   );
@@ -88,7 +90,7 @@ export function renderSingleTurn(msg: ChatMessage, mi: number, opts: TurnOptions
       </Box>
     );
   } else {
-    items.push(renderMessageHeader(msg, mi));
+    items.push(renderMessageHeader(msg, mi, true, msg.role === 'assistant' ? opts.maxWidth + 2 : undefined));
   }
 
   if (msg.thinking) {
