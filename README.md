@@ -23,7 +23,11 @@ npm install
 cp .env.example .env
 #   edit .env — set AGENT_PROVIDER, OLLAMA_MODEL, and any API keys you have
 
-# 3. Launch the interactive TUI (default)
+# 3. (optional) Bootstrap the engineering skills pack — 93 curated skill guidelines
+npx tsx src/index.ts bootstrap
+#   Skills are auto-detected after bootstrap; no SKILLS_PATH env needed.
+
+# 4. Launch the interactive TUI (default)
 npm start
 
 # 4. Or use the headless CLI
@@ -106,7 +110,7 @@ All providers implement a unified interface: `chat()`, `chatStream()`, `generate
 - **Filesystem** — `read_files`, `write_file`, `list_tree`, `clone_repo`, `delete_path`
 - **RAG / embeddings** — `index_document`, `semantic_search`, `list_vector_stores` (local vector store, no external DB)
 - **Z.ai multimodal** — `generate_image`, `analyze_image` (vision), `text_to_speech`, `transcribe_audio` (ASR), `web_search`, `read_web_page`, `search_images`, `edit_image`
-- **Skills** — `list_skills`, `read_skill` (ruby-agent-skills pack)
+- **Skills** — `list_skills`, `read_skill` (ruby-agent-skills pack — 93 skills covering Ruby, Rails, TypeScript, React, OOP, Clean Code, testing, refactoring, architecture). Auto-detected from `.agent/skills/` after `agent-tui bootstrap`; agent loads relevant skills proactively before coding tasks.
 
 ### MCP servers (auto-discovered)
 - Knowledge Graph Memory, Local Filesystem, Time & Timezones, Web Fetcher, Git Repository, Sequential Thinking, Binance Spot/Futures SDK

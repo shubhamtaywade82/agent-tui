@@ -13,7 +13,7 @@
 import { runCli } from './cli.js';
 
 const CLI_COMMANDS = new Set([
-  'run', 'repl', 'batch', 'sessions', 'tools', 'models', 'doctor', 'serve',
+  'run', 'repl', 'batch', 'sessions', 'tools', 'models', 'doctor', 'serve', 'bootstrap',
   'help', '--help', '-h',
 ]);
 

@@ -12,7 +12,7 @@ github-token.txt
 *.pem
 *.key
 
-# Agent runtime artifacts
+# Agent runtime artifacts (skills pack is fetched on-demand via `agent-tui bootstrap`)
 .agent/
 .history
 .config.json

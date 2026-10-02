@@ -41,6 +41,7 @@ COMMANDS:
   tools describe <name>   Show a tool's parameter schema.
   models                 List available models from the active provider.
   doctor                 Diagnose provider/tool/MCP health.
+  bootstrap              Clone the ruby-agent-skills pack into .agent/skills/.
   serve [port]           Start the HTTP API server (default 8787).
 
 OPTIONS (apply to run/repl/batch):
@@ -291,6 +292,34 @@ async function cmdDoctor(): Promise<number> {
   return 0;
 }
 
+/** Clone the ruby-agent-skills pack into .agent/skills/ so skills work out-of-the-box. */
+async function cmdBootstrap(): Promise<number> {
+  const { existsSync, mkdirSync } = await import('node:fs');
+  const { resolve } = await import('node:path');
+  const { execFileSync } = await import('node:child_process');
+  const target = resolve(process.cwd(), '.agent/skills/ruby-agent-skills');
+  if (existsSync(target)) {
+    console.log(`✓ Skills pack already present at ${target}`);
+    try { execFileSync('git', ['-C', target, 'pull', '--ff-only'], { stdio: 'inherit' }); } catch { /* offline is fine */ }
+    return 0;
+  }
+  mkdirSync(resolve(target, '..'), { recursive: true });
+  console.log(`Cloning ruby-agent-skills into ${target} ...`);
+  try {
+    execFileSync('git', ['clone', '--depth', '1', 'https://github.com/shubhamtaywade82/ruby-agent-skills.git', target], { stdio: 'inherit' });
+    const rev = execFileSync('git', ['-C', target, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim();
+    const { readdirSync } = await import('node:fs');
+    const count = readdirSync(resolve(target, 'skills')).filter((d) => !d.startsWith('.')).length;
+    console.log(`\n✓ Skills pack cloned (rev ${rev}, ${count} skills).`);
+    console.log(`  Skills are now auto-detected — no SKILLS_PATH env needed.`);
+    return 0;
+  } catch (e: any) {
+    console.error(`✗ Clone failed: ${e.message}`);
+    console.error(`  Clone manually: git clone https://github.com/shubhamtaywade82/ruby-agent-skills.git ${target}`);
+    return 1;
+  }
+}
+
 /** Main CLI entry — returns exit code. */
 export async function runCli(argv: string[]): Promise<number> {
   const { command, positional, flags } = parseArgs(argv);
@@ -307,6 +336,7 @@ export async function runCli(argv: string[]): Promise<number> {
       case 'tools': exit = await cmdTools(positional); break;
       case 'models': exit = await cmdModels(); break;
       case 'doctor': exit = await cmdDoctor(); break;
+      case 'bootstrap': exit = await cmdBootstrap(); break;
       case 'serve': {
         const { startServer } = await import('./server.js');
         const port = Number(positional[0] ?? 8787);

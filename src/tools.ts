@@ -1,4 +1,5 @@
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, ToolRegistry, registerMcpTools, type McpClientLike } from '@nemesis-oss/ollama-sdk';
 import { truncateToolOutput } from './utils/context.js';
@@ -32,7 +33,19 @@ export const calculator = defineTool({
   },
 });
 
-const SKILLS_DIR = process.env['SKILLS_PATH'] || `${process.env['HOME']}/projects/agent-skills/ruby-agent-skills`;
+/** Resolve the skills directory. Priority: SKILLS_PATH env → bundled .agent/skills/ruby-agent-skills. */
+function resolveSkillsDir(): string {
+  const env = process.env['SKILLS_PATH'];
+  if (env && existsSync(env)) return env;
+  // Bundled copy cloned by `agent-tui bootstrap` or shipped with the repo
+  const bundled = resolve(process.cwd(), '.agent/skills/ruby-agent-skills');
+  if (existsSync(bundled)) return bundled;
+  // Legacy fallback path
+  const legacy = `${process.env['HOME']}/projects/agent-skills/ruby-agent-skills`;
+  return env || bundled || legacy;
+}
+
+export const SKILLS_DIR = resolveSkillsDir();
 
 export function loadAvailableSkills(): Array<{ name: string; family: string; path: string; triggers: string }> {
   const manifest = `${SKILLS_DIR}/skill-manifest.yml`;
