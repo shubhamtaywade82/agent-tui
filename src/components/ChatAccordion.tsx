@@ -43,17 +43,17 @@ const formatTime = (ts?: number): string => {
 
 export function renderMessageHeader(msg: ChatMessage, idx: number, showTime = true): React.ReactElement {
   const conf = msg.role === 'user'
-    ? { icon: '❯', label: 'You', color: 'cyan' }
+    ? { icon: '❯', label: undefined, color: 'cyan' }
     : msg.role === 'tool'
     ? { icon: '⚙', label: 'Tool Output', color: 'yellow' }
     : msg.role === 'system'
     ? { icon: '◈', label: 'System', color: 'gray' }
-    : { icon: '✦', label: 'Agent', color: 'green' };
+    : { icon: '✦', label: undefined, color: 'green' };
   const time = msg.timestamp ? formatTime(msg.timestamp) : '';
   return (
     <Box key={`h-${idx}`} flexDirection="row" gap={1} alignItems="center">
       <Text bold color={conf.color}>{conf.icon}</Text>
-      <Text bold color={conf.color === 'gray' ? 'gray' : 'white'}>{conf.label}</Text>
+      {conf.label && <Text bold color={conf.color === 'gray' ? 'gray' : 'white'}>{conf.label}</Text>}
       {showTime && time && <Text color="gray" dimColor>· {time}</Text>}
     </Box>
   );
@@ -124,7 +124,7 @@ export function renderStreamingRows(s: StreamState, opts: TurnOptions): React.Re
     return [stepper, <Box key="st-tool" flexDirection="row" gap={1} alignItems="center" paddingLeft={2}><Spinner type="dots" /><Text color="cyan"> Executing MCP tool call...</Text></Box>];
   }
   if (s.phase === 'responding') {
-    const head = <Box key="st-head" flexDirection="row" gap={1} alignItems="center"><Text bold color="green">✦ Agent</Text><Text color="green" dimColor>streaming</Text><Spinner type="dots" /></Box>;
+    const head = <Box key="st-head" flexDirection="row" gap={1} alignItems="center"><Text bold color="green">✦</Text><Text color="green" dimColor>streaming</Text><Spinner type="dots" /></Box>;
     return [stepper, head, ...parseMarkdownBlocks(`${s.content}█`, opts.theme, opts.maxWidth).map((n, bi) => <Box key={`sb-${bi}`} paddingLeft={2}>{n}</Box>)];
   }
   return [];
