@@ -37,9 +37,14 @@ const jsonRules: TokenRule[] = [
 
 const bashRules: TokenRule[] = [
   { pattern: /#.*$/gm, color: 'muted' },
+  { pattern: /^\s*[$>]\s/gm, color: 'muted' },
   { pattern: /(["'])(?:(?!\1|\\).|\\.)*\1/g, color: 'success' },
-  { pattern: /\b(if|then|else|elif|fi|for|while|do|done|case|esac|function|return|export|local|readonly|echo|cd|ls|mkdir|rm|cp|mv|grep|awk|sed|curl|cat|chmod|chown)\b/g, color: 'error' },
-  { pattern: /\$\w+|\$\{[^}]+\}/g, color: 'warning' },
+  { pattern: /\$(\w+|\{[^}]+\}|[?!#$*@0-9])/g, color: 'warning' },
+  { pattern: /(?<=\s|^)(--?[a-zA-Z0-9][-a-zA-Z0-9_]*)(?=\s|=|$)/g, color: 'info' },
+  { pattern: /\b(if|then|else|elif|fi|for|while|until|do|done|case|esac|in|function|return|exit|break|continue)\b/g, color: 'error' },
+  { pattern: /\b(export|local|readonly|alias|source|exec|eval)\b/g, color: 'primary' },
+  { pattern: /\b(sudo|bundle|rails|rake|git|npm|npx|yarn|pnpm|bun|node|ruby|python|pip|cargo|go|docker|docker-compose|kubectl|systemctl|curl|wget|tar|ssh|scp|find|xargs|grep|sed|awk|jq|tee|cat|echo|cd|ls|mkdir|rm|cp|mv|chmod|chown|touch|tail|head|which|kill)\b/g, color: 'primary' },
+  { pattern: /\b\d+\.?\d*\b/g, color: 'warning' },
 ];
 
 const rubyRules: TokenRule[] = [
