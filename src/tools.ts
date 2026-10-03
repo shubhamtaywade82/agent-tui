@@ -6,6 +6,7 @@ import { truncateToolOutput } from './utils/context.js';
 import { StdioTransport, StreamableHttpTransport, McpClient } from '@nemesis-oss/agentic-runtime/mcp';
 import { TASK_SLASH_COMMANDS, handleTasksCommand } from './tasks.js';
 import { envList } from './config.js';
+import { runShellTool, runCodeTool } from './toolbox/code.js';
 
 export interface McpServerConfig {
   id: string; name: string; command?: string; args?: string[]; url?: string;
@@ -203,7 +204,12 @@ const activeClients: McpClient[] = [];
 export async function getActiveToolRegistry(): Promise<ToolRegistry> {
   if (registryPromise) return registryPromise;
   registryPromise = (async () => {
-    const registry = new ToolRegistry({ tools: [calculator, listSkillsTool, readSkillTool], timeoutMs: 15_000, maxConcurrency: 4, maxOutputChars: 4000 });
+    const registry = new ToolRegistry({
+      tools: [calculator, listSkillsTool, readSkillTool, runShellTool, runCodeTool],
+      timeoutMs: 60_000,
+      maxConcurrency: 4,
+      maxOutputChars: 4000,
+    });
     await Promise.allSettled(MCP_SERVERS.filter((s) => s.enabled).map(async (cfg) => {
       const client = await connectMcpServer(cfg);
       if (!client) return;
@@ -359,16 +365,30 @@ export function dispatchSlashCommand(rawInput: string, ctx: CommandContext): boo
   }
 }
 
-const parseArgs = (a: unknown): any => (typeof a === 'string' ? (() => { try { return JSON.parse(a); } catch { return {}; } })() : a ?? {});
+const parseArgs = (a: unknown): any => {
+  const args = typeof a === 'string' ? (() => { try { return JSON.parse(a); } catch { return {}; } })() : (a ?? {});
+  if (typeof args === 'object' && args !== null && !args.command && (args.cmd || args.script)) {
+    args.command = args.cmd || args.script;
+  }
+  return args;
+};
+
+const TOOL_ALIASES: Record<string, string> = {
+  bash: 'run_shell', sh: 'run_shell', terminal: 'run_shell',
+  execute_command: 'run_shell', command: 'run_shell', exec: 'run_shell',
+  run_command: 'run_shell', shell: 'run_shell',
+};
 
 function resolveToolName(name: string, registry: ToolRegistry): string {
+  const aliased = TOOL_ALIASES[name.toLowerCase()] ?? name;
+  if (registry.get(aliased)) return aliased;
   if (registry.get(name)) return name;
-  const n = name.toLowerCase().replace(/^(get_market_|get_)/, '');
+  const n = aliased.toLowerCase().replace(/^(get_market_|get_)/, '');
   const match = registry.definitions().find((d: any) => {
     const fn = d.function.name.toLowerCase();
     return fn === n || fn.endsWith(`_${n}`) || fn.includes(n);
   });
-  return match ? (match as any).function.name : name;
+  return match ? (match as any).function.name : aliased;
 }
 
 export async function executeMcpCalls(

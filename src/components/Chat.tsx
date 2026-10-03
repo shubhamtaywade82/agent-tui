@@ -26,7 +26,7 @@ const loadHistory = (): string[] => {
   try { return filterValidHistory(readFileSync(HIST, 'utf-8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return l; } })); } catch { return []; }
 };
 
-const DEFAULT_SYSTEM_PROMPT = `You are an expert AI assistant. Workspace: ${process.cwd()}. Use ruby-agent-skills via list_skills/read_skill and filesystem MCP tools when inspecting files.`;
+const DEFAULT_SYSTEM_PROMPT = `You are an expert AI assistant. Workspace: ${process.cwd()}. Use run_shell to execute shell/terminal commands (e.g. rails new, bundle, npm, git). Use filesystem tools when reading or writing files. Execute tools directly without stalling or narrating future steps.`;
 const prepareMessages = (h: ChatMessage[], skillName?: string): ChatMessage[] => {
   let prompt = DEFAULT_SYSTEM_PROMPT;
   if (skillName) {
@@ -41,7 +41,8 @@ const prepareMessages = (h: ChatMessage[], skillName?: string): ChatMessage[] =>
   }
   return budgetMessages(h.some((m) => m.role === 'system') ? h : [{ role: 'system', content: prompt, timestamp: Date.now() }, ...h], 9000);
 };
-const isPrematureStall = (t: string): boolean => t.length <= 250 && /then i('ll| will)|(let me|i will) check/i.test(t);
+const isPrematureStall = (t: string): boolean =>
+  t.length <= 300 && /(let me|i('ll| will))\s+(start|inspect|check|create|look|run|examine|verify|see|read|find)/i.test(t);
 const cleanContinuation = (inp: string, acc: string): string => {
   const norm = inp.trim().toLowerCase(); const c = acc.replace(/^["']|["']$/g, '').split('\n')[0]?.trim() || '';
   if (!c || norm.startsWith(c.toLowerCase())) return '';
@@ -218,10 +219,23 @@ const Chat: React.FC<ChatProps> = ({
 
   const runAgentLoop = async (initialHistory: ChatMessage[], skillName?: string) => {
     let currentHistory = initialHistory; let isDone = false;
+    const maxTurns = 15;
     try {
-      for (let turn = 0; turn < 5; turn++) {
+      for (let turn = 0; turn < maxTurns; turn++) {
         const res = await executeSingleTurn(currentHistory, true, skillName);
-        if (res.done) { (res.content && isPrematureStall(res.content)) ? (currentHistory = [...currentHistory, { role: 'assistant', content: res.content, timestamp: Date.now(), skill: skillName }]) : (isDone = true); break; }
+        if (res.done) {
+          if (res.content && isPrematureStall(res.content)) {
+            currentHistory = [
+              ...currentHistory,
+              { role: 'assistant', content: res.content, timestamp: Date.now(), skill: skillName },
+              { role: 'user', content: 'Proceed directly with executing the required tools and commands now without waiting.', timestamp: Date.now() },
+            ];
+            resetStream('thinking');
+            continue;
+          }
+          isDone = true;
+          break;
+        }
         if (res.asst && res.toolMsgs) currentHistory = [...currentHistory, res.asst, ...res.toolMsgs];
         resetStream('thinking');
         if (skillName) setActiveSkill(skillName);

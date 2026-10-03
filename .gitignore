@@ -25,3 +25,4 @@ chat-*.md
 .idea/
 .vscode/
 *.log
+rails_app/
