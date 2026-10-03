@@ -148,7 +148,7 @@ function parseCodeBlock(
   theme: InkUITheme,
   maxWidth: number,
 ): BlockResult {
-  const lang = lines[startIdx]!.slice(3).trim();
+  const lang = lines[startIdx]!.replace(/^`+/, '').trim();
   const codeLines: string[] = [];
   let i = startIdx + 1;
   while (i < lines.length && !lines[i]!.startsWith('```')) {

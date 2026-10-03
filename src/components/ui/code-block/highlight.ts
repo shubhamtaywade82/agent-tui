@@ -1,7 +1,7 @@
 export type Language =
   | 'javascript' | 'typescript' | 'python' | 'json' | 'bash'
   | 'html' | 'css' | 'rust' | 'go' | 'yaml' | 'markdown' | 'diff'
-  | 'sql' | 'cpp' | 'c' | 'java' | 'dockerfile' | 'plain';
+  | 'sql' | 'cpp' | 'c' | 'java' | 'dockerfile' | 'ruby' | 'toml' | 'plain';
 
 export interface Token {
   text: string;
@@ -40,6 +40,27 @@ const bashRules: TokenRule[] = [
   { pattern: /(["'])(?:(?!\1|\\).|\\.)*\1/g, color: 'success' },
   { pattern: /\b(if|then|else|elif|fi|for|while|do|done|case|esac|function|return|export|local|readonly|echo|cd|ls|mkdir|rm|cp|mv|grep|awk|sed|curl|cat|chmod|chown)\b/g, color: 'error' },
   { pattern: /\$\w+|\$\{[^}]+\}/g, color: 'warning' },
+];
+
+const rubyRules: TokenRule[] = [
+  { pattern: /#.*$/gm, color: 'muted' },
+  { pattern: /(["'])(?:(?!\1|\\).|\\.)*\1/g, color: 'success' },
+  { pattern: /(?:(?<!:):[a-zA-Z_]\w*|\b[a-zA-Z_]\w*:(?!:))/g, color: 'info' },
+  { pattern: /\b\d+\.?\d*\b/g, color: 'warning' },
+  { pattern: /(@@?[a-zA-Z_]\w*|\$(?:!|\?|[a-zA-Z_]\w*))/g, color: 'warning' },
+  { pattern: /\b[A-Z][a-zA-Z0-9_]*\b/g, color: 'primary' },
+  { pattern: /\b(def|class|module|end|do|yield|return|if|unless|else|elsif|case|when|then|while|until|for|break|next|redo|retry|in|begin|rescue|ensure|raise|fail|super|self|alias|defined\?|and|or|not)\b/g, color: 'error' },
+  { pattern: /\b(attr_accessor|attr_reader|attr_writer|include|extend|prepend|require|require_relative|private|protected|public)\b/g, color: 'primary' },
+  { pattern: /\b(true|false|nil)\b/g, color: 'info' },
+];
+
+const tomlRules: TokenRule[] = [
+  { pattern: /#.*$/gm, color: 'muted' },
+  { pattern: /^\s*\[[^\]]+\]/gm, color: 'primary' },
+  { pattern: /^[\w.-]+(?=\s*=)/gm, color: 'info' },
+  { pattern: /(["'])(?:(?!\1|\\).|\\.)*\1/g, color: 'success' },
+  { pattern: /\b\d+\.?\d*\b/g, color: 'warning' },
+  { pattern: /\b(true|false)\b/g, color: 'error' },
 ];
 
 const rulesMap: Record<Language, TokenRule[]> = {
@@ -126,27 +147,35 @@ const rulesMap: Record<Language, TokenRule[]> = {
     { pattern: /(["'])(?:(?!\1|\\).|\\.)*\1/g, color: 'success' },
     { pattern: /^\s*(FROM|RUN|CMD|LABEL|EXPOSE|ENV|ADD|COPY|ENTRYPOINT|VOLUME|USER|WORKDIR|ARG)\b/gim, color: 'error' },
   ],
+  ruby: rubyRules,
+  toml: tomlRules,
   diff: [],
   plain: [],
 };
 
 const ALIASES: Record<string, Language> = {
-  js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
+  js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript', node: 'javascript',
   ts: 'typescript', tsx: 'typescript',
   py: 'python', python3: 'python',
-  sh: 'bash', zsh: 'bash', shell: 'bash',
+  rb: 'ruby', rake: 'ruby', gemspec: 'ruby', ru: 'ruby', erb: 'ruby',
+  sh: 'bash', zsh: 'bash', shell: 'bash', console: 'bash', terminal: 'bash',
   rs: 'rust',
   golang: 'go',
   yml: 'yaml',
   md: 'markdown',
   docker: 'dockerfile',
-  'c++': 'cpp', hpp: 'cpp', cc: 'cpp',
+  'c++': 'cpp', hpp: 'cpp', cc: 'cpp', cxx: 'cpp',
   h: 'c',
+  pgsql: 'sql', postgres: 'sql', mysql: 'sql', sqlite: 'sql',
+  xml: 'html', svg: 'html', xhtml: 'html', vue: 'html',
+  scss: 'css', sass: 'css', less: 'css',
+  jsonc: 'json', json5: 'json',
+  ini: 'toml', env: 'toml', dotenv: 'toml',
 };
 
 export function resolveLanguage(lang?: string): Language {
   if (!lang) return 'plain';
-  const clean = lang.trim().toLowerCase();
+  const clean = lang.replace(/^`+/, '').trim().split(/[\s:{]/)[0]?.toLowerCase() ?? '';
   return ALIASES[clean] ?? ((clean in rulesMap) ? (clean as Language) : 'plain');
 }
 
@@ -166,16 +195,17 @@ function matchRuleRanges(line: string, rules: TokenRule[]): Array<{ start: numbe
   return matched.sort((a, b) => a.start - b.start);
 }
 
-export function tokenizeLine(line: string, language: Language): Token[] {
-  if (language === 'diff') {
+export function tokenizeLine(line: string, language: Language | string): Token[] {
+  const lang = resolveLanguage(language as string);
+  if (lang === 'diff') {
     if (line.startsWith('+')) return [{ text: line, color: 'success' }];
     if (line.startsWith('-')) return [{ text: line, color: 'error' }];
     if (line.startsWith('@@')) return [{ text: line, color: 'info' }];
     return [{ text: line, color: 'muted' }];
   }
-  if (language === 'plain') return [{ text: line }];
+  if (lang === 'plain') return [{ text: line }];
 
-  const rules = rulesMap[language] ?? [];
+  const rules = rulesMap[lang] ?? [];
   if (!rules.length) return [{ text: line }];
 
   const matched = matchRuleRanges(line, rules);

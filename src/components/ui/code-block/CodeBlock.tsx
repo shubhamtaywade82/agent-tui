@@ -40,6 +40,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
   // Map color keys to actual colors
   const colorMap: Record<string, string> = {
     primary: theme.colors.primary,
+    secondary: theme.colors.secondary,
     success: theme.colors.success,
     warning: theme.colors.warning,
     error: theme.colors.error,
