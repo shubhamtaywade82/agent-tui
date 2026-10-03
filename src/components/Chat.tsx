@@ -291,13 +291,14 @@ const Chat: React.FC<ChatProps> = ({
   const menuStart = Math.min(Math.max(0, selectedCmdIndex - 1), Math.max(0, activeMenu.length - 4));
   const visibleCommands = activeMenu.slice(menuStart, menuStart + 4);
 
+  const reversedHistory = useMemo(() => [...history].reverse(), [history]);
   const textInputNode = (
     <TextInput
       value={input} onChange={(v) => { setInput(v); if (dismissedInput && dismissedInput !== v) setDismissedInput(''); }}
       onSubmit={handleSendMessage} onUpArrow={() => handleArrow(-1)} onDownArrow={() => handleArrow(1)}
       onPageUp={() => (setScrollOffset((p) => Math.max(0, p - 6)), true)} onPageDown={() => (setScrollOffset((p) => Math.min(maxScrollOffset, p + 6)), true)}
       onTab={handleTab} onEscape={() => activeMenu.length > 0 ? (setDismissedInput(input), true) : input.startsWith('/') ? (setInput(''), setSelectedCmdIndex(0), true) : false}
-      history={history} focus={isActive && !isSelectingModel && isInputFocused} theme={theme}
+      history={reversedHistory} focus={isActive && !isSelectingModel && isInputFocused} theme={theme}
       placeholder={isChatFocused ? 'Chat scroll focused — Press Tab or Esc to type...' : phase === 'thinking' ? '⚡ Thinking... [Esc stop]' : phase === 'executing-tools' ? '🔧 Running tools...' : phase === 'responding' ? 'Streaming... [Esc stop]' : 'Type prompt or /command...'}
       disabled={phase !== 'idle'} showCounter={true} suggestions={activeMenu[selectedCmdIndex] ? [activeMenu[selectedCmdIndex]!.name, ...promptPool] : promptPool} ghostText={ghostText}
       onCancel={() => { if (phase !== 'idle') { resetStream('idle'); show('Cancelled', 'warning', 2000); } }}
