@@ -45,17 +45,16 @@ function resolveSkillsDirs(): string[] {
       if (existsSync(p)) dirs.push(p);
     }
   }
-  // Auto-discover all packs under .agent/skills/
-  const bundledRoot = resolve(process.cwd(), '.agent/skills');
-  if (existsSync(bundledRoot)) {
+  const roots = [resolve(process.cwd(), '.agent/skills'), resolve(process.env['HOME'] || '', 'projects/agent-skills')];
+  for (const root of roots) {
+    if (!existsSync(root)) continue;
     try {
-      for (const entry of readdirSync(bundledRoot)) {
-        const p = resolve(bundledRoot, entry);
-        if (existsSync(resolve(p, 'skill-manifest.yml'))) dirs.push(p);
+      for (const entry of readdirSync(root)) {
+        const p = resolve(root, entry);
+        if (existsSync(resolve(p, 'skill-manifest.yml')) && !dirs.includes(p)) dirs.push(p);
       }
     } catch {}
   }
-  // Legacy fallback path
   if (!dirs.length) {
     const legacy = `${process.env['HOME']}/projects/agent-skills/ruby-agent-skills`;
     dirs.push(env || legacy);
@@ -104,6 +103,27 @@ export function findSkillFile(name: string): string {
     if (existsSync(file)) return file;
   }
   return '';
+}
+
+export function matchBestSkill(query: string): { name: string; family: string; pack: string } | null {
+  const words = query.toLowerCase().split(/[\s,]+/).filter((w) => w.length > 2);
+  if (!words.length) return null;
+  let best: { name: string; family: string; pack: string; score: number } | null = null;
+  for (const s of loadAvailableSkills()) {
+    let score = 0;
+    const n = s.name.toLowerCase();
+    const f = s.family.toLowerCase();
+    const t = s.triggers.toLowerCase();
+    for (const w of words) {
+      if (n.includes(w)) score += 3;
+      if (f.includes(w)) score += 2;
+      if (t.includes(w)) score += 1;
+    }
+    if (score > 3 && (!best || score > best.score)) {
+      best = { name: s.name, family: s.family, pack: s.pack, score };
+    }
+  }
+  return best;
 }
 
 export interface UserConfig { model?: string; systemPrompt?: string; inputStyle?: 'box' | 'line'; }

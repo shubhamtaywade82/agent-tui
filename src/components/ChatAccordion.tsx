@@ -19,6 +19,8 @@ export interface StreamState {
   model: string;
   thinking: string;
   content: string;
+  activeTool?: { name: string; args?: any };
+  activeSkill?: string;
 }
 
 export interface ChatAccordionProps {
@@ -35,19 +37,12 @@ const STEPS: Step[] = [
   { key: 'responding', title: 'Respond' },
 ];
 
-const formatTime = (ts?: number): string => {
-  if (!ts) return '';
-  const d = new Date(ts);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
-};
+const formatTime = (ts?: number): string => ts ? new Date(ts).toTimeString().slice(0, 8) : '';
 
 export function renderMessageHeader(msg: ChatMessage, idx: number, showTime = true, width?: number): React.ReactElement {
-  const conf = msg.role === 'user'
-    ? { icon: '❯', label: undefined, color: 'cyan' }
-    : msg.role === 'tool'
-    ? { icon: '⚙', label: 'Tool Output', color: 'yellow' }
-    : msg.role === 'system'
-    ? { icon: '◈', label: 'System', color: 'gray' }
+  const conf = msg.role === 'user' ? { icon: '❯', label: undefined, color: 'cyan' }
+    : msg.role === 'tool' ? { icon: '⚙', label: 'Tool Output', color: 'yellow' }
+    : msg.role === 'system' ? { icon: '◈', label: 'System', color: 'gray' }
     : { icon: '✦', label: undefined, color: 'green' };
   const time = msg.timestamp ? formatTime(msg.timestamp) : '';
   return (
@@ -63,10 +58,20 @@ export function renderMessageHeader(msg: ChatMessage, idx: number, showTime = tr
 
 function renderMessageContent(msg: ChatMessage, idx: number, opts: TurnOptions): React.ReactElement[] {
   if (msg.role === 'tool') {
-    const preview = msg.content.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
+    const isSkillOut = msg.content.includes('name:') && (msg.content.includes('description:') || msg.content.includes('triggers:'));
+    const isListOut = msg.content.startsWith('• ') || msg.content.startsWith('No skills matched');
+    const preview = isSkillOut
+      ? `Skill guidelines loaded into context (${msg.content.split('\n').length} lines)`
+      : isListOut
+      ? `Skills discovered:\n${msg.content.split('\n').slice(0, 4).join('\n')}`
+      : msg.content.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
     const maxW = Math.max(20, opts.maxWidth - 12);
-    const text = preview.length > maxW ? `${preview.slice(0, maxW - 3)}...` : preview;
-    return [<Box key={`tr-${idx}`} paddingLeft={2}><Text color="cyan" dimColor>↳ {text}</Text></Box>];
+    const text = preview.length > maxW && !isListOut ? `${preview.slice(0, maxW - 3)}...` : preview;
+    return [<Box key={`tr-${idx}`} paddingLeft={2}><Text color={isSkillOut || isListOut ? 'magenta' : 'cyan'} dimColor>↳ {text}</Text></Box>];
+  }
+  if (msg.role === 'system' && msg.content.startsWith('[Skill loaded:')) {
+    const title = msg.content.split('\n')[0] ?? '';
+    return [<Box key={`sys-${idx}`} paddingLeft={2}><Text color="magenta">📚 {title}</Text></Box>];
   }
   const content = msg.role === 'user' ? msg.content.split('\n').slice(1).join('\n') : msg.content;
   if (msg.role === 'user' && !content) return [];
@@ -93,16 +98,19 @@ export function renderSingleTurn(msg: ChatMessage, mi: number, opts: TurnOptions
     items.push(renderMessageHeader(msg, mi, true, msg.role === 'assistant' ? opts.maxWidth + 2 : undefined));
   }
 
+  if (msg.role === 'assistant' && msg.skill) {
+    items.push(
+      <Box key={`sk-${mi}`} paddingLeft={2}>
+        <Text color="magenta">📚 <Text bold color="magenta">Skill applied:</Text> <Text color="cyan">{msg.skill}</Text></Text>
+      </Box>
+    );
+  }
+
   if (msg.thinking) {
     const tok = Math.ceil(msg.thinking.length / 4);
     items.push(
       <Box key={`t-${mi}`} paddingLeft={2}>
-        <Thinking
-          tokenCount={tok}
-          defaultExpanded={opts.expandThinking}
-          focus={false}
-          theme={opts.theme}
-        >
+        <Thinking tokenCount={tok} defaultExpanded={opts.expandThinking} focus={false} theme={opts.theme}>
           {msg.thinking}
         </Thinking>
       </Box>
@@ -112,14 +120,7 @@ export function renderSingleTurn(msg: ChatMessage, mi: number, opts: TurnOptions
   msg.tool_calls?.forEach((tc: any, tci: number) => {
     items.push(
       <Box key={`tc-${mi}-${tci}`} paddingLeft={2}>
-        <ToolCall
-          name={tc.function?.name || 'tool'}
-          args={tc.function?.arguments}
-          status="success"
-          interactive={false}
-          compact={true}
-          theme={opts.theme}
-        />
+        <ToolCall name={tc.function?.name || 'tool'} args={tc.function?.arguments} status="success" interactive={false} compact={true} theme={opts.theme} />
       </Box>
     );
   });
@@ -129,15 +130,51 @@ export function renderSingleTurn(msg: ChatMessage, mi: number, opts: TurnOptions
 }
 
 export function renderStreamingRows(s: StreamState, opts: TurnOptions): React.ReactElement[] {
-  const completed = s.phase === 'executing-tools' ? ['thinking'] : s.phase === 'responding' ? ['thinking', 'executing-tools'] : [];
-  const stepper = <Box key="st-step" paddingLeft={2}><Stepper steps={STEPS} currentStep={s.phase} completedSteps={completed} orientation="horizontal" theme={opts.theme} /></Box>;
+  const isSkill = s.activeTool?.name === 'read_skill' || s.activeTool?.name === 'list_skills';
+  const steps: Step[] = s.activeSkill
+    ? [
+        { key: 'thinking', title: 'Think' },
+        { key: 'skills', title: `Skills (${s.activeSkill})` },
+        { key: 'executing-tools', title: 'Tools' },
+        { key: 'responding', title: 'Respond' },
+      ]
+    : STEPS;
+
+  const currentStep = (s.phase === 'executing-tools' && isSkill) || (s.activeSkill && s.phase === 'skills') ? 'skills' : s.phase;
+  const completed = currentStep === 'skills' ? ['thinking']
+    : currentStep === 'executing-tools' ? (s.activeSkill ? ['thinking', 'skills'] : ['thinking'])
+    : currentStep === 'responding' ? (s.activeSkill ? ['thinking', 'skills', 'executing-tools'] : ['thinking', 'executing-tools']) : [];
+
+  const stepper = <Box key="st-step" paddingLeft={2}><Stepper steps={steps} currentStep={currentStep} completedSteps={completed} orientation="horizontal" theme={opts.theme} /></Box>;
 
   if (s.phase === 'thinking') {
     const tok = s.thinking.length > 0 ? Math.ceil(s.thinking.length / 4) : undefined;
-    return [stepper, <Box key="st-think" paddingLeft={2}><Thinking isStreaming={true} tokenCount={tok} theme={opts.theme}>{s.thinking || ' '}</Thinking></Box>];
+    return [
+      stepper,
+      <Box key="st-think" paddingLeft={2} flexDirection="column">
+        {s.activeSkill && (
+          <Box flexDirection="row" gap={1} alignItems="center" marginBottom={1}>
+            <Text color="magenta" bold>📚 Active Skill:</Text>
+            <Text color="cyan">{s.activeSkill}</Text>
+          </Box>
+        )}
+        <Thinking isStreaming={true} tokenCount={tok} theme={opts.theme}>{s.thinking || ' '}</Thinking>
+      </Box>,
+    ];
   }
-  if (s.phase === 'executing-tools') {
-    return [stepper, <Box key="st-tool" flexDirection="row" gap={1} alignItems="center" paddingLeft={2}><Spinner type="dots" /><Text color="cyan"> Executing MCP tool call...</Text></Box>];
+  if (s.phase === 'executing-tools' || s.phase === 'skills') {
+    const isRead = s.activeTool?.name === 'read_skill';
+    const isList = s.activeTool?.name === 'list_skills';
+    const label = isRead ? `Loading skill: ${s.activeTool?.args?.name || s.activeSkill}...`
+      : isList ? `Searching skills for "${s.activeTool?.args?.query || 'all'}"...`
+      : `Executing ${s.activeTool?.name || 'tool'}...`;
+    return [
+      stepper,
+      <Box key="st-tool" flexDirection="row" gap={1} alignItems="center" paddingLeft={2}>
+        <Spinner type="dots" />
+        <Text color={isRead || isList ? 'magenta' : 'cyan'}>{isRead || isList ? ' 📚 ' : ' '}{label}</Text>
+      </Box>,
+    ];
   }
   if (s.phase === 'responding') {
     const head = <Box key="st-head" flexDirection="row" gap={1} alignItems="center"><Text bold color="green">✦</Text><Text color="green" dimColor>streaming</Text><Spinner type="dots" /></Box>;
@@ -149,31 +186,19 @@ export function renderStreamingRows(s: StreamState, opts: TurnOptions): React.Re
 function renderTurnDetails(msg: ChatMessage, theme: any, innerWidth: number): React.ReactElement[] {
   const elements: React.ReactElement[] = [];
   if (msg.thinking) {
-    const tok = Math.ceil(msg.thinking.length / 4);
     elements.push(
       <Box key="th" marginBottom={1}>
-        <Thinking tokenCount={tok} defaultExpanded={true} focus={false} theme={theme}>
-          {msg.thinking}
-        </Thinking>
+        <Thinking tokenCount={Math.ceil(msg.thinking.length / 4)} defaultExpanded={true} focus={false} theme={theme}>{msg.thinking}</Thinking>
       </Box>
     );
   }
-  if (msg.tool_calls?.length) {
-    msg.tool_calls.forEach((tc: any, tci: number) => {
-      elements.push(
-        <Box key={`tc-${tci}`} marginBottom={1}>
-          <ToolCall
-            name={tc.function?.name || 'tool'}
-            args={tc.function?.arguments}
-            status="success"
-            defaultExpanded={true}
-            interactive={false}
-            theme={theme}
-          />
-        </Box>
-      );
-    });
-  }
+  msg.tool_calls?.forEach((tc: any, tci: number) => {
+    elements.push(
+      <Box key={`tc-${tci}`} marginBottom={1}>
+        <ToolCall name={tc.function?.name || 'tool'} args={tc.function?.arguments} status="success" defaultExpanded={true} interactive={false} theme={theme} />
+      </Box>
+    );
+  });
   elements.push(...parseMarkdownBlocks(msg.content, theme, innerWidth - 2));
   return elements;
 }
@@ -186,9 +211,7 @@ export function parseTextToolCalls(text: string): Array<{ function: { name: stri
     const args: Record<string, any> = {};
     const paramRe = /<param\s+name="([^"]+)">([\s\S]*?)<\/param>/g;
     let pm: RegExpExecArray | null;
-    while ((pm = paramRe.exec(m[2]!)) !== null) {
-      args[pm[1]!] = pm[2]!.trim();
-    }
+    while ((pm = paramRe.exec(m[2]!)) !== null) args[pm[1]!] = pm[2]!.trim();
     calls.push({ function: { name: m[1]!, arguments: args } });
   }
   const tcRe = /<tool_call>([\s\S]*?)<\/tool_call>/g;

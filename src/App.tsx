@@ -118,6 +118,7 @@ const App: React.FC = () => {
       <Box flexDirection="row" gap={2} alignItems="center">
         <StatusIndicator status={isConnected ? 'online' : 'offline'} label={isConnected ? 'Online' : 'Offline'} theme={myTheme} />
         <Badge variant="success">MCP Active</Badge>
+        <Badge variant="info">{`📚 ${loadAvailableSkills().length} Skills`}</Badge>
         <Box flexDirection="row" gap={1} alignItems="center">
           <Text bold color={activeModal === 'model' ? (myTheme.colors.focus ?? 'green') : 'cyan'}>
             Model: <Text color="white">{selectedModel || 'none'}</Text>
