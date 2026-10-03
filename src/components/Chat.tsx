@@ -6,8 +6,10 @@ import { useFocusManager, useTerminalSize } from './ui/hooks/index.js';
 import { getActiveToolRegistry, consumeStream, dispatchSlashCommand, SLASH_COMMANDS, executeMcpCalls, loadAvailableSkills, loadUserConfig, saveUserConfig, matchBestSkill, findSkillFile } from '../tools.js';
 import { ChatAccordion, renderSingleTurn, renderStreamingRows, parseTextToolCalls } from './ChatAccordion.js';
 import { budgetMessages } from '../utils/context.js';
+import { getTaskRuntime, buildTaskPrompt } from '../tasks.js';
 
 export interface ChatMessage extends Message { timestamp?: number; thinking?: string; tokens?: number; skill?: string; }
+export interface PendingContinuation { type: 'task' | 'turn_limit'; taskId?: string; label: string; detail?: string; prompt: string; }
 
 const HIST = '.history';
 const filterValidHistory = (items: string[]): string[] => {
@@ -26,7 +28,7 @@ const loadHistory = (): string[] => {
   try { return filterValidHistory(readFileSync(HIST, 'utf-8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return l; } })); } catch { return []; }
 };
 
-const DEFAULT_SYSTEM_PROMPT = `You are an expert AI assistant. Workspace: ${process.cwd()}. Use run_shell to execute shell/terminal commands (e.g. rails new, bundle, npm, git). Use filesystem tools when reading or writing files. Execute tools directly without stalling or narrating future steps.`;
+const DEFAULT_SYSTEM_PROMPT = `You are an expert AI assistant. Workspace: ${process.cwd()}. Use run_shell to execute commands (e.g. rails new, bundle, npm, git). Use filesystem tools to inspect or edit files. For multi-step tasks, create a plan with create_task (with id, title, objective), execute the steps, and call complete_task when done. Do not stall or narrate future steps; execute tools directly.`;
 const prepareMessages = (h: ChatMessage[], skillName?: string): ChatMessage[] => {
   let prompt = DEFAULT_SYSTEM_PROMPT;
   if (skillName) {
@@ -101,6 +103,7 @@ const Chat: React.FC<ChatProps> = ({
   const [viewMode, setViewMode] = useState<'stream' | 'accordion'>('stream'); const [expandThinking, setExpandThinking] = useState(false);
   const [registry, setRegistry] = useState<any>(null); const [scrollOffset, setScrollOffset] = useState(0);
   const [inputStyle, setInputStyle] = useState<'box' | 'line'>(() => loadUserConfig().inputStyle || 'line');
+  const [pendingContinuation, setPendingContinuation] = useState<PendingContinuation | null>(null);
   const selectedModel = propModel || models[0] || 'qwen3:8b'; const { toasts, show, dismiss } = useToast();
 
   const term = useTerminalSize(); const columns = propCols ?? term.columns; const rows = propRows ?? term.rows;
@@ -152,11 +155,35 @@ const Chat: React.FC<ChatProps> = ({
 
   useInput((inp, key) => {
     if (!isActive || isSelectingModel) return;
+    if (pendingContinuation) {
+      if (inp === 'y' || inp === 'Y' || key.return) {
+        const cont = pendingContinuation;
+        setPendingContinuation(null);
+        show(`Continuing: ${cont.label}`, 'info', 2000);
+        void handleContinuation(cont);
+        return;
+      }
+      if (inp === 'n' || inp === 'N' || key.escape) {
+        setPendingContinuation(null);
+        show('Plan paused', 'info', 2000);
+        return;
+      }
+    }
     if (key.ctrl && (inp === 'a' || inp === '\x01')) return setViewMode((v) => (v === 'stream' ? 'accordion' : 'stream'));
     if (key.ctrl && (inp === 'b' || inp === '\x02')) return toggleStyle();
     if (inp === 't' && isChatFocused) return setExpandThinking((p) => !p);
     if ((key.escape || key.tab) && isChatFocused) setFocus(0);
   });
+
+  const handleContinuation = async (cont: PendingContinuation) => {
+    if (cont.taskId) {
+      const rt = getTaskRuntime();
+      try { rt.start(cont.taskId); } catch {}
+    }
+    onSendMessage(cont.prompt);
+    resetStream('thinking');
+    await runAgentLoop([...messages, { role: 'user', content: cont.prompt, timestamp: Date.now() }], activeSkill);
+  };
 
   const resetStream = (p: typeof phase = 'idle') => {
     setPhase(p); setStreamedThinking(''); setStreamedContent(''); setActiveTool(undefined);
@@ -245,6 +272,24 @@ const Chat: React.FC<ChatProps> = ({
         if (skillName) setActiveSkill(skillName);
         await executeSingleTurn([...currentHistory, { role: 'user', content: 'Output final comprehensive response in full detail.', timestamp: Date.now() }], false, skillName);
       }
+      const rt = getTaskRuntime();
+      const next = rt.nextReady();
+      if (next) {
+        setPendingContinuation({
+          type: 'task',
+          taskId: next.id,
+          label: `Next Task: [${next.id}] ${next.title}`,
+          detail: next.objective,
+          prompt: buildTaskPrompt(next),
+        });
+      } else if (!isDone) {
+        setPendingContinuation({
+          type: 'turn_limit',
+          label: 'Step Limit Reached with Pending Work',
+          detail: 'Would you like to continue execution from where it left off?',
+          prompt: 'Please continue execution directly from where you left off. Proceed with the remaining tasks and verify the implementation.',
+        });
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (/exceed.*context/i.test(msg)) {
@@ -258,6 +303,7 @@ const Chat: React.FC<ChatProps> = ({
   const handleSendMessage = async (message: string) => {
     const trimmed = message.trim();
     if (!trimmed || !client || phase !== 'idle') return;
+    if (pendingContinuation) setPendingContinuation(null);
     abortRef.current?.abort(); setGhostText('');
     const saveEntry = (t: string) => {
       const s = t.trim();
@@ -353,6 +399,21 @@ const Chat: React.FC<ChatProps> = ({
               <Text color="gray" dimColor={c !== activeMenu[selectedCmdIndex]}>— {c.desc}</Text>
             </Box>
           ))}
+        </Box>
+      )}
+
+      {pendingContinuation && (
+        <Box borderStyle="round" borderColor="yellow" paddingX={1} flexDirection="column" width={columns}>
+          <Box flexDirection="row" gap={1}>
+            <Text bold color="yellow">⚡ Plan Continuation</Text>
+            <Text color="gray">│</Text>
+            <Text bold color="white">{pendingContinuation.label}</Text>
+          </Box>
+          {pendingContinuation.detail && <Text color="gray" dimColor>{pendingContinuation.detail}</Text>}
+          <Box flexDirection="row" gap={2} marginTop={1}>
+            <Text color="green" bold>[Y / Enter] Continue with task</Text>
+            <Text color="red" bold>[N / Esc] Pause</Text>
+          </Box>
         </Box>
       )}
 

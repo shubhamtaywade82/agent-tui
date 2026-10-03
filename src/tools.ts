@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { defineTool, ToolRegistry, registerMcpTools, type McpClientLike } from '@nemesis-oss/ollama-sdk';
 import { truncateToolOutput } from './utils/context.js';
 import { StdioTransport, StreamableHttpTransport, McpClient } from '@nemesis-oss/agentic-runtime/mcp';
-import { TASK_SLASH_COMMANDS, handleTasksCommand } from './tasks.js';
+import { TASK_SLASH_COMMANDS, handleTasksCommand, taskTools } from './tasks.js';
 import { envList } from './config.js';
 import { runShellTool, runCodeTool } from './toolbox/code.js';
 
@@ -205,7 +205,7 @@ export async function getActiveToolRegistry(): Promise<ToolRegistry> {
   if (registryPromise) return registryPromise;
   registryPromise = (async () => {
     const registry = new ToolRegistry({
-      tools: [calculator, listSkillsTool, readSkillTool, runShellTool, runCodeTool],
+      tools: [calculator, listSkillsTool, readSkillTool, runShellTool, runCodeTool, ...taskTools],
       timeoutMs: 60_000,
       maxConcurrency: 4,
       maxOutputChars: 4000,
