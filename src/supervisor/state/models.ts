@@ -165,13 +165,15 @@ export const AgentState = z.object({
   status: RunStatus.default('CREATED'),
   intent: Intent.optional(),
   thinkMode: z.enum(['think', 'no-think']).default('no-think'),
-  query: z.string(),
+  // I3: query is immutable — the original user input must not be mutated
+  query: z.string().readonly(),
   context: z.string().optional(),
   retrievedEvidence: z.array(z.string()).default([]),
   toolPayload: z.record(z.string(), z.unknown()).optional(),
   executionResult: z.string().optional(),
   finalResponse: z.string().optional(),
-  errorTrace: z.array(z.string()).default([]),
+  // I3: errorTrace is readonly — use spread assignment, not .push()
+  errorTrace: z.array(z.string()).readonly().default([]),
   steps: z.array(StepRecord).default([]),
   toolCalls: z.array(ToolCallRecord).default([]),
   artifacts: z.array(z.string()).default([]),

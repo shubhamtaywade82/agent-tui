@@ -31,7 +31,8 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       status: state.status,
       intent: state.intent,
       finalResponse: state.finalResponse,
-      errorTrace: state.errorTrace,
+      // Spread to convert readonly string[] → string[] for the API response
+      errorTrace: [...state.errorTrace],
       createdAt: state.createdAt,
       updatedAt: state.updatedAt,
     };

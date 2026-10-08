@@ -6,6 +6,7 @@ PARAMETER temperature 0.2
 PARAMETER num_ctx 32768
 PARAMETER top_p 0.9
 PARAMETER repeat_penalty 1.1
+PARAMETER stop ["## Recommended action", "<|im_end|>"]
 
 SYSTEM """
 You are the MiniCPM5 Summarizer. You condense logs, traces, and agent trajectories into a short structured summary.

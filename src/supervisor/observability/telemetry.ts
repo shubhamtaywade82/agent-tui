@@ -29,6 +29,38 @@ if (supervisorConfig.observability.otelEnabled) {
 export const tracer = trace.getTracer('minicpm5-supervisor');
 export const meter = metrics.getMeter('minicpm5-supervisor');
 
+/**
+ * Drift-detection counter — Phase 6 (Observability Wiring).
+ *
+ * Incremented every time a Zod schema parse fails on an LLM output. The
+ * `model` and `schema` labels let you build Prometheus/Grafana alerts:
+ *
+ *   alert: rate(zod_parse_failure_total[5m]) > 0.05
+ *
+ * This catches router drift (the model degrades over time and starts
+ * producing malformed JSON) before it silently routes everything to
+ * UNKNOWN.
+ */
+export const zodParseFailureCounter = meter.createCounter('zod_parse_failure', {
+  description: 'Zod schema parse failures by model and schema',
+});
+
+/**
+ * Per-phase latency histograms — Phase 6 (Observability Wiring).
+ *
+ * Records wall-clock latency for each supervisor phase so you can build
+ * p50/p95/p99 dashboards. The `phase` label distinguishes route/execute/
+ * validate/retrieve/plan.
+ */
+export const phaseLatencyHistogram = meter.createHistogram('supervisor_phase_latency_ms', {
+  description: 'Wall-clock latency per supervisor phase in milliseconds',
+});
+
+/** Convenience: record a phase latency observation. */
+export function recordPhaseLatency(phase: string, durationMs: number): void {
+  phaseLatencyHistogram.record(durationMs, { phase });
+}
+
 /** Convenience: run `fn` inside a span and return its result. */
 export async function withSpan<T>(
   name: string,

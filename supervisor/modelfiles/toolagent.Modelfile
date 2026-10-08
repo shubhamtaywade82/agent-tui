@@ -6,6 +6,7 @@ PARAMETER temperature 0.0
 PARAMETER num_ctx 8192
 PARAMETER top_p 0.9
 PARAMETER repeat_penalty 1.1
+PARAMETER stop ["", "</answer>", "<|im_end|>", "```"]
 
 SYSTEM """
 You are the MiniCPM5 Tool Agent. Given a user request and a list of available tools (with their JSON schemas), your job is to pick exactly one tool and produce valid arguments for it.

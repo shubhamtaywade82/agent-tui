@@ -11,8 +11,10 @@
  * and defaults to UNKNOWN, preventing silent failures."
  */
 
+import { z } from 'zod';
 import type { Backend } from '../inference/backend.js';
 import { logger } from '../observability/logger.js';
+import { zodParseFailureCounter } from '../observability/telemetry.js';
 import { Intent } from '../state/models.js';
 
 export interface RouteDecision {
@@ -21,6 +23,39 @@ export interface RouteDecision {
   /** True if the model output had to be repaired (loose parsing fallback). */
   repaired: boolean;
 }
+
+/**
+ * RouterOutputSchema — TS Engine §1 (Runtime Validation) + Phase 3 audit.
+ *
+ * Uses zod's `.catch()` for graceful degradation: any malformed JSON,
+ * missing `intent` key, or unrecognised intent value collapses to
+ * `{ intent: 'UNKNOWN' }` without throwing. This is the contract the
+ * directive specifies — more declarative and future-proof than manual
+ * try/catch + regex repair.
+ *
+ * The `intent` field is preprocessed to normalise case + whitespace
+ * before enum validation, so `'tool execution'` and `'Tool-Execution'`
+ * both map to `TOOL_EXECUTION`.
+ *
+ * The `.catch()` handler also increments the drift-detection counter
+ * (Phase 6) so Prometheus can alert on router drift.
+ */
+export const RouterOutputSchema = z
+  .object({
+    intent: z.preprocess(
+      (v) => (typeof v === 'string' ? v.toUpperCase().replace(/[\s-]+/g, '_') : v),
+      Intent,
+    ),
+  })
+  .catch((ctx) => {
+    // Phase 6 drift detection — meter the catch-path invocation.
+    zodParseFailureCounter.add(1, { model: 'minicpm5-router', schema: 'RouterOutputSchema' });
+    logger.warn(
+      { issue: ctx.error?.message ?? 'unknown' },
+      'RouterOutputSchema.catch — defaulting to UNKNOWN',
+    );
+    return { intent: 'UNKNOWN' as const };
+  });
 
 const SYSTEM_GUARD = `Output ONLY a JSON object with the form {"intent": "<ONE_OF>"}.
 <ONE_OF> must be one of: DATA_EXTRACTION, CODE_REVIEW, TOOL_EXECUTION, LOG_SUMMARIZATION, GENERAL_QUERY.
@@ -46,24 +81,37 @@ export class RouterClassifier {
     let intent: Intent | undefined;
     let repaired = false;
 
+    // Primary parse path — RouterOutputSchema.catch() handles malformed
+    // JSON, missing keys, and unrecognised intent values, collapsing to
+    // { intent: 'UNKNOWN' } and metering the failure via zodParseFailureCounter.
     if (r.parsed && typeof r.json === 'object' && r.json !== null) {
-      const v = (r.json as { intent?: unknown }).intent;
-      if (typeof v === 'string') {
-        const normalized = v.toUpperCase().replace(/[\s-]+/g, '_');
-        const parsed = Intent.safeParse(normalized);
-        if (parsed.success) intent = parsed.data;
+      const result = RouterOutputSchema.safeParse(r.json);
+      if (result.success) {
+        intent = result.data.intent;
+        // If the catch handler fired, result.data.intent will be UNKNOWN
+        // and the counter was already incremented. Mark as repaired.
+        if (intent === 'UNKNOWN') {
+          repaired = true;
+        }
       }
     }
 
-    if (!intent) {
-      // Repair attempt: regex-extract any of the enum values from raw text.
+    // Secondary repair — regex-extract any enum value from raw text.
+    // Only runs if the primary path produced UNKNOWN (or parsed nothing).
+    if (!intent || intent === 'UNKNOWN') {
+      // Mark as repaired if the primary path produced UNKNOWN (catch handler
+      // fired) OR if the primary path didn't run at all (malformed JSON,
+      // string output). Either way, we're deviating from the happy path.
       repaired = true;
       const m = raw.match(
         /\b(DATA_EXTRACTION|CODE_REVIEW|TOOL_EXECUTION|LOG_SUMMARIZATION|GENERAL_QUERY)\b/i,
       );
       if (m) {
         const parsed = Intent.safeParse(m[1]?.toUpperCase());
-        if (parsed.success) intent = parsed.data;
+        if (parsed.success) {
+          intent = parsed.data;
+          // Successful regex repair — don't double-count the failure.
+        }
       }
     }
 

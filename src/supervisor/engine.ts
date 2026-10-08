@@ -30,7 +30,7 @@ import type { RetrievalResult } from './context/retrieval.js';
 import { MetricsCollector } from './evals/metrics.js';
 import type { Backend } from './inference/backend.js';
 import { logger } from './observability/logger.js';
-import { withSpan } from './observability/telemetry.js';
+import { withSpan, zodParseFailureCounter } from './observability/telemetry.js';
 import { RouterClassifier } from './router/classifier.js';
 import { ComplexityScorer } from './router/complexity.js';
 import { ModelRouter } from './router/router.js';
@@ -245,7 +245,7 @@ export class Supervisor {
       }
     } catch (e) {
       const err = e as Error;
-      state.errorTrace.push(err.message);
+      state.errorTrace = [...state.errorTrace, err.message];
       await this.machine.transition(state, 'FAILED', err.message).catch(() => undefined);
       this.metrics.recordRun('failed', Date.now() - startedAt, { prompt: 0, completion: 0 });
       logger.error({ err, runId: state.runId }, 'supervisor run failed');
@@ -413,6 +413,11 @@ export class Supervisor {
           toolName = exec.tool;
           rawArgs = exec.arguments;
         } else {
+          // Phase 6 drift detection — meter the ToolCallSchema parse failure.
+          zodParseFailureCounter.add(1, {
+            model: supervisorConfig.inference.toolModel,
+            schema: 'ToolCallSchema',
+          });
           // Fall back to loose parsing for backwards compatibility
           const j = r.json as { tool?: string; name?: string; arguments?: unknown };
           toolName = j.tool ?? j.name ?? '';
@@ -465,7 +470,7 @@ export class Supervisor {
         } else {
           this.metrics.recordToolCall('invalid');
           state.executionResult = `ERROR: tool call invalid after ${attempts} repair attempts`;
-          state.errorTrace.push(`tool ${toolName} validation failed`);
+          state.errorTrace = [...state.errorTrace, `tool ${toolName} validation failed`];
           this.recordStep(state, 'EXECUTE_TOOL', {
             status: 'FAILED',
             error: 'repair loop exhausted',
@@ -631,7 +636,7 @@ export class Supervisor {
           payload: { validator: 'non-empty', error: 'empty execution result' },
           occurredAt: new Date().toISOString(),
         });
-        state.errorTrace.push('validation failed: empty output');
+        state.errorTrace = [...state.errorTrace, 'validation failed: empty output'];
       } else {
         await this.bus.publish({
           type: 'validation_passed',

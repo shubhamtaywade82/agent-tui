@@ -6,6 +6,7 @@ PARAMETER temperature 0.3
 PARAMETER num_ctx 32768
 PARAMETER top_p 0.95
 PARAMETER repeat_penalty 1.1
+PARAMETER stop ["```", "</analysis>", "<|im_end|>"]
 
 SYSTEM """
 You are the MiniCPM5 Analyst. You answer questions, review code, and extract structured data — but ALWAYS grounded in the evidence provided in the prompt.
