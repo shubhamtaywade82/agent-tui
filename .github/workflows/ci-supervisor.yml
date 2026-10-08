@@ -1,0 +1,87 @@
+name: supervisor-ci
+
+on:
+  push:
+    branches: [main, 'feat/**']
+    paths:
+      - 'src/supervisor/**'
+      - 'test/supervisor/**'
+      - 'supervisor/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'biome.json'
+      - 'docker-compose.yml'
+      - 'Dockerfile.supervisor'
+      - 'Dockerfile.sandbox'
+      - '.github/workflows/ci-supervisor.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/supervisor/**'
+      - 'test/supervisor/**'
+
+concurrency:
+  group: supervisor-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-typecheck:
+    name: Lint + Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npx biome check src/supervisor test/supervisor
+      - run: npx tsc --noEmit
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint-typecheck
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npx vitest run --dir test/supervisor/unit
+        env:
+          INFERENCE_BACKEND: mock
+      - run: npx vitest run --dir test/supervisor/evals
+        env:
+          INFERENCE_BACKEND: mock
+
+  integration-tests:
+    name: Integration Tests (Postgres)
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - uses: testcontainers/setup@v0
+      - run: npx vitest run --dir test/supervisor/integration
+        env:
+          INFERENCE_BACKEND: mock
+          TEST_DATABASE_URL: postgres://supervisor:supervisor@localhost:5432/supervisor_test
+      timeout-minutes: 10
+
+  docker-build:
+    name: Docker Build Smoke Test
+    runs-on: ubuntu-latest
+    needs: lint-typecheck
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f Dockerfile.supervisor -t minicpm5-supervisor:ci .
+      - run: docker build -f Dockerfile.sandbox -t supervisor-sandbox:ci .
+      - run: docker run --rm minicpm5-supervisor:ci node -e "console.log('supervisor image OK')"
+      - run: docker run --rm supervisor-sandbox:ci echo "sandbox image OK"

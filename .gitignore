@@ -26,3 +26,7 @@ chat-*.md
 .vscode/
 *.log
 rails_app/
+# Supervisor artifacts
+supervisor-data/
+.agent/
+*.pid

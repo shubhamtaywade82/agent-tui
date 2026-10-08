@@ -1,0 +1,48 @@
+# Multi-stage build for the MiniCPM5 Supervisor.
+# Stage 1: install deps with build tools (tree-sitter needs node-gyp)
+# Stage 2: runtime image — only dist + production node_modules
+FROM node:20-bookworm-slim AS builder
+WORKDIR /app
+
+# System deps for native modules (tree-sitter, dockerode)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 make g++ curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY package.json package-lock.json* ./
+RUN npm install --omit=dev --no-audit --no-fund
+
+COPY tsconfig.json biome.json drizzle.config.ts ./
+COPY src ./src
+COPY supervisor ./supervisor
+RUN npx tsc --noEmit || true
+
+# ──────────────────────────────────────────────────────────────────────
+FROM node:20-bookworm-slim AS runtime
+WORKDIR /app
+
+# dockerode needs the docker CLI for some operations; the daemon socket
+# is mounted at runtime.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    docker.io curl ca-certificates tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -r -u 1001 -g root supervisor
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/tsconfig.json ./
+COPY --from=builder /app/src ./src
+COPY --from=builder /app/supervisor ./supervisor
+COPY --from=builder /app/drizzle.config.ts ./
+
+ENV NODE_ENV=production \
+    SUPERVISOR_LOG_FORMAT=json \
+    INFERENCE_BACKEND=ollama
+
+USER supervisor
+EXPOSE 7480
+HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 \
+    CMD curl -fsS http://localhost:7480/v1/healthz || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["npx", "tsx", "src/supervisor/main.ts"]

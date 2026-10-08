@@ -1,0 +1,154 @@
+# ============================================================
+# MiniCPM5 Supervisor — Docker Compose Stack
+#
+# Single compose file with profiles: dev (default), test, full.
+#   docker compose --profile dev up
+#   docker compose --profile test up
+#   docker compose --profile full up
+#
+# §17 Recommended Infrastructure Stack:
+#   - PostgreSQL (operational state + pgvector)
+#   - Redis (working memory + queues)
+#   - MinIO (object storage — file abstraction)
+#   - Ollama (inference)
+#   - Supervisor service (this repo)
+#   - Sandbox executor (this repo)
+# ============================================================
+
+name: minicpm5-supervisor
+
+networks:
+  supervisor-net:
+    driver: bridge
+
+volumes:
+  pg-data:
+  redis-data:
+  minio-data:
+  ollama-models:
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: supervisor
+      POSTGRES_PASSWORD: supervisor
+      POSTGRES_DB: supervisor
+    ports: ["5432:5432"]
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supervisor -d supervisor"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [supervisor-net]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports: ["6379:6379"]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [supervisor-net]
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes: [minio-data:/data]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [supervisor-net]
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports: ["11434:11434"]
+    volumes: [ollama-models:/root/.ollama]
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [supervisor-net]
+    # Uncomment to pass through a host GPU
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - { driver: nvidia, count: 1, capabilities: [gpu] }
+
+  sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+    image: supervisor-sandbox:latest
+    restart: unless-stopped
+    command: ["sleep", "infinity"]
+    networks: [supervisor-net]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,exec
+    mem_limit: 512m
+    cpus: 1.0
+
+  supervisor:
+    build:
+      context: .
+      dockerfile: Dockerfile.supervisor
+    image: minicpm5-supervisor:latest
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      ollama: { condition: service_started }
+    environment:
+      DATABASE_URL: postgres://supervisor:supervisor@postgres:5432/supervisor
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: http://minio:9000
+      OLLAMA_HOST: http://ollama:11434
+      INFERENCE_BACKEND: ollama
+      SUPERVISOR_LOG_FORMAT: json
+      SANDBOX_IMAGE: supervisor-sandbox:latest
+      SANDBOX_NETWORK: minicpm5-supervisor_supervisor-net
+    ports: ["7480:7480"]
+    volumes:
+      # The supervisor needs docker.sock to spawn sandbox containers
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [supervisor-net]
+    profiles: ["full"]
+
+  # ─── test profile ────────────────────────────────────────────────
+  # Lightweight: only the data services; tests run on the host.
+  postgres-test:
+    image: pgvector/pgvector:pg16
+    restart: "no"
+    environment:
+      POSTGRES_USER: supervisor
+      POSTGRES_PASSWORD: supervisor
+      POSTGRES_DB: supervisor_test
+    ports: ["55432:5432"]
+    networks: [supervisor-net]
+    profiles: ["test"]
+  redis-test:
+    image: redis:7-alpine
+    restart: "no"
+    ports: ["66379:6379"]
+    networks: [supervisor-net]
+    profiles: ["test"]

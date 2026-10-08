@@ -1,0 +1,27 @@
+# Sandboxed execution container — §11 (Sandboxed Execution Infrastructure).
+#
+# Minimal read-only base. The supervisor mounts /workspace as a writable
+# tmpfs overlay per §11.1. Only a small set of dev tools is pre-installed
+# so the denylist in §11.2 stays effective (no shell pipelines that could
+# smuggle in `curl | bash`).
+FROM node:20-bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git python3 python3-pip \
+    ca-certificates curl jq ripgrep \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -r -u 1000 -g root sandbox
+
+# Pre-install common test/lint tools so the supervisor can run them
+# without re-downloading per run.
+RUN npm install -g vitest@3 biome@2 typescript@7 tsx@4 \
+    && pip3 install --no-cache-dir --break-system-packages ruff mypy pytest
+
+# Workspace is mounted here at runtime
+RUN mkdir -p /workspace && chown sandbox:root /workspace
+WORKDIR /workspace
+
+USER sandbox
+
+# Default to a no-op; the supervisor always overrides Cmd.
+CMD ["echo", "supervisor-sandbox ready"]
