@@ -1,6 +1,6 @@
 # MiniCPM5 Tool Agent — tool selection + argument generation (§10, §13.1).
 # Outputs JSON {"tool": "...", "arguments": {...}} validated by ToolValidator.
-FROM minicpm5:2b
+FROM openbmb/minicpm5-2b
 
 PARAMETER temperature 0.0
 PARAMETER num_ctx 8192

@@ -20,17 +20,17 @@ export { supervisorConfig } from './config.js';
 export type { BuiltContext, ContextBudget } from './context/builder.js';
 export { ContextBuilder } from './context/builder.js';
 export { CacheService } from './context/cache.js';
-export { MEMORY_TYPES, MemoryService } from './context/memory.js';
 export type { MemoryRecord, MemoryStatus, MemoryTier, MemoryType } from './context/memory.js';
-export { HybridRetriever } from './context/retrieval.js';
+export { MEMORY_TYPES, MemoryService } from './context/memory.js';
 export type {
   ChunkMetadata,
   DocumentType,
+  RerankWeights,
   RetrievalFilters,
   RetrievalQuery,
   RetrievalResult,
-  RerankWeights,
 } from './context/retrieval.js';
+export { HybridRetriever } from './context/retrieval.js';
 export { Supervisor } from './engine.js';
 export { GoldenTaskSuite } from './evals/golden.js';
 export type { AgentMetrics } from './evals/metrics.js';

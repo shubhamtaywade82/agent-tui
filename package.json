@@ -21,13 +21,13 @@
     "test": "node --import tsx --test test/tasks.test.ts",
     "supervisor:serve": "tsx src/supervisor/main.ts",
     "supervisor:typecheck": "tsc --noEmit",
-    "supervisor:test": "vitest run --dir test/supervisor",
-    "supervisor:test:watch": "vitest --dir test/supervisor",
+    "supervisor:test": "vitest run",
+    "supervisor:test:watch": "vitest",
     "supervisor:lint": "biome check src/supervisor test/supervisor",
     "supervisor:lint:fix": "biome check --write src/supervisor test/supervisor",
     "supervisor:migrate": "tsx src/supervisor/db/migrate.ts",
     "supervisor:seed-models": "bash supervisor/scripts/seed-models.sh",
-    "supervisor:evals": "vitest run --dir test/supervisor/evals"
+    "supervisor:evals": "vitest run test/supervisor/evals"
   },
   "keywords": [
     "ai",

@@ -1,6 +1,6 @@
 # MiniCPM5 Analyst — code review, data extraction, RAG-grounded answers (§13.1, §14).
 # Uses Think mode by default for multi-step reasoning.
-FROM minicpm5:2b
+FROM openbmb/minicpm5-2b
 
 PARAMETER temperature 0.3
 PARAMETER num_ctx 32768

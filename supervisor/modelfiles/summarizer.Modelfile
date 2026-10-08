@@ -1,6 +1,6 @@
 # MiniCPM5 Summarizer — log / trajectory summarisation (§13.1).
 # No-think mode for fast, direct summaries.
-FROM minicpm5:2b
+FROM openbmb/minicpm5-2b
 
 PARAMETER temperature 0.2
 PARAMETER num_ctx 32768

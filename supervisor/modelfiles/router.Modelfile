@@ -1,7 +1,7 @@
 # MiniCPM5 Router — intent classification sub-agent.
 # Low temperature + JSON output for deterministic routing (§13.1).
 # Trained-on system prompt is the contract the RouterClassifier relies on.
-FROM minicpm5:2b
+FROM openbmb/minicpm5-2b
 
 PARAMETER temperature 0.1
 PARAMETER num_ctx 8192
