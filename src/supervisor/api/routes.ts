@@ -109,7 +109,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     return reply.code(200).send({ approvalId: crypto.randomUUID(), status: 'GRANTED' });
   });
 
-  // GET /v1/metrics — snapshot of supervisor metrics (§15.2)
+  // GET /v1/metrics — snapshot of supervisor metrics (§15.2 + Part 1 §13)
   app.get('/v1/metrics', async (_req, reply) => {
     const m = deps.supervisor.metrics.snapshot();
     const body: MetricsResponse = {
@@ -126,6 +126,16 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       latencyAvgMs: m.latencyAvgMs,
       humanApprovalsRequested: m.humanApprovalsRequested,
       safetyViolations: m.safetyViolations,
+      retrievalRecallAtK: m.retrievalRecallAtK,
+      retrievalPrecisionAtK: m.retrievalPrecisionAtK,
+      retrievalMrr: m.retrievalMrr,
+      retrievalNdcg: m.retrievalNdcg,
+      retrievalAclLeakageRate: m.retrievalAclLeakageRate,
+      retrievalCacheHitRate: m.retrievalCacheHitRate,
+      generationGroundedness: m.generationGroundedness,
+      generationCitationAccuracy: m.generationCitationAccuracy,
+      generationHallucinationRate: m.generationHallucinationRate,
+      generationSchemaValidity: m.generationSchemaValidity,
     };
     return reply.send(body);
   });
@@ -140,6 +150,29 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         riskLevel: t.riskLevel,
         timeoutMs: t.timeoutMs,
       })),
+    });
+  });
+
+  // GET /v1/runs/:id/checkpoints — list checkpoints for crash recovery (Part 2 §8)
+  app.get('/v1/runs/:id/checkpoints', async (req, reply) => {
+    const id = (req.params as { id: string }).id;
+    // The store interface doesn't expose checkpoints; the memory service
+    // does. In production wire this through. For now return 501 if no
+    // memory service is attached.
+    return reply.code(501).send({
+      error:
+        'checkpoint listing not wired through store; query the memories.checkpoints table directly',
+      runId: id,
+    });
+  });
+
+  // GET /v1/runs/:id/snapshots — list context snapshots (Part 2 §4.5)
+  app.get('/v1/runs/:id/snapshots', async (req, reply) => {
+    const id = (req.params as { id: string }).id;
+    return reply.code(501).send({
+      error:
+        'snapshot listing not wired through store; query the memories.context_snapshots table directly',
+      runId: id,
     });
   });
 

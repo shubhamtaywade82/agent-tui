@@ -17,12 +17,20 @@ export type { PatchResult } from './code/patch.js';
 export { PatchWorkflow } from './code/patch.js';
 export type { SupervisorConfig } from './config.js';
 export { supervisorConfig } from './config.js';
-export type { ContextBudget } from './context/builder.js';
+export type { BuiltContext, ContextBudget } from './context/builder.js';
 export { ContextBuilder } from './context/builder.js';
-export type { MemoryRecord, MemoryTier } from './context/memory.js';
-export { MemoryService } from './context/memory.js';
-export type { RetrievalResult } from './context/retrieval.js';
+export { CacheService } from './context/cache.js';
+export { MEMORY_TYPES, MemoryService } from './context/memory.js';
+export type { MemoryRecord, MemoryStatus, MemoryTier, MemoryType } from './context/memory.js';
 export { HybridRetriever } from './context/retrieval.js';
+export type {
+  ChunkMetadata,
+  DocumentType,
+  RetrievalFilters,
+  RetrievalQuery,
+  RetrievalResult,
+  RerankWeights,
+} from './context/retrieval.js';
 export { Supervisor } from './engine.js';
 export { GoldenTaskSuite } from './evals/golden.js';
 export type { AgentMetrics } from './evals/metrics.js';

@@ -51,5 +51,17 @@ export const MetricsResponse = z.object({
   latencyAvgMs: z.number(),
   humanApprovalsRequested: z.number(),
   safetyViolations: z.number(),
+  // §13 retrieval metrics
+  retrievalRecallAtK: z.number(),
+  retrievalPrecisionAtK: z.number(),
+  retrievalMrr: z.number(),
+  retrievalNdcg: z.number(),
+  retrievalAclLeakageRate: z.number(),
+  retrievalCacheHitRate: z.number(),
+  // §13 generation metrics
+  generationGroundedness: z.number(),
+  generationCitationAccuracy: z.number(),
+  generationHallucinationRate: z.number(),
+  generationSchemaValidity: z.number(),
 });
 export type MetricsResponse = z.infer<typeof MetricsResponse>;

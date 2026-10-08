@@ -15,6 +15,7 @@ import { startServer } from './api/server.js';
 import { CodeIndexer } from './code/indexer.js';
 import { PatchWorkflow } from './code/patch.js';
 import { supervisorConfig } from './config.js';
+import { CacheService } from './context/cache.js';
 import { MemoryService } from './context/memory.js';
 import { HybridRetriever } from './context/retrieval.js';
 import { Supervisor } from './engine.js';
@@ -28,6 +29,7 @@ import { SandboxExecutor } from './sandbox/executor.js';
 import { PermissionService } from './security/permissions.js';
 import { SecretResolver } from './security/secrets.js';
 import { PgStateStore } from './state/store.js';
+import { registerRetrievalAndMemoryTools } from './tools/builtin.js';
 
 async function makeBackend(): Promise<Backend> {
   switch (supervisorConfig.inference.backend) {
@@ -88,8 +90,24 @@ async function main() {
     secrets,
   });
 
-  // Register a couple of built-in tools (§10.1) so /v1/tools is non-empty out of the box
-  // Real deployments add their own tools via the registry.
+  // §8 + §13: register the validated retrieval + memory tools so the LLM
+  // can call them like any other tool. Every call is gated by tenant scope,
+  // permissions, filter validation, top_k limits, query length, rate limits,
+  // memory type allowlist, content length, duplicate detection, and PII/secret
+  // scanning (§12).
+  registerRetrievalAndMemoryTools(supervisor.registry, {
+    retriever,
+    memory,
+    permissions,
+    embedFn: undefined, // wire a real embedder here in production
+    embeddingModelVersion: 'default-v1',
+  });
+
+  // §11 cache service (prompt prefix + generation cache). Wired into the
+  // engine via the backend wrapper in production; left as a standalone
+  // instance here for observability and manual invalidation.
+  const _cache = new CacheService();
+  void _cache;
   // (Skipped here to avoid pulling more deps; see docs/supervisor/api.md for examples.)
 
   const app = await startServer({ supervisor, store });

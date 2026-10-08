@@ -77,6 +77,15 @@ export class Supervisor {
   private readonly validator: ToolValidator;
   private readonly repair: RepairLoop;
 
+  // Transient per-run state — full evidence + memory objects, kept out of
+  // the persisted AgentState (which stores only compact string summaries).
+  // Keyed by runId so concurrent runs don't collide.
+  private readonly runEvidence = new Map<
+    string,
+    import('./context/retrieval.js').RetrievalResult[]
+  >();
+  private readonly runMemory = new Map<string, import('./context/memory.js').MemoryRecord[]>();
+
   constructor(private readonly deps: SupervisorDeps) {
     this.permissions = deps.permissions ?? new PermissionService();
     this.secrets = deps.secrets ?? new SecretResolver();
@@ -150,7 +159,27 @@ export class Supervisor {
       await this.machine.transition(state, 'VALIDATING', 'validate');
       await this.stepValidateOutput(state);
 
-      // 6. FINALIZE
+      // 6. §8 Checkpoint — persist progress for crash recovery
+      if (this.deps.memory) {
+        try {
+          await this.deps.memory.createCheckpoint({
+            runId: state.runId,
+            stepId: state.steps.at(-1)?.stepId,
+            status: state.status,
+            currentPlan: state.intent,
+            completedSteps: state.steps.map((s) => s.stepType),
+            activeConstraints: [],
+            workingFiles: [],
+            lastToolResultSummary: state.executionResult?.slice(0, 200),
+            nextActions: [],
+            tokenBudget: supervisorConfig.context.budgetTokens,
+          });
+        } catch (e) {
+          logger.warn({ err: e }, 'checkpoint creation failed');
+        }
+      }
+
+      // 7. FINALIZE
       await this.machine.transition(state, 'COMPLETED', 'ok');
       state.finalResponse = state.executionResult ?? '(no output)';
       await this.bus.publish({
@@ -160,6 +189,26 @@ export class Supervisor {
         occurredAt: new Date().toISOString(),
       });
       this.metrics.recordRun('succeeded', Date.now() - startedAt, { prompt: 0, completion: 0 });
+
+      // 8. §10 Consolidation — write an episodic memory of this run
+      if (this.deps.memory && state.projectId) {
+        try {
+          await this.deps.memory.consolidateRun({
+            runId: state.runId,
+            namespace: `project:${state.projectId}`,
+            objective: state.objective,
+            completedSteps: state.steps
+              .filter((s) => s.status === 'SUCCEEDED')
+              .map((s) => s.stepType),
+            failedAttempts: state.steps.filter((s) => s.status === 'FAILED').length,
+            constraints: [],
+            summarizeFn: async (input) =>
+              `Run ${state.runId} (${input.objective.slice(0, 80)}): completed ${input.completedSteps.length} steps, ${input.failedAttempts} failures. Final: ${state.finalResponse?.slice(0, 120) ?? '(none)'}`,
+          });
+        } catch (e) {
+          logger.warn({ err: e }, 'memory consolidation failed');
+        }
+      }
     } catch (e) {
       const err = e as Error;
       state.errorTrace.push(err.message);
@@ -169,6 +218,9 @@ export class Supervisor {
     } finally {
       state.updatedAt = new Date().toISOString();
       await this.deps.store.saveRun(state);
+      // Clean up transient per-run maps to avoid memory growth
+      this.runEvidence.delete(state.runId);
+      this.runMemory.delete(state.runId);
     }
     return state;
   }
@@ -228,32 +280,39 @@ export class Supervisor {
   private async stepRetrieve(state: AgentState): Promise<void> {
     await withSpan('supervisor.retrieve', async () => {
       const ns = state.projectId ? `project:${state.projectId}` : 'default';
-      let evidence: { content: string; citation: string; score: number }[] = [];
+      let evidence: import('./context/retrieval.js').RetrievalResult[] = [];
       if (this.deps.retriever) {
         try {
-          const r = await this.deps.retriever.retrieve({
+          evidence = await this.deps.retriever.retrieve({
             query: state.query,
             namespace: ns,
             topK: supervisorConfig.retrieval.topK,
+            filters: { userId: state.userId, projectId: state.projectId },
           });
-          evidence = r.map((x) => ({ content: x.content, citation: x.citation, score: x.score }));
           this.metrics.recordRetrieval(evidence.length > 0 ? 1 : 0);
         } catch (e) {
           logger.warn({ err: e }, 'retrieval failed — proceeding without evidence');
         }
       }
+      this.runEvidence.set(state.runId, evidence);
       state.retrievedEvidence = evidence.map((e) => `[${e.citation}] ${e.content}`);
 
-      // Pull long-term memory too
-      let mem: { tier: string; content: string; importance: number }[] = [];
+      // Pull long-term memory (§6 selective read path)
+      let mem: import('./context/memory.js').MemoryRecord[] = [];
       if (this.deps.memory) {
         try {
-          const r = await this.deps.memory.read({ namespace: ns, limit: 5 });
-          mem = r.map((m) => ({ tier: m.tier, content: m.content, importance: m.importance }));
+          mem = await this.deps.memory.read({
+            namespace: ns,
+            limit: 5,
+            recencyBoost: true,
+            userId: state.userId,
+            projectId: state.projectId,
+          });
         } catch (e) {
           logger.warn({ err: e }, 'memory read failed');
         }
       }
+      this.runMemory.set(state.runId, mem);
 
       this.recordStep(state, 'RETRIEVE', {
         status: 'SUCCEEDED',
@@ -416,33 +475,48 @@ export class Supervisor {
 
   private async stepExecuteAnalyst(state: AgentState): Promise<void> {
     await withSpan('supervisor.execute.analyst', async () => {
+      const evidence = this.runEvidence.get(state.runId) ?? [];
+      const memory = this.runMemory.get(state.runId) ?? [];
       const built = this.contextBuilder.build({
         systemInstruction:
-          'You are the MiniCPM5 analyst sub-agent. Use only the provided evidence.',
-        outputSchema: 'Plain text answer. Cite evidence as [citation].',
+          'You are the MiniCPM5 analyst sub-agent. Answer ONLY using the provided evidence. If the evidence is insufficient, say "Insufficient evidence". Cite evidence IDs for every factual claim.',
+        outputSchema:
+          'Return JSON: {"answer": string, "citations": string[], "confidence": "high"|"medium"|"low", "insufficient_evidence": boolean}',
         toolDefinitions: this.registry.renderForPrompt(),
         task: state.query,
-        stateSummary: `intent=${state.intent ?? 'UNKNOWN'} thinkMode=${state.thinkMode}`,
-        retrievedEvidence: (state.retrievedEvidence ?? []).map((s, i) => ({
-          chunkId: `e${i}`,
-          source: 'both' as const,
-          score: 1,
-          content: s,
-          metadata: {},
-          citation: `e${i}`,
-        })),
+        stateSummary: `intent=${state.intent ?? 'UNKNOWN'} thinkMode=${state.thinkMode} runId=${state.runId}`,
+        retrievedEvidence: evidence,
         fileSnippets: [],
         conversationHistory: [],
-        longTermMemory: [],
+        longTermMemory: memory,
       });
       this.metrics.recordContext(built.budget.total, built.usedTokens);
+
+      // §4.5 context snapshot — audit what was in the prompt
+      if (this.deps.memory && state.steps.length > 0) {
+        try {
+          await this.deps.memory.saveContextSnapshot({
+            runId: state.runId,
+            stepId: state.steps.at(-1)?.stepId ?? state.runId,
+            tokenBudget: built.budget.total,
+            usedTokens: built.usedTokens,
+            promptHash: built.promptHash,
+            includedMemoryIds: built.includedMemoryIds,
+            includedChunkIds: built.includedChunkIds,
+            excludedChunkIds: built.excludedChunkIds,
+          });
+        } catch (e) {
+          logger.warn({ err: e }, 'context snapshot save failed');
+        }
+      }
+
       await this.bus.publish({
         type: 'context_built',
         runId: state.runId,
         payload: {
           tokenBudget: built.budget.total,
           usedTokens: built.usedTokens,
-          chunks: state.retrievedEvidence.length,
+          chunks: evidence.length,
         },
         occurredAt: new Date().toISOString(),
       });

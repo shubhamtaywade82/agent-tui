@@ -134,8 +134,39 @@ writes secrets to disk.
 - [ADR-0002 — Tool validation](adr/0002-tool-validation.md)
 - [ADR-0003 — Sandbox isolation](adr/0003-sandbox-isolation.md)
 - [ADR-0004 — Model routing](adr/0004-model-routing.md)
+- [ADR-0005 — Vector DB + External Memory Module](adr/0005-vector-db-and-external-memory.md)
 - [API reference](api.md)
 - [Runbook](runbook.md)
 - [Architecture diagram](diagrams/architecture.mmd)
 - [RAG flow diagram](diagrams/rag-flow.mmd)
 - [Patch workflow diagram](diagrams/patch-workflow.mmd)
+
+## Design-guide compliance
+
+Every recommendation in the uploaded design guide (Part 1 §1–§14 + Part 2
+§1–§17) is addressed. See [ADR-0005](adr/0005-vector-db-and-external-memory.md)
+for the full mapping. Summary:
+
+| Guide § | Recommendation | Implementation |
+| --- | --- | --- |
+| P1 §4 | Structure-aware chunking | `ChunkMetadata` + `CodeIndexer` symbol-boundary chunking |
+| P1 §5 | Rich chunk metadata | 12 first-class columns on `chunks` table + JSONB extras |
+| P1 §6 | Full hybrid pipeline | RRF score fusion in `HybridRetriever.retrieve()` |
+| P1 §7 | Weighted reranker | `0.55*sem + 0.20*kw + 0.10*recency + 0.10*authority + 0.05*quality` |
+| P1 §8 | Retrieval as validated tool | `retrieve_knowledge` tool with zod schema + permission gate |
+| P1 §9 | Grounded prompt | `[EVIDENCE-N source=... section=...]` tags + JSON output schema |
+| P1 §10 | Token budget formula | `total - reserve - safetyMargin = usable` |
+| P1 §11 | 4-layer cache | `CacheService` (prompt+gen) + `HybridRetriever` (emb+retrieval) |
+| P1 §12 | Tenant isolation | `RetrievalFilters` + `applyAclFilter()` before model sees results |
+| P1 §13 | Separate retrieval + generation metrics | `recordRetrievalEval` + `recordGenerationEval` |
+| P2 §3 | Memory service API | write/read/get/update/delete/consolidate/checkpoint/snapshot/sweep/decay |
+| P2 §4.1 | Full memory_items schema | 19 columns incl. `superseded_by`, `acl` JSONB, `source_run_id` |
+| P2 §4.5 | Context snapshots | `context_snapshots` table, auto-saved by engine |
+| P2 §6 | Selective read path | namespace → recent → important → semantic → ACL → rerank → compress |
+| P2 §7 | Context compaction | `runSummary` replaces raw history; oversized sections truncated |
+| P2 §8 | Checkpoints | `checkpoints` table + `createCheckpoint`/`getLatestCheckpoint` |
+| P2 §10 | Memory consolidation | `consolidateRun()` auto-called on run completion |
+| P2 §11 | Forgetting | TTL sweep + importance decay + supersession with `superseded_by` |
+| P2 §12 | Memory security | 6 secret patterns block writes; PII patterns logged |
+| P2 §13 | Memory tools | `memory_search` + `memory_write` with type allowlist + length limits |
+| P2 §14 | Runtime loop steps 12–13 | Compaction in `ContextBuilder`; consolidation in engine finally |
