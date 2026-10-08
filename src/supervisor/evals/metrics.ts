@@ -161,7 +161,7 @@ export class MetricsCollector {
     // MRR — reciprocal rank of the first relevant result
     let mrr = 0;
     for (let i = 0; i < topK.length; i++) {
-      if (relSet.has(topK[i]!)) {
+      if (relSet.has(topK[i])) {
         mrr = 1 / (i + 1);
         break;
       }

@@ -91,7 +91,7 @@ describe('§13 retrieval metric formulas (unit-level sanity)', () => {
     const retrieved = ['x', 'b', 'a'];
     let mrr = 0;
     for (let i = 0; i < retrieved.length; i++) {
-      if (relevant.has(retrieved[i]!)) {
+      if (relevant.has(retrieved[i])) {
         mrr = 1 / (i + 1);
         break;
       }

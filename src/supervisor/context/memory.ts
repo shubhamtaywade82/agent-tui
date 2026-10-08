@@ -418,7 +418,7 @@ export class MemoryService {
   async get(memoryId: string): Promise<MemoryRecord | null> {
     const r = await this.pool.query('SELECT * FROM memories WHERE memory_id = $1', [memoryId]);
     if (r.rowCount === 0) return null;
-    return this.rowToRecord(r.rows[0]!);
+    return this.rowToRecord(r.rows[0]);
   }
 
   async update(
@@ -572,7 +572,7 @@ export class MemoryService {
       [runId],
     );
     if (r.rowCount === 0) return null;
-    const row = r.rows[0]!;
+    const row = r.rows[0];
     return {
       checkpointId: row.checkpoint_id,
       status: row.status,

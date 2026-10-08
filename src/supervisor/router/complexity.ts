@@ -74,8 +74,8 @@ export class ComplexityScorer {
     }
 
     const len = query.length;
-    const bucket = LENGTH_BUCKETS.find((b) => len <= b.max)!;
-    if (bucket.weight > 0) {
+    const bucket = LENGTH_BUCKETS.find((b) => len <= b.max);
+    if (bucket && bucket.weight > 0) {
       s += bucket.weight;
       reasons.push(`query length ${len}`);
     }

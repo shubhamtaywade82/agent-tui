@@ -9,11 +9,18 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { Supervisor } from '../../../src/supervisor/engine.js';
-import { GoldenTaskSuite } from '../../../src/supervisor/evals/golden.js';
+import { type GoldenTask, GoldenTaskSuite } from '../../../src/supervisor/evals/golden.js';
 import { MockBackend } from '../../../src/supervisor/inference/mock.js';
 import type { DomainEvent } from '../../../src/supervisor/state/events.js';
 import type { AgentState } from '../../../src/supervisor/state/models.js';
 import type { StateStore } from '../../../src/supervisor/state/store.js';
+
+/** Look up a golden task, failing loudly if the id drifts out of the suite. */
+function mustById(suite: GoldenTaskSuite, id: string): GoldenTask {
+  const task = suite.byId(id);
+  if (!task) throw new Error(`golden task not found: ${id}`);
+  return task;
+}
 
 /** In-memory StateStore so evals don't need a Postgres instance. */
 class InMemoryStore implements StateStore {
@@ -53,7 +60,7 @@ describe('Golden task evals', () => {
     backend.enqueue('minicpm5-router', () => ({ json: { intent: 'GENERAL_QUERY' } }));
     backend.enqueue('minicpm5-analyst', () => 'The capital of France is Paris. [e1]');
     const s = makeSupervisor(backend);
-    const task = suite.byId('qa-001')!;
+    const task = mustById(suite, 'qa-001');
     const r = await s.run({ objective: task.query });
     expect(r.intent).toBe('GENERAL_QUERY');
     expect(r.finalResponse?.toLowerCase()).toContain('paris');
@@ -65,7 +72,7 @@ describe('Golden task evals', () => {
     backend.enqueue('minicpm5-router', () => ({ json: { intent: 'LOG_SUMMARIZATION' } }));
     backend.enqueue('minicpm5-summarizer', () => '## Summary\nDB connection issue with retries.');
     const s = makeSupervisor(backend);
-    const task = suite.byId('sum-001')!;
+    const task = mustById(suite, 'sum-001');
     const r = await s.run({ objective: task.query });
     expect(r.intent).toBe('LOG_SUMMARIZATION');
     expect(r.finalResponse).toContain('DB');
@@ -77,7 +84,7 @@ describe('Golden task evals', () => {
     backend.enqueue('minicpm5-router', () => ({ json: { intent: 'CODE_REVIEW' } }));
     backend.enqueue('minicpm5-analyst', () => 'This is a SQL injection vulnerability.');
     const s = makeSupervisor(backend);
-    const task = suite.byId('review-001')!;
+    const task = mustById(suite, 'review-001');
     const r = await s.run({ objective: task.query });
     expect(r.intent).toBe('CODE_REVIEW');
     expect(r.thinkMode).toBe('think');
@@ -101,7 +108,7 @@ describe('Golden task evals', () => {
       riskLevel: 'low',
       timeoutMs: 5000,
     });
-    const task = suite.byId('tool-001')!;
+    const task = mustById(suite, 'tool-001');
     const r = await s.run({ objective: task.query });
     expect(r.intent).toBe('TOOL_EXECUTION');
     expect(r.finalResponse).toMatch(/SIMULATED_SUCCESS|get_pipeline_status/);
@@ -112,7 +119,7 @@ describe('Golden task evals', () => {
     backend.enqueue('minicpm5-router', () => 'I have no idea');
     backend.enqueue('minicpm5-analyst', () => 'Could you clarify your request?');
     const s = makeSupervisor(backend);
-    const task = suite.byId('unknown-001')!;
+    const task = mustById(suite, 'unknown-001');
     const r = await s.run({ objective: task.query });
     expect(r.intent).toBe('UNKNOWN');
     expect(r.thinkMode).toBe('think'); // unknown intent always uses think

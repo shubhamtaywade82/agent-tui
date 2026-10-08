@@ -271,13 +271,11 @@ export class HybridRetriever {
       const byId = new Map<string, RetrievalResult>();
       const rrfK = 60; // standard RRF constant
       const rrfScores = new Map<string, number>();
-      for (let i = 0; i < vectorResults.length; i++) {
-        const r = vectorResults[i]!;
+      for (const [i, r] of vectorResults.entries()) {
         byId.set(r.chunkId, r);
         rrfScores.set(r.chunkId, 1 / (rrfK + i + 1));
       }
-      for (let i = 0; i < ftsResults.length; i++) {
-        const r = ftsResults[i]!;
+      for (const [i, r] of ftsResults.entries()) {
         const existing = byId.get(r.chunkId);
         const prev = rrfScores.get(r.chunkId) ?? 0;
         rrfScores.set(r.chunkId, prev + 1 / (rrfK + i + 1));
@@ -292,7 +290,8 @@ export class HybridRetriever {
       let maxRrf = 0;
       for (const s of rrfScores.values()) if (s > maxRrf) maxRrf = s;
       for (const [id, s] of rrfScores) {
-        const r = byId.get(id)!;
+        const r = byId.get(id);
+        if (!r) continue;
         r.score = maxRrf > 0 ? s / maxRrf : 0;
       }
 

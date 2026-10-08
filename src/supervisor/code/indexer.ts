@@ -80,7 +80,7 @@ export class CodeIndexer {
 
     if (this.retriever && opts.projectId) {
       for (let i = 0; i < chunks.length; i++) {
-        const c = chunks[i]!;
+        const c = chunks[i];
         await this.retriever.ingest({
           namespace: `code:${opts.projectId}`,
           sourceUri: `file://${relPath}#L${c.startLine}-L${c.endLine}`,
@@ -176,8 +176,8 @@ export class CodeIndexer {
     // Align chunks to symbol boundaries where possible
     const boundaries = [0, ...symbols.map((s) => s.startLine - 1), lines.length];
     for (let i = 0; i < boundaries.length - 1; i++) {
-      let start = boundaries[i]!;
-      const end = boundaries[i + 1]!;
+      let start = boundaries[i];
+      const end = boundaries[i + 1];
       // If the symbol is much larger than targetLines, sub-chunk it
       while (end - start > targetLines * 2) {
         const mid = start + targetLines;

@@ -53,9 +53,8 @@ export class SandboxExecutor {
 
   async run(req: SandboxRequest): Promise<SandboxResult> {
     // Idempotency cache
-    if (req.idempotencyKey && this.cache.has(req.idempotencyKey)) {
-      return this.cache.get(req.idempotencyKey)!;
-    }
+    const cached = req.idempotencyKey ? this.cache.get(req.idempotencyKey) : undefined;
+    if (cached) return cached;
 
     // Policy gate
     const decision = this.policy.evaluate(req.command);
