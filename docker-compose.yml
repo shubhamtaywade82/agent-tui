@@ -149,6 +149,6 @@ services:
   redis-test:
     image: redis:7-alpine
     restart: "no"
-    ports: ["66379:6379"]
+    ports: ["16379:6379"]
     networks: [supervisor-net]
     profiles: ["test"]
