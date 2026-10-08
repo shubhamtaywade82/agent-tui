@@ -103,7 +103,7 @@ Prefer setting a value **once in `.env`** (loaded at boot, git-ignored); use an
 inline prefix only for a one-off override — inline always wins:
 
 ```bash
-DATABASE_URL=postgres://…:5434/supervisor npm run supervisor:serve   # one-off
+DATABASE_URL=postgres://supervisor:supervisor@localhost:5434/supervisor npm run supervisor:serve   # one-off override
 ```
 
 ## 5. Seed the four MiniCPM5 sub-agent models
@@ -126,8 +126,12 @@ ollama create minicpm5-router -f supervisor/modelfiles/router.Modelfile
 ## 6. Create the schema
 
 ```bash
-DATABASE_URL=postgres://… npm run supervisor:migrate
+npm run supervisor:migrate
 ```
+
+(No `DATABASE_URL=` prefix — that lives in `.env` from §3.2. Never paste a
+placeholder as a real value: `pg` parses a bare `…` as **host `base`**, giving
+`getaddrinfo ENOTFOUND base`.)
 
 Safe to re-run (everything is `CREATE TABLE IF NOT EXISTS`). It runs each
 subsystem's own DDL so schema and code cannot drift. Creates 10 tables and two
@@ -146,7 +150,7 @@ or CI.
 ## 7. Run it
 
 ```bash
-DATABASE_URL=postgres://… npm run supervisor:serve
+npm run supervisor:serve
 # → MiniCPM5 Supervisor API listening — OpenAPI docs at /docs
 ```
 
@@ -230,6 +234,7 @@ Without the image/network, sandbox tool calls fail and the run moves to
 | `npm run supervisor:migrate` → module not found | Script pointed at `src/supervisor/db/migrate.ts`, which did not exist | File now exists and runs every subsystem's `init()` |
 | `Error: pull model manifest: file does not exist` | Modelfiles used `FROM minicpm5:2b`, a tag that 404s in the registry | Base is now `openbmb/minicpm5-2b`; override with `BASE_MODEL=…` |
 | `extension "vector" is not available` (migrate fails, serve boots anyway with `retriever init failed`) | `DATABASE_URL` fell through to its default `localhost:5432` — that Postgres has no pgvector | Set `DATABASE_URL` (§3.2), preferably in `.env`, and restart: check the `db:` line in the boot log |
+| `getaddrinfo ENOTFOUND base` (migrate or serve) | You pasted a `…` placeholder as a real value: `DATABASE_URL=… npm run …` — `pg` reads it as host `base`, and an inline prefix beats `.env` | Drop the inline prefix; the URL already lives in `.env` (§3.2). Confirm via the boot log's `db:` line |
 | `bind: address already in use` on 5432/6379 | Host services occupy the compose ports | Reuse them (§3.2) — don't start the compose data services |
 | `ERROR Raw mode is not supported on the current process.stdin` | TUI (`npm start`) needs a TTY | Expected in CI/pipes; run in a real terminal |
 | `intent_distribution` ≈ 90% `UNKNOWN` | Router model missing or prompts drifted | Check `supervisor:seed-models` output, then §3.2 of the runbook |
