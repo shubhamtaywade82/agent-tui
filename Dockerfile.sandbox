@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git python3 python3-pip python3-venv \
     ca-certificates curl jq ripgrep \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -r -u 1000 -g root sandbox
+    && useradd -r -u 1001 -g root sandbox
 
 # Pre-install common test/lint tools so the supervisor can run them
 # without re-downloading per run. Uses @biomejs/biome (not the deprecated
