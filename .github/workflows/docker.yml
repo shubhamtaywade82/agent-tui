@@ -160,8 +160,10 @@ jobs:
 
       - name: Verify compose service names
         run: |
+          # Include all profiles so profile-gated services (supervisor, test) are listed
+          ALL_SERVICES=$(docker compose --profile full --profile test config --services)
           for svc in postgres redis minio ollama sandbox supervisor; do
-            docker compose config --services | grep -q "$svc" || {
+            echo "$ALL_SERVICES" | grep -q "$svc" || {
               echo "::error::Missing service: $svc"
               exit 1
             }
