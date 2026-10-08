@@ -25,8 +25,8 @@ import type { CodeIndexer } from './code/indexer.js';
 import type { PatchWorkflow } from './code/patch.js';
 import { supervisorConfig } from './config.js';
 import { ContextBuilder } from './context/builder.js';
-import type { MemoryService } from './context/memory.js';
-import type { HybridRetriever } from './context/retrieval.js';
+import type { MemoryRecord, MemoryService } from './context/memory.js';
+import type { RetrievalResult } from './context/retrieval.js';
 import { MetricsCollector } from './evals/metrics.js';
 import type { Backend } from './inference/backend.js';
 import { logger } from './observability/logger.js';
@@ -34,7 +34,6 @@ import { withSpan } from './observability/telemetry.js';
 import { RouterClassifier } from './router/classifier.js';
 import { ComplexityScorer } from './router/complexity.js';
 import { ModelRouter } from './router/router.js';
-import type { SandboxExecutor } from './sandbox/executor.js';
 import { PermissionService } from './security/permissions.js';
 import { SecretResolver } from './security/secrets.js';
 import { type DomainEvent, EventBus } from './state/events.js';
@@ -45,18 +44,56 @@ import {
   newAgentState,
   StepRecord,
   type StepType,
+  ToolCallSchema,
 } from './state/models.js';
 import type { StateStore } from './state/store.js';
 import { ToolRegistry } from './tools/registry.js';
 import { RepairLoop } from './tools/repair.js';
 import { ToolValidator } from './tools/validator.js';
 
+/**
+ * TS Engine §4 (Hexagonal Architecture) — Port interfaces.
+ *
+ * The supervisor knows nothing about PostgreSQL, Docker, or Qdrant. It
+ * only knows about these interfaces. This allows swapping the sandbox
+ * from Docker to AWS Lambda, or the vector DB from pgvector to Pinecone,
+ * without modifying the orchestration logic.
+ */
+export interface IRetriever {
+  retrieve(params: {
+    query: string;
+    queryEmbedding?: number[];
+    namespace?: string;
+    topK?: number;
+    filters?: Record<string, unknown>;
+  }): Promise<RetrievalResult[]>;
+}
+
+export interface ISandboxExecutor {
+  run(req: {
+    command: string;
+    env?: Record<string, string>;
+    cwd?: string;
+    idempotencyKey?: string;
+    timeoutMs?: number;
+  }): Promise<{
+    ok: boolean;
+    exitCode: number | null;
+    stdout: string;
+    stderr: string;
+    durationMs: number;
+    timedOut: boolean;
+  }>;
+}
+
 export interface SupervisorDeps {
   backend: Backend;
   store: StateStore;
-  retriever?: HybridRetriever;
+  /** Retriever port — accepts any IRetriever impl (pgvector, Qdrant, mock). */
+  retriever?: IRetriever;
   memory?: MemoryService;
-  sandbox?: SandboxExecutor;
+  /** Sandbox port — accepts any ISandboxExecutor impl (Docker, gVisor, Lambda). */
+  sandbox?: ISandboxExecutor;
   codeIndexer?: CodeIndexer;
   patchWorkflow?: PatchWorkflow;
   permissions?: PermissionService;
@@ -80,11 +117,8 @@ export class Supervisor {
   // Transient per-run state — full evidence + memory objects, kept out of
   // the persisted AgentState (which stores only compact string summaries).
   // Keyed by runId so concurrent runs don't collide.
-  private readonly runEvidence = new Map<
-    string,
-    import('./context/retrieval.js').RetrievalResult[]
-  >();
-  private readonly runMemory = new Map<string, import('./context/memory.js').MemoryRecord[]>();
+  private readonly runEvidence = new Map<string, RetrievalResult[]>();
+  private readonly runMemory = new Map<string, MemoryRecord[]>();
 
   constructor(private readonly deps: SupervisorDeps) {
     this.permissions = deps.permissions ?? new PermissionService();
@@ -280,7 +314,7 @@ export class Supervisor {
   private async stepRetrieve(state: AgentState): Promise<void> {
     await withSpan('supervisor.retrieve', async () => {
       const ns = state.projectId ? `project:${state.projectId}` : 'default';
-      let evidence: import('./context/retrieval.js').RetrievalResult[] = [];
+      let evidence: RetrievalResult[] = [];
       if (this.deps.retriever) {
         try {
           evidence = await this.deps.retriever.retrieve({
@@ -298,7 +332,7 @@ export class Supervisor {
       state.retrievedEvidence = evidence.map((e) => `[${e.citation}] ${e.content}`);
 
       // Pull long-term memory (§6 selective read path)
-      let mem: import('./context/memory.js').MemoryRecord[] = [];
+      let mem: MemoryRecord[] = [];
       if (this.deps.memory) {
         try {
           mem = await this.deps.memory.read({
@@ -354,13 +388,36 @@ export class Supervisor {
         occurredAt: new Date().toISOString(),
       });
 
-      // Parse + validate
+      // Parse + validate via the TS Engine §3 ToolCallSchema discriminated
+      // union. The model must either provide a valid tool + arguments, OR
+      // explicitly declare `tool: 'none'` with a reason. Any other shape
+      // triggers the repair loop (§10.3).
       let toolName = '';
       let rawArgs: unknown = {};
       if (r.parsed && typeof r.json === 'object' && r.json !== null) {
-        const j = r.json as { tool?: string; name?: string; arguments?: unknown };
-        toolName = j.tool ?? j.name ?? '';
-        rawArgs = j.arguments ?? {};
+        const parseResult = ToolCallSchema.safeParse(r.json);
+        if (parseResult.success) {
+          const tc = parseResult.data;
+          // Check for explicit deferral first (tool === 'none')
+          if (tc.tool === 'none') {
+            const reason = (tc as { reason: string }).reason;
+            state.executionResult = `Skipped: no tool needed. Reason: ${reason}`;
+            this.recordStep(state, 'EXECUTE_TOOL', {
+              status: 'SKIPPED',
+              output: { tool: 'none', reason },
+            });
+            return;
+          }
+          // Real tool call — extract tool name + arguments
+          const exec = tc as { tool: string; arguments: Record<string, unknown> };
+          toolName = exec.tool;
+          rawArgs = exec.arguments;
+        } else {
+          // Fall back to loose parsing for backwards compatibility
+          const j = r.json as { tool?: string; name?: string; arguments?: unknown };
+          toolName = j.tool ?? j.name ?? '';
+          rawArgs = j.arguments ?? {};
+        }
       }
 
       await this.bus.publish({

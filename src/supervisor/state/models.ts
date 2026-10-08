@@ -119,14 +119,49 @@ export const ToolCallRecord = z.object({
 export type ToolCallRecord = z.infer<typeof ToolCallRecord>;
 
 /**
+ * Tool-call discriminated union — TS Engine §3 (Strict Discriminated Unions).
+ *
+ * The model must either provide a valid tool + arguments, OR explicitly
+ * declare `tool: 'none'` with a reason. This prevents the "silent failure"
+ * mode where small models generate conversational filler instead of
+ * actionable payloads. The union is parsed at runtime via zod; any output
+ * that matches neither branch is rejected and routed through the repair
+ * loop (§10.3).
+ */
+export const ToolCallSchema = z.union([
+  // Explicit deferral — checked first so {tool: 'none'} matches this branch
+  z.object({
+    tool: z.literal('none'),
+    reason: z.string(),
+  }),
+  // Real tool call — tool must be a non-empty string that is NOT 'none'
+  z.object({
+    tool: z
+      .string()
+      .min(1)
+      .refine((v) => v !== 'none', 'use the deferral branch'),
+    arguments: z.record(z.string(), z.unknown()).default({}),
+  }),
+]);
+export type ToolCall = z.infer<typeof ToolCallSchema>;
+
+/**
  * The full runtime state of one agent run. This object is the only thing
  * the orchestration engine mutates; the LLM only sees an opaque snapshot.
+ *
+ * TS Engine §2 (Immutable State Transitions): core identifiers use
+ * `.readonly()` so they cannot be accidentally mutated after creation.
+ * The engine updates mutable fields (status, intent, executionResult,
+ * etc.) via spread + reassignment, never by mutating the original.
  */
 export const AgentState = z.object({
-  runId: z.string().uuid(),
+  // §2 readonly — core identifiers are immutable after creation
+  runId: z.string().uuid().readonly(),
   userId: z.string().optional(),
   projectId: z.string().optional(),
-  objective: z.string(),
+  objective: z.string().readonly(),
+  createdAt: z.string().datetime().readonly(),
+  // Mutable workflow fields
   status: RunStatus.default('CREATED'),
   intent: Intent.optional(),
   thinkMode: z.enum(['think', 'no-think']).default('no-think'),
@@ -140,7 +175,6 @@ export const AgentState = z.object({
   steps: z.array(StepRecord).default([]),
   toolCalls: z.array(ToolCallRecord).default([]),
   artifacts: z.array(z.string()).default([]),
-  createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
 export type AgentState = z.infer<typeof AgentState>;

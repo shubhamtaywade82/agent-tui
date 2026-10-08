@@ -158,4 +158,21 @@ describe('Golden task evals', () => {
       expect(['COMPLETED', 'FAILED', 'ESCALATED']).toContain(r.status);
     }
   });
+
+  it('tool-defer-001: model declares tool:"none" → run completes with skip reason', async () => {
+    // TS Engine §3 — the discriminated union allows the model to explicitly
+    // defer tool execution with a reason, preventing the "silent failure"
+    // mode where small models generate conversational filler.
+    const backend = new MockBackend();
+    backend.enqueue('minicpm5-router', () => ({ json: { intent: 'TOOL_EXECUTION' } }));
+    backend.enqueue('minicpm5-toolagent', () => ({
+      json: { tool: 'none', reason: 'This is a conversational query — no tool needed.' },
+    }));
+    const s = makeSupervisor(backend);
+    const r = await s.run({ objective: 'Tell me about the deployment pipeline.' });
+    expect(r.intent).toBe('TOOL_EXECUTION');
+    expect(r.finalResponse).toContain('Skipped: no tool needed');
+    expect(r.finalResponse).toContain('conversational query');
+    expect(r.status).toBe('COMPLETED');
+  });
 });
