@@ -121,16 +121,9 @@ jobs:
           node-version: '20'
           cache: 'npm'
       - run: npm ci
-      - run: npx vitest run test/supervisor/unit --coverage
+      - run: npx vitest run test/supervisor/unit
         env:
           INFERENCE_BACKEND: mock
-      - name: Upload coverage
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: unit-test-coverage
-          path: coverage/
-          retention-days: 7
       - run: npx vitest run test/supervisor/evals
         env:
           INFERENCE_BACKEND: mock
@@ -235,13 +228,19 @@ jobs:
       - name: I7 — No raw JSON.parse without try/catch
         run: |
           # Every JSON.parse in src/supervisor/ must either:
-          #   a) be a deep-clone pattern: JSON.parse(JSON.stringify(...))
-          #   b) have a try { within 5 lines before it
+          #   a) be in a comment line (starts with * or //)
+          #   b) be a deep-clone pattern: JSON.parse(JSON.stringify(...))
+          #   c) have a try { within 5 lines before it
           for f in $(grep -rl 'JSON\.parse' src/supervisor/); do
             line_nums=$(grep -n 'JSON\.parse' "$f" | cut -d: -f1)
             for ln in $line_nums; do
+              line=$(sed -n "${ln}p" "$f")
+              # Skip comment lines (JSDoc * or // or /*)
+              if echo "$line" | grep -qE '^\s*(\*|//|/\*)'; then
+                continue
+              fi
               # Skip the deep-clone pattern JSON.parse(JSON.stringify(
-              if sed -n "${ln}p" "$f" | grep -q 'JSON\.parse(JSON\.stringify'; then
+              if echo "$line" | grep -q 'JSON\.parse(JSON\.stringify'; then
                 continue
               fi
               # Check if there's a try { within the 5 lines before this JSON.parse
@@ -249,6 +248,7 @@ jobs:
               [ "$start" -lt 1 ] && start=1
               if ! sed -n "${start},${ln}p" "$f" | grep -q 'try[[:space:]]*{'; then
                 echo "FAIL: $f:$ln has JSON.parse without try/catch"
+                echo "  Line: $line"
                 exit 1
               fi
             done
