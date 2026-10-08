@@ -1,0 +1,23 @@
+%%{init: {'theme':'neutral', 'themeVariables':{'fontFamily':'Inter, sans-serif'}}}%%
+flowchart TB
+  classDef node fill:#eef,stroke:#88f,color:#003
+  classDef ok fill:#efe,stroke:#8c8,color:#030
+  classDef fail fill:#fee,stroke:#f88,color:#300
+  classDef human fill:#fef,stroke:#a8f,color:#303
+
+  ISS[Issue or task]:::node
+  RET[Retrieve relevant files §6]:::node
+  GEN[Generate candidate patch §13 analyst]:::node
+  APPLY[Apply patch in git worktree §12.3]:::node
+  TESTS[Run tests §12.2 validators]:::node
+
+  DECIDE{Tests pass?}:::human
+  REPAIR[Generate repair patch §10.3 repair loop]:::node
+  PR[Create pull request / diff]:::ok
+  HUMAN[Human review §9.4]:::human
+
+  ISS --> RET --> GEN --> APPLY --> TESTS --> DECIDE
+  DECIDE -- no --> REPAIR --> GEN
+  DECIDE -- yes --> PR --> HUMAN
+  HUMAN -- approve --> DONE[Merge]:::ok
+  HUMAN -- reject --> REPAIR

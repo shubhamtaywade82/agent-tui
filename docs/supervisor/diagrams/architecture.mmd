@@ -1,0 +1,36 @@
+%%{init: {'theme':'neutral', 'themeVariables':{'fontFamily':'Inter, sans-serif'}}}%%
+flowchart TB
+  classDef external fill:#eef,stroke:#88f,color:#003
+  classDef infra fill:#efe,stroke:#8c8,color:#030
+  classDef model fill:#fee,stroke:#f88,color:#300
+  classDef store fill:#ffd,stroke:#cc8,color:#330
+
+  U[User / API / IDE / CLI]:::external
+  GW[Gateway + Authorization §16]:::infra
+  RT[Router / Planner §13]:::infra
+  CB[Context Builder §8]:::infra
+
+  SDB[(State DB §4)]:::store
+  MDB[(Memory DB §7)]:::store
+  RDB[(Retrieval Index §6)]:::store
+  TREG[Tool Registry §10]:::infra
+
+  INF[MiniCPM5 Inference §13]:::model
+  OLL[Ollama / vLLM / Mock]:::model
+
+  VAL[Output Parser + Validator §10]:::infra
+  EXEC[Action Executor §11]:::infra
+  SBX[Docker Sandbox]:::infra
+  RES[Result Normalizer + Evaluator §12 §15]:::infra
+  AUDIT[(State Store / Audit / Memory Writer)]:::store
+  NEXT[Next step / Retry / Escalate / Complete]:::infra
+
+  U --> GW --> RT --> CB
+  CB --> SDB
+  CB --> MDB
+  CB --> RDB
+  CB --> TREG
+  CB --> INF --> OLL
+  INF --> VAL --> EXEC --> SBX
+  EXEC --> RES --> AUDIT --> NEXT
+  NEXT -.-> RT
