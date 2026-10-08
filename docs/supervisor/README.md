@@ -130,6 +130,7 @@ writes secrets to disk.
 
 ## Further reading
 
+- [Setup & usage guide](usage.md)
 - [ADR-0001 — Supervisor state machine](adr/0001-supervisor-state-machine.md)
 - [ADR-0002 — Tool validation](adr/0002-tool-validation.md)
 - [ADR-0003 — Sandbox isolation](adr/0003-sandbox-isolation.md)

@@ -188,6 +188,28 @@ src/
 | `npm test` | Run the task-runtime test suite |
 | `npm run build` | Compile TypeScript to `dist/` |
 
+## MiniCPM5 Supervisor (orchestration layer)
+
+A second entry point in this repo: a deterministic orchestration layer that
+wraps local MiniCPM5-2B sub-agents (router / tool-agent / analyst / summarizer)
+with state machine, retrieval, memory, sandboxed execution and an HTTP API on
+`:7480`.
+
+```bash
+npm install
+bash supervisor/scripts/seed-models.sh              # create the four sub-agent models
+npm run supervisor:migrate                          # schema (needs Postgres + pgvector)
+npm run supervisor:serve                            # API + OpenAPI docs at /docs
+```
+
+> `DATABASE_URL` defaults to `localhost:5432`. If your Postgres isn't that one, or
+> it has no `pgvector`, set it first (a line in `.env` is enough) — otherwise
+> `migrate` fails with `extension "vector" is not available` while `serve` boots
+> in a degraded "retriever init failed" state.
+
+Full instructions, prerequisites and troubleshooting:
+[docs/supervisor/usage.md](docs/supervisor/usage.md).
+
 ## License
 
 ISC
