@@ -118,6 +118,7 @@ const Chat: React.FC<ChatProps> = ({
   });
   const [ghostText, setGhostText] = useState(''); const [dismissedInput, setDismissedInput] = useState('');
   const lastReq = React.useRef(0); const abortRef = React.useRef<AbortController | null>(null);
+  const chatAbortRef = React.useRef<AbortController | null>(null); const userCancelledRef = React.useRef(false);
 
   const promptPool = useMemo(() => Array.from(new Set([...history.filter((h) => !h.startsWith('/')), ...DEFAULT_PROMPTS])), [history]);
   const activeMenu = useMemo(() => dismissedInput === input ? [] : getMenuOptions(input, models, ghostText, promptPool), [input, models, ghostText, promptPool, dismissedInput]);
@@ -222,9 +223,11 @@ const Chat: React.FC<ChatProps> = ({
     // llama.cpp expands tool schemas into prose in the prompt (~2.2 chars/token,
     // measured) — size the history budget against that or the window overflows.
     const toolTokens = tools?.length ? Math.ceil(JSON.stringify(tools).length / 2.2) : 0;
+    const ac = new AbortController();
+    chatAbortRef.current = ac;
     const stream = await client!.chatStream({
       model: selectedModel, messages: prepareMessages(chatHistory, currentSkill, Math.max(2048, NUM_CTX - toolTokens - 4096)),
-      think: 'high', tools, options: { temperature: 0.7, num_ctx: NUM_CTX }, timeoutMs: 120000,
+      think: 'high', tools, options: { temperature: 0.7, num_ctx: NUM_CTX }, timeoutMs: 120000, signal: ac.signal,
     });
     const { thinking, content } = await consumeStream(stream, (d) => setStreamedThinking((p) => p + d), (d) => { setPhase('responding'); setStreamedContent((p) => p + d); });
     const final = await stream.finalResult;
@@ -258,6 +261,7 @@ const Chat: React.FC<ChatProps> = ({
     const maxTurns = 15;
     try {
       for (let turn = 0; turn < maxTurns; turn++) {
+        if (userCancelledRef.current) { userCancelledRef.current = false; return; }
         const res = await executeSingleTurn(currentHistory, true, skillName);
         if (res.done) {
           if (res.content && isPrematureStall(res.content)) {
@@ -301,11 +305,18 @@ const Chat: React.FC<ChatProps> = ({
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (/exceed.*context/i.test(msg)) {
+      if (userCancelledRef.current) {
+        userCancelledRef.current = false; // Esc already showed 'Cancelled' — not an error.
+      } else if (/exceed.*context/i.test(msg)) {
         show('Context limit reached. Compacting & recovering...', 'warning', 3000);
         try { await executeSingleTurn(currentHistory.slice(-2), false, skillName); return; } catch {}
+        show(`Error: ${msg}`, 'error', 4000); onSendMessage(undefined, `⚠️ Error: ${msg}`);
+      } else if (/abort/i.test(msg)) {
+        show('Stream interrupted (timeout or connection lost)', 'warning', 4000);
+        onSendMessage(undefined, '⚠️ Stream interrupted (timeout or connection lost)');
+      } else {
+        show(`Error: ${msg}`, 'error', 4000); onSendMessage(undefined, `⚠️ Error: ${msg}`);
       }
-      show(`Error: ${msg}`, 'error', 4000); onSendMessage(undefined, `⚠️ Error: ${msg}`);
     } finally { resetStream('idle'); }
   };
 
@@ -370,7 +381,14 @@ const Chat: React.FC<ChatProps> = ({
       history={reversedHistory} focus={isActive && !isSelectingModel && isInputFocused} theme={theme}
       placeholder={isChatFocused ? 'Chat scroll focused — Press Tab or Esc to type...' : phase === 'thinking' ? '⚡ Thinking... [Esc stop]' : phase === 'executing-tools' ? '🔧 Running tools...' : phase === 'responding' ? 'Streaming... [Esc stop]' : 'Type prompt or /command...'}
       disabled={phase !== 'idle'} showCounter={true} suggestions={activeMenu[selectedCmdIndex] ? [activeMenu[selectedCmdIndex]!.name, ...promptPool] : promptPool} ghostText={ghostText}
-      onCancel={() => { if (phase !== 'idle') { resetStream('idle'); show('Cancelled', 'warning', 2000); } }}
+      onCancel={() => {
+        if (phase !== 'idle') {
+          userCancelledRef.current = true;
+          chatAbortRef.current?.abort();
+          resetStream('idle');
+          show('Cancelled', 'warning', 2000);
+        }
+      }}
     />
   );
 
