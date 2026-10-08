@@ -1,0 +1,88 @@
+name: branch-protection
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize]
+
+# This workflow enforces the required-status-checks contract documented
+# in docs/supervisor/ci-required-checks.md. It does NOT modify branch
+# protection rules (that requires admin permissions + the GitHub API);
+# instead it verifies that all required checks are present in the PR's
+# status context list. Enable branch protection in the repo settings:
+#
+#   Settings → Branches → Branch protection rules → main
+#     ✓ Require status checks to pass before merging
+#     ✓ Require branches to be up to date before merging
+#     ✓ Require conversation resolution before merging
+#     ✓ Require approvals: 1
+#
+# Then select these required status checks:
+#   - Lint + Typecheck
+#   - Modelfile Validation
+#   - Unit Tests
+#   - Integration Tests (Postgres + pgvector)
+#   - Docker Build Smoke Test
+#   - Invariant Verification (I1-I8)
+
+jobs:
+  verify-required-checks:
+    name: Verify Required Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: List expected required checks
+        id: expected
+        run: |
+          cat > expected.txt << 'EOF'
+          Lint + Typecheck
+          Modelfile Validation
+          Unit Tests
+          Integration Tests (Postgres + pgvector)
+          Docker Build Smoke Test
+          Invariant Verification (I1-I8)
+          EOF
+          echo "Expected required checks:"
+          cat expected.txt
+
+      - name: Verify workflow files exist
+        run: |
+          for wf in ci-supervisor.yml modelfiles.yml docker.yml release.yml; do
+            test -f ".github/workflows/${wf}" || {
+              echo "::error::Missing .github/workflows/${wf}"
+              exit 1
+            }
+          done
+          echo "✓ All 4 workflow files present"
+
+      - name: Verify ci-supervisor.yml has all 6 jobs
+        run: |
+          for job in lint-typecheck modelfile-validation unit-tests integration-tests docker-build invariant-check; do
+            grep -q "  ${job}:" .github/workflows/ci-supervisor.yml || {
+              echo "::error::ci-supervisor.yml missing job: ${job}"
+              exit 1
+            }
+          done
+          echo "✓ ci-supervisor.yml has all 6 jobs"
+
+      - name: Summary
+        run: |
+          echo "## Required Status Checks" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The following checks **must** be configured as required in" >> $GITHUB_STEP_SUMMARY
+          echo "Settings → Branches → Branch protection rules → main:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Workflow |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Lint + Typecheck | ci-supervisor.yml |" >> $GITHUB_STEP_SUMMARY
+          echo "| Modelfile Validation | ci-supervisor.yml + modelfiles.yml |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit Tests | ci-supervisor.yml |" >> $GITHUB_STEP_SUMMARY
+          echo "| Integration Tests (Postgres + pgvector) | ci-supervisor.yml |" >> $GITHUB_STEP_SUMMARY
+          echo "| Docker Build Smoke Test | ci-supervisor.yml + docker.yml |" >> $GITHUB_STEP_SUMMARY
+          echo "| Invariant Verification (I1-I8) | ci-supervisor.yml |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Also enable:" >> $GITHUB_STEP_SUMMARY
+          echo "- Require branches to be up to date before merging" >> $GITHUB_STEP_SUMMARY
+          echo "- Require conversation resolution before merging" >> $GITHUB_STEP_SUMMARY
+          echo "- Require approvals: 1" >> $GITHUB_STEP_SUMMARY

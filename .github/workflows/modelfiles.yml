@@ -1,0 +1,135 @@
+name: modelfiles
+
+on:
+  push:
+    branches: [main, 'feat/**']
+    paths:
+      - 'supervisor/modelfiles/**'
+      - '.github/workflows/modelfiles.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'supervisor/modelfiles/**'
+
+# This workflow is a lightweight, fast (≤ 30s) check that runs
+# independently of the full CI pipeline. It catches Modelfile drift
+# (e.g. someone bumps a temperature or removes a stop sequence) before
+# the models are rebuilt.
+
+concurrency:
+  group: modelfiles-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate Modelfiles
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify all 4 Modelfiles exist
+        run: |
+          for mf in router toolagent analyst summarizer; do
+            test -f "supervisor/modelfiles/${mf}.Modelfile" || {
+              echo "::error::supervisor/modelfiles/${mf}.Modelfile not found"
+              exit 1
+            }
+          done
+          echo "✓ All 4 Modelfiles present"
+
+      - name: Verify FROM base image
+        run: |
+          for mf in supervisor/modelfiles/*.Modelfile; do
+            if ! grep -q '^FROM openbmb/minicpm5-2b' "$mf"; then
+              echo "::error::$mf does not use FROM openbmb/minicpm5-2b"
+              exit 1
+            fi
+          done
+          echo "✓ All Modelfiles use openbmb/minicpm5-2b base"
+
+      - name: Verify temperature constraints (audit I4)
+        run: |
+          # router ≤ 0.1, toolagent ≤ 0.2, analyst ≤ 0.3, summarizer ≤ 0.3
+          check_temp() {
+            local file="$1" max="$2" name="$3"
+            local temp=$(grep '^PARAMETER temperature' "$file" | awk '{print $3}')
+            if [ -z "$temp" ]; then
+              echo "::error::$name.Modelfile missing PARAMETER temperature"
+              exit 1
+            fi
+            awk "BEGIN {exit !($temp <= $max)}" || {
+              echo "::error::$name temperature $temp > $max"
+              exit 1
+            }
+            echo "✓ $name temperature $temp ≤ $max"
+          }
+          check_temp supervisor/modelfiles/router.Modelfile 0.1 router
+          check_temp supervisor/modelfiles/toolagent.Modelfile 0.2 toolagent
+          check_temp supervisor/modelfiles/analyst.Modelfile 0.3 analyst
+          check_temp supervisor/modelfiles/summarizer.Modelfile 0.3 summarizer
+
+      - name: Verify num_ctx constraints
+        run: |
+          # router ≥ 2048, others ≥ 8192
+          ctx=$(grep '^PARAMETER num_ctx' supervisor/modelfiles/router.Modelfile | awk '{print $3}')
+          [ "$ctx" -ge 2048 ] || {
+            echo "::error::router num_ctx $ctx < 2048"; exit 1
+          }
+          for mf in toolagent analyst summarizer; do
+            ctx=$(grep '^PARAMETER num_ctx' "supervisor/modelfiles/${mf}.Modelfile" | awk '{print $3}')
+            [ "$ctx" -ge 8192 ] || {
+              echo "::error::${mf} num_ctx $ctx < 8192"; exit 1
+            }
+          done
+          echo "✓ All num_ctx constraints satisfied"
+
+      - name: Verify PARAMETER stop sequences (audit I6)
+        run: |
+          # toolagent + analyst + summarizer must have stop sequences
+          for mf in toolagent analyst summarizer; do
+            if ! grep -q '^PARAMETER stop' "supervisor/modelfiles/${mf}.Modelfile"; then
+              echo "::error::${mf}.Modelfile missing PARAMETER stop"
+              exit 1
+            fi
+          done
+          echo "✓ All required stop sequences present"
+
+      - name: Verify SYSTEM prompt present + non-empty
+        run: |
+          for mf in supervisor/modelfiles/*.Modelfile; do
+            if ! grep -q '^SYSTEM """' "$mf"; then
+              echo "::error::$mf missing SYSTEM prompt"
+              exit 1
+            fi
+            content=$(sed -n '/^SYSTEM """/,/^"""$/p' "$mf" | head -n -1 | tail -n +2 | tr -d '[:space:]')
+            if [ -z "$content" ]; then
+              echo "::error::$mf has empty SYSTEM prompt"
+              exit 1
+            fi
+          done
+          echo "✓ All SYSTEM prompts present and non-empty"
+
+      - name: Verify seed-models.sh references all 4 Modelfiles
+        run: |
+          for mf in router toolagent analyst summarizer; do
+            grep -q "${mf}.Modelfile" supervisor/scripts/seed-models.sh || {
+              echo "::error::seed-models.sh does not reference ${mf}.Modelfile"
+              exit 1
+            }
+          done
+          echo "✓ seed-models.sh references all 4 Modelfiles"
+
+      - name: Summary
+        run: |
+          echo "## Modelfile Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Model | Temperature | num_ctx | Stops | SYSTEM |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------------|---------|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          for mf in router toolagent analyst summarizer; do
+            temp=$(grep '^PARAMETER temperature' "supervisor/modelfiles/${mf}.Modelfile" | awk '{print $3}')
+            ctx=$(grep '^PARAMETER num_ctx' "supervisor/modelfiles/${mf}.Modelfile" | awk '{print $3}')
+            stops=$(grep -c '^PARAMETER stop' "supervisor/modelfiles/${mf}.Modelfile" || echo 0)
+            sys=$(grep -c '^SYSTEM """' "supervisor/modelfiles/${mf}.Modelfile" || echo 0)
+            echo "| ${mf} | ${temp} | ${ctx} | ${stops} | ${sys} |" >> $GITHUB_STEP_SUMMARY
+          done
