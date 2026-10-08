@@ -8,7 +8,8 @@ import { CacheService } from '../../../src/supervisor/context/cache.js';
 
 // Use a real Redis if TEST_REDIS_URL is set; otherwise skip.
 // In CI without a Redis service, these tests are skipped.
-const REDIS_URL = process.env.TEST_REDIS_URL ?? process.env.REDIS_URL ?? 'redis://localhost:6379/15';
+const REDIS_URL =
+  process.env.TEST_REDIS_URL ?? process.env.REDIS_URL ?? 'redis://localhost:6379/15';
 const SKIP = !process.env.TEST_REDIS_URL;
 
 describe.skipIf(SKIP)('CacheService', () => {
