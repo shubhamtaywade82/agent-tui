@@ -1,11 +1,13 @@
 /**
- * Metrics collector — §15.2 (Agent Metrics).
+ * Metrics collector — §15.2 (Agent Metrics) + Part 1 §13 (Evaluate
+ * Retrieval and Generation Separately).
  *
- * Tracks the twelve production metrics called out in §15.2:
- *   task success rate, tool-call validity rate, tool execution success
- *   rate, retry rate, escalation rate, hallucination rate, retrieval
- *   precision, context utilization, average latency, token cost, human
- *   intervention rate, safety violation rate.
+ * Tracks:
+ *   - the twelve §15.2 production metrics
+ *   - the §13 retrieval metrics (recall@k, precision@k, MRR, nDCG,
+ *     ACL leakage rate, cache hit rate)
+ *   - the §13 generation metrics (groundedness, citation accuracy,
+ *     hallucination rate, schema validity)
  *
  * Snapshots are emitted after every run and can be ingested by any
  * OpenTelemetry-compatible backend (§15.1).
@@ -30,6 +32,20 @@ export interface AgentMetrics {
   humanApprovalsRequested: number;
   humanApprovalsGranted: number;
   safetyViolations: number;
+
+  // §13 Retrieval metrics
+  retrievalRecallAtK: number; // avg over calls with known-relevant set
+  retrievalPrecisionAtK: number;
+  retrievalMrr: number; // mean reciprocal rank
+  retrievalNdcg: number; // normalised discounted cumulative gain
+  retrievalAclLeakageRate: number; // chunks returned that should have been filtered
+  retrievalCacheHitRate: number;
+
+  // §13 Generation metrics
+  generationGroundedness: number; // 0..1, fraction of claims with citations
+  generationCitationAccuracy: number; // 0..1, citations that resolve to real chunks
+  generationHallucinationRate: number; // 0..1, fraction of ungrounded claims
+  generationSchemaValidity: number; // 0..1, fraction of outputs that parsed
 }
 
 export class MetricsCollector {
@@ -53,6 +69,18 @@ export class MetricsCollector {
     humanApprovalsRequested: 0,
     humanApprovalsGranted: 0,
     safetyViolations: 0,
+    // §13 retrieval
+    retrievalRecallAtK: 0,
+    retrievalPrecisionAtK: 0,
+    retrievalMrr: 0,
+    retrievalNdcg: 0,
+    retrievalAclLeakageRate: 0,
+    retrievalCacheHitRate: 0,
+    // §13 generation
+    generationGroundedness: 0,
+    generationCitationAccuracy: 0,
+    generationHallucinationRate: 0,
+    generationSchemaValidity: 0,
   };
 
   private latencySum = 0;
@@ -60,6 +88,21 @@ export class MetricsCollector {
   private contextCount = 0;
   private retrievalPrecisionSum = 0;
   private retrievalCount = 0;
+  // §13 retrieval accumulators
+  private recallSum = 0;
+  private precisionAtKSum = 0;
+  private mrrSum = 0;
+  private ndcgSum = 0;
+  private aclLeaks = 0;
+  private cacheHits = 0;
+  private cacheTotal = 0;
+  private recallEvalCount = 0;
+  // §13 generation accumulators
+  private groundednessSum = 0;
+  private citationAccuracySum = 0;
+  private hallucinationSum = 0;
+  private schemaValiditySum = 0;
+  private generationEvalCount = 0;
 
   recordRun(
     outcome: 'succeeded' | 'escalated' | 'failed' | 'cancelled',
@@ -93,6 +136,93 @@ export class MetricsCollector {
     this.retrievalCount++;
     this.retrievalPrecisionSum += precision;
     this.m.retrievalPrecisionAvg = this.retrievalPrecisionSum / this.retrievalCount;
+  }
+
+  /**
+   * §13 retrieval evaluation. Call this when you have a known-relevant
+   * ground-truth set (e.g. from the golden eval suite). Computes
+   * recall@k, precision@k, MRR, nDCG, and tracks ACL leakage + cache
+   * hit rate.
+   */
+  recordRetrievalEval(params: {
+    retrievedIds: string[];
+    relevantIds: string[];
+    k: number;
+    aclLeakedCount?: number;
+    cacheHit?: boolean;
+  }): void {
+    const { retrievedIds, relevantIds, k } = params;
+    const relSet = new Set(relevantIds);
+    const topK = retrievedIds.slice(0, k);
+    const hits = topK.filter((id) => relSet.has(id)).length;
+    const recall = relevantIds.length === 0 ? 0 : hits / relevantIds.length;
+    const precision = topK.length === 0 ? 0 : hits / topK.length;
+
+    // MRR — reciprocal rank of the first relevant result
+    let mrr = 0;
+    for (let i = 0; i < topK.length; i++) {
+      if (relSet.has(topK[i]!)) {
+        mrr = 1 / (i + 1);
+        break;
+      }
+    }
+
+    // nDCG — discounted cumulative gain with binary relevance
+    const dcg = topK.reduce((sum, id, i) => sum + (relSet.has(id) ? 1 / Math.log2(i + 2) : 0), 0);
+    const idealHits = Math.min(relevantIds.length, k);
+    const idcg = Array.from({ length: idealHits }, (_, i) => 1 / Math.log2(i + 2)).reduce(
+      (a, b) => a + b,
+      0,
+    );
+    const ndcg = idcg === 0 ? 0 : dcg / idcg;
+
+    this.recallEvalCount++;
+    this.recallSum += recall;
+    this.precisionAtKSum += precision;
+    this.mrrSum += mrr;
+    this.ndcgSum += ndcg;
+    this.m.retrievalRecallAtK = this.recallSum / this.recallEvalCount;
+    this.m.retrievalPrecisionAtK = this.precisionAtKSum / this.recallEvalCount;
+    this.m.retrievalMrr = this.mrrSum / this.recallEvalCount;
+    this.m.retrievalNdcg = this.ndcgSum / this.recallEvalCount;
+
+    if (params.aclLeakedCount !== undefined) {
+      this.aclLeaks += params.aclLeakedCount;
+      this.m.retrievalAclLeakageRate =
+        this.m.retrievalCallsTotal > 0 ? this.aclLeaks / (this.m.retrievalCallsTotal * 5) : 0;
+    }
+    if (params.cacheHit !== undefined) {
+      this.cacheTotal++;
+      if (params.cacheHit) this.cacheHits++;
+      this.m.retrievalCacheHitRate = this.cacheTotal > 0 ? this.cacheHits / this.cacheTotal : 0;
+    }
+  }
+
+  /**
+   * §13 generation evaluation. Call this after the analyst produces an
+   * answer to compute groundedness, citation accuracy, hallucination
+   * rate, and schema validity.
+   */
+  recordGenerationEval(params: {
+    totalClaims: number;
+    citedClaims: number;
+    validCitations: number;
+    schemaValid: boolean;
+  }): void {
+    this.generationEvalCount++;
+    const groundedness = params.totalClaims === 0 ? 1 : params.citedClaims / params.totalClaims;
+    const citationAccuracy =
+      params.citedClaims === 0 ? 1 : params.validCitations / params.citedClaims;
+    const hallucination =
+      params.totalClaims === 0 ? 0 : (params.totalClaims - params.citedClaims) / params.totalClaims;
+    this.groundednessSum += groundedness;
+    this.citationAccuracySum += citationAccuracy;
+    this.hallucinationSum += hallucination;
+    this.schemaValiditySum += params.schemaValid ? 1 : 0;
+    this.m.generationGroundedness = this.groundednessSum / this.generationEvalCount;
+    this.m.generationCitationAccuracy = this.citationAccuracySum / this.generationEvalCount;
+    this.m.generationHallucinationRate = this.hallucinationSum / this.generationEvalCount;
+    this.m.generationSchemaValidity = this.schemaValiditySum / this.generationEvalCount;
   }
 
   recordContext(budgetTokens: number, usedTokens: number): void {
@@ -138,11 +268,34 @@ export class MetricsCollector {
       humanApprovalsRequested: 0,
       humanApprovalsGranted: 0,
       safetyViolations: 0,
+      retrievalRecallAtK: 0,
+      retrievalPrecisionAtK: 0,
+      retrievalMrr: 0,
+      retrievalNdcg: 0,
+      retrievalAclLeakageRate: 0,
+      retrievalCacheHitRate: 0,
+      generationGroundedness: 0,
+      generationCitationAccuracy: 0,
+      generationHallucinationRate: 0,
+      generationSchemaValidity: 0,
     };
     this.latencySum = 0;
     this.contextSum = 0;
     this.contextCount = 0;
     this.retrievalPrecisionSum = 0;
     this.retrievalCount = 0;
+    this.recallSum = 0;
+    this.precisionAtKSum = 0;
+    this.mrrSum = 0;
+    this.ndcgSum = 0;
+    this.aclLeaks = 0;
+    this.cacheHits = 0;
+    this.cacheTotal = 0;
+    this.recallEvalCount = 0;
+    this.groundednessSum = 0;
+    this.citationAccuracySum = 0;
+    this.hallucinationSum = 0;
+    this.schemaValiditySum = 0;
+    this.generationEvalCount = 0;
   }
 }
