@@ -195,7 +195,12 @@ export class MemoryService {
 
   async getWorking<T = unknown>(namespace: string, key: string): Promise<T | null> {
     const v = await this.redis.get(`working:${namespace}:${key}`);
-    return v ? (JSON.parse(v) as T) : null;
+    if (!v) return null;
+    try {
+      return JSON.parse(v) as T;
+    } catch {
+      return null;
+    }
   }
 
   /**

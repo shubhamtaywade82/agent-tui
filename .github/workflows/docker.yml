@@ -76,9 +76,13 @@ jobs:
 
       - name: Smoke test supervisor image
         run: |
-          docker run --rm ${{ env.SUPERVISOR_IMAGE }}:latest node -e "console.log('supervisor image OK')"
-          # Verify the image has tsx + the supervisor entrypoint
-          docker run --rm --entrypoint sh ${{ env.SUPERVISOR_IMAGE }}:latest -c 'which tsx && which tini && echo "entrypoint tools OK"'
+          # Use the first tag from metadata (always present, even on PRs)
+          IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
+          echo "Testing image: ${IMAGE_TAG}"
+          # Override entrypoint (tini) to run a simple node command
+          docker run --rm --entrypoint node "${IMAGE_TAG}" -e "console.log('supervisor image OK')"
+          # Verify the image has tsx + tini
+          docker run --rm --entrypoint sh "${IMAGE_TAG}" -c 'which tsx && which tini && echo "entrypoint tools OK"'
 
   build-sandbox:
     name: Build Sandbox Image
@@ -124,15 +128,18 @@ jobs:
 
       - name: Smoke test sandbox image
         run: |
-          docker run --rm ${{ env.SANDBOX_IMAGE }}:latest echo "sandbox image OK"
+          # Use the first tag from metadata (always present, even on PRs)
+          IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
+          echo "Testing image: ${IMAGE_TAG}"
+          docker run --rm "${IMAGE_TAG}" echo "sandbox image OK"
           # Verify required tools are present in the sandbox
-          docker run --rm ${{ env.SANDBOX_IMAGE }}:latest sh -c '
+          docker run --rm "${IMAGE_TAG}" sh -c '
             which git && which python3 && which rg && which pytest &&
             which ruff && which biome && which tsc &&
             echo "all required sandbox tools present"
           '
           # Verify the sandbox runs as non-root user
-          docker run --rm ${{ env.SANDBOX_IMAGE }}:latest sh -c 'whoami | grep -q sandbox && echo "runs as sandbox user OK"'
+          docker run --rm "${IMAGE_TAG}" sh -c 'whoami | grep -q sandbox && echo "runs as sandbox user OK"'
 
   compose-up:
     name: Docker Compose Smoke Test

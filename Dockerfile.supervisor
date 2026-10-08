@@ -22,11 +22,13 @@ FROM node:20-bookworm-slim AS runtime
 WORKDIR /app
 
 # dockerode needs the docker CLI for some operations; the daemon socket
-# is mounted at runtime.
+# is mounted at runtime. Install tsx globally so the runtime image can
+# execute TypeScript source without devDependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     docker.io curl ca-certificates tini \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -r -u 1001 -g root supervisor
+    && useradd -r -u 1001 -g root supervisor \
+    && npm install -g tsx@4
 
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
@@ -45,4 +47,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 \
     CMD curl -fsS http://localhost:7480/v1/healthz || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["npx", "tsx", "src/supervisor/main.ts"]
+CMD ["tsx", "src/supervisor/main.ts"]

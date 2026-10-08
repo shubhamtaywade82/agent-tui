@@ -169,7 +169,7 @@ jobs:
   docker-build:
     name: Docker Build Smoke Test
     runs-on: ubuntu-latest
-    needs: lint-typecheck
+    needs: [lint-typecheck, modelfile-validation]
     steps:
       - uses: actions/checkout@v4
       - name: Build supervisor image
@@ -177,14 +177,16 @@ jobs:
       - name: Build sandbox image
         run: docker build -f Dockerfile.sandbox -t supervisor-sandbox:ci .
       - name: Smoke test supervisor image
-        run: docker run --rm minicpm5-supervisor:ci node -e "console.log('supervisor image OK')"
+        run: |
+          # Override entrypoint (tini) to run a simple node command
+          docker run --rm --entrypoint node minicpm5-supervisor:ci -e "console.log('supervisor image OK')"
       - name: Smoke test sandbox image
         run: docker run --rm supervisor-sandbox:ci echo "sandbox image OK"
       - name: Verify sandbox has required tools
         run: |
           docker run --rm supervisor-sandbox:ci sh -c '
             which git && which python3 && which rg && which pytest &&
-            echo "all required sandbox tools present"
+            which ruff && echo "all required sandbox tools present"
           '
 
   invariant-check:
@@ -232,10 +234,16 @@ jobs:
           echo "I6 PASS (${count} Modelfiles have stops)"
       - name: I7 — No raw JSON.parse without try/catch
         run: |
-          # Every JSON.parse in src/supervisor/ must have a try { within 3 lines before it
+          # Every JSON.parse in src/supervisor/ must either:
+          #   a) be a deep-clone pattern: JSON.parse(JSON.stringify(...))
+          #   b) have a try { within 5 lines before it
           for f in $(grep -rl 'JSON\.parse' src/supervisor/); do
             line_nums=$(grep -n 'JSON\.parse' "$f" | cut -d: -f1)
             for ln in $line_nums; do
+              # Skip the deep-clone pattern JSON.parse(JSON.stringify(
+              if sed -n "${ln}p" "$f" | grep -q 'JSON\.parse(JSON\.stringify'; then
+                continue
+              fi
               # Check if there's a try { within the 5 lines before this JSON.parse
               start=$((ln - 5))
               [ "$start" -lt 1 ] && start=1

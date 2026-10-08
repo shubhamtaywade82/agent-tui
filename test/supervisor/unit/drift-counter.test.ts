@@ -8,7 +8,7 @@
  * This is the observability contract: if the counter isn't incremented
  * on parse failure, Prometheus can't alert on router drift.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { MockBackend } from '../../../src/supervisor/inference/mock.js';
 import { RouterClassifier, RouterOutputSchema } from '../../../src/supervisor/router/classifier.js';
 import { Intent } from '../../../src/supervisor/state/models.js';
@@ -53,18 +53,6 @@ describe('RouterOutputSchema (Phase 3 + Phase 6)', () => {
 
 describe('Drift-detection counter (Phase 6)', () => {
   it('classifier increments counter on malformed JSON', async () => {
-    const backend = new MockBackend();
-    const classifier = new RouterClassifier(backend, 'minicpm5-router');
-    // Malformed output — not JSON at all
-    backend.enqueue('minicpm5-router', () => 'I have no idea what you mean');
-
-    // The MockBackend with formatJson:true will try JSON.parse on the
-    // string 'I have no idea...' and fail, so r.parsed=false. The
-    // classifier's primary path won't fire RouterOutputSchema.catch();
-    // instead it falls through to regex repair. But if the regex also
-    // fails, the final UNKNOWN fallback doesn't increment the counter
-    // (the catch handler didn't fire).
-    //
     // To verify the counter IS wired, we need a case where
     // RouterOutputSchema.catch() actually fires: the backend must
     // produce valid JSON with an INVALID intent value.

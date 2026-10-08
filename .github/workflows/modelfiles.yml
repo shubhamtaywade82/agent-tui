@@ -112,11 +112,13 @@ jobs:
 
       - name: Verify seed-models.sh references all 4 Modelfiles
         run: |
+          # The script uses a loop: `for modelfile in router toolagent analyst summarizer`
+          # Verify the loop contains all 4 model names.
           for mf in router toolagent analyst summarizer; do
-            grep -q "${mf}.Modelfile" supervisor/scripts/seed-models.sh || {
-              echo "::error::seed-models.sh does not reference ${mf}.Modelfile"
+            if ! grep -qE "for modelfile in.*${mf}|${mf}.*Modelfile" supervisor/scripts/seed-models.sh; then
+              echo "::error::seed-models.sh does not reference ${mf}"
               exit 1
-            }
+            fi
           done
           echo "✓ seed-models.sh references all 4 Modelfiles"
 

@@ -13,9 +13,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd -r -u 1000 -g root sandbox
 
 # Pre-install common test/lint tools so the supervisor can run them
-# without re-downloading per run.
-RUN npm install -g vitest@3 biome@2 typescript@7 tsx@4 \
-    && pip3 install --no-cache-dir --break-system-packages ruff mypy pytest
+# without re-downloading per run. Uses @biomejs/biome (not the deprecated
+# 'biome' package) and installs Python tools into a venv to avoid
+# PEP 668 "externally managed environment" errors on Bookworm.
+RUN npm install -g vitest@3 @biomejs/biome@2 typescript@7 tsx@4 \
+    && python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/venv/bin/pip install --no-cache-dir ruff mypy pytest \
+    && ln -s /opt/venv/bin/ruff /usr/local/bin/ruff \
+    && ln -s /opt/venv/bin/mypy /usr/local/bin/mypy \
+    && ln -s /opt/venv/bin/pytest /usr/local/bin/pytest
+
+ENV PATH="/opt/venv/bin:${PATH}"
 
 # Workspace is mounted here at runtime
 RUN mkdir -p /workspace && chown sandbox:root /workspace
