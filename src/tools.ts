@@ -5,7 +5,7 @@ import { defineTool, ToolRegistry, registerMcpTools, type McpClientLike } from '
 import { truncateToolOutput } from './utils/context.js';
 import { StdioTransport, StreamableHttpTransport, McpClient } from '@nemesis-oss/agentic-runtime/mcp';
 import { TASK_SLASH_COMMANDS, handleTasksCommand, taskTools } from './tasks.js';
-import { envList } from './config.js';
+import { envList, loadConfig, isMcpEnabled } from './config.js';
 import { runShellTool, runCodeTool } from './toolbox/code.js';
 
 export interface McpServerConfig {
@@ -210,11 +210,12 @@ export async function getActiveToolRegistry(): Promise<ToolRegistry> {
       maxConcurrency: 4,
       maxOutputChars: 4000,
     });
-    await Promise.allSettled(MCP_SERVERS.filter((s) => s.enabled).map(async (cfg) => {
-      const client = await connectMcpServer(cfg);
+    const cfg = loadConfig();
+    await Promise.allSettled(MCP_SERVERS.filter((s) => s.enabled && isMcpEnabled(s.id, cfg)).map(async (serverCfg) => {
+      const client = await connectMcpServer(serverCfg);
       if (!client) return;
       activeClients.push(client);
-      await registerMcpTools(registry, createMcpAdapter(client, cfg.id));
+      await registerMcpTools(registry, createMcpAdapter(client, serverCfg.id));
     }));
     return registry;
   })();
@@ -303,8 +304,9 @@ function formatToolsList(registry?: ToolRegistry | null): string {
 }
 
 function formatMcpServersList(): string {
-  const activeCount = MCP_SERVERS.filter((s) => s.enabled).length;
-  return `MCP Servers (${activeCount}/${MCP_SERVERS.length} active):\n${MCP_SERVERS.map((s) => `• ${s.name} (${s.id}): ${s.enabled ? 'Active' : `Disabled${s.disabledReason ? ` (${s.disabledReason})` : ''}`}`).join('\n')}`;
+  const cfg = loadConfig();
+  const activeCount = MCP_SERVERS.filter((s) => s.enabled && isMcpEnabled(s.id, cfg)).length;
+  return `MCP Servers (${activeCount}/${MCP_SERVERS.length} active):\n${MCP_SERVERS.map((s) => `• ${s.name} (${s.id}): ${s.enabled && isMcpEnabled(s.id, cfg) ? 'Active' : `Disabled${s.disabledReason ? ` (${s.disabledReason})` : s.enabled ? ' (excluded by AGENT_MCP)' : ''}`}`).join('\n')}`;
 }
 
 export function dispatchSlashCommand(rawInput: string, ctx: CommandContext): boolean {

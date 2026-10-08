@@ -28,8 +28,11 @@ const loadHistory = (): string[] => {
   try { return filterValidHistory(readFileSync(HIST, 'utf-8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return l; } })); } catch { return []; }
 };
 
+// KV window must hold tool schemas + budgeted history + the reply; 16k was
+// exceeded every turn (Ollama context shift dropped the system prompt).
+const NUM_CTX = 32768;
 const DEFAULT_SYSTEM_PROMPT = `You are an expert AI assistant. Workspace: ${process.cwd()}. Use run_shell to execute commands (e.g. rails new, bundle, npm, git). Use filesystem tools to inspect or edit files. For multi-step tasks, create a plan with create_task (with id, title, objective), execute the steps, and call complete_task when done. Do not stall or narrate future steps; execute tools directly.`;
-const prepareMessages = (h: ChatMessage[], skillName?: string): ChatMessage[] => {
+const prepareMessages = (h: ChatMessage[], skillName?: string, budget = 9000): ChatMessage[] => {
   let prompt = DEFAULT_SYSTEM_PROMPT;
   if (skillName) {
     const file = findSkillFile(skillName);
@@ -41,7 +44,7 @@ const prepareMessages = (h: ChatMessage[], skillName?: string): ChatMessage[] =>
       } catch {}
     }
   }
-  return budgetMessages(h.some((m) => m.role === 'system') ? h : [{ role: 'system', content: prompt, timestamp: Date.now() }, ...h], 9000);
+  return budgetMessages(h.some((m) => m.role === 'system') ? h : [{ role: 'system', content: prompt, timestamp: Date.now() }, ...h], budget);
 };
 const isPrematureStall = (t: string): boolean =>
   t.length <= 300 && /(let me|i('ll| will))\s+(start|inspect|check|create|look|run|examine|verify|see|read|find)/i.test(t);
@@ -156,14 +159,16 @@ const Chat: React.FC<ChatProps> = ({
   useInput((inp, key) => {
     if (!isActive || isSelectingModel) return;
     if (pendingContinuation) {
-      if (inp === 'y' || inp === 'Y' || key.return) {
+      if (inp === 'y' || inp === 'Y') {
         const cont = pendingContinuation;
         setPendingContinuation(null);
         show(`Continuing: ${cont.label}`, 'info', 2000);
         void handleContinuation(cont);
         return;
       }
-      if (inp === 'n' || inp === 'N' || key.escape) {
+      // Bare Enter must never chain another loop — pause instead, unless a
+      // typed message is waiting (TextInput submits that one separately).
+      if (inp === 'n' || inp === 'N' || key.escape || (key.return && !input.trim())) {
         setPendingContinuation(null);
         show('Plan paused', 'info', 2000);
         return;
@@ -213,9 +218,13 @@ const Chat: React.FC<ChatProps> = ({
   const executeSingleTurn = async (chatHistory: ChatMessage[], allowTools = true, currentSkill?: string) => {
     const reg = registry || await getActiveToolRegistry();
     if (!registry && reg) setRegistry(reg);
+    const tools = (allowTools && reg) ? reg.definitions() : undefined;
+    // llama.cpp expands tool schemas into prose in the prompt (~2.2 chars/token,
+    // measured) — size the history budget against that or the window overflows.
+    const toolTokens = tools?.length ? Math.ceil(JSON.stringify(tools).length / 2.2) : 0;
     const stream = await client!.chatStream({
-      model: selectedModel, messages: prepareMessages(chatHistory, currentSkill),
-      think: 'high', tools: (allowTools && reg) ? reg.definitions() : undefined, options: { temperature: 0.7, num_ctx: 16384 }, timeoutMs: 120000,
+      model: selectedModel, messages: prepareMessages(chatHistory, currentSkill, Math.max(2048, NUM_CTX - toolTokens - 4096)),
+      think: 'high', tools, options: { temperature: 0.7, num_ctx: NUM_CTX }, timeoutMs: 120000,
     });
     const { thinking, content } = await consumeStream(stream, (d) => setStreamedThinking((p) => p + d), (d) => { setPhase('responding'); setStreamedContent((p) => p + d); });
     const final = await stream.finalResult;
@@ -294,7 +303,7 @@ const Chat: React.FC<ChatProps> = ({
       const msg = err instanceof Error ? err.message : String(err);
       if (/exceed.*context/i.test(msg)) {
         show('Context limit reached. Compacting & recovering...', 'warning', 3000);
-        try { await executeSingleTurn(prepareMessages(currentHistory.slice(-2), skillName), false, skillName); return; } catch {}
+        try { await executeSingleTurn(currentHistory.slice(-2), false, skillName); return; } catch {}
       }
       show(`Error: ${msg}`, 'error', 4000); onSendMessage(undefined, `⚠️ Error: ${msg}`);
     } finally { resetStream('idle'); }
@@ -411,8 +420,8 @@ const Chat: React.FC<ChatProps> = ({
           </Box>
           {pendingContinuation.detail && <Text color="gray" dimColor>{pendingContinuation.detail}</Text>}
           <Box flexDirection="row" gap={2} marginTop={1}>
-            <Text color="green" bold>[Y / Enter] Continue with task</Text>
-            <Text color="red" bold>[N / Esc] Pause</Text>
+            <Text color="green" bold>[Y] Continue with task</Text>
+            <Text color="red" bold>[N / Enter / Esc] Pause</Text>
           </Box>
         </Box>
       )}
