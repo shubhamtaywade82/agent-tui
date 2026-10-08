@@ -37,8 +37,11 @@ describe.skipIf(SKIP)('Supervisor HTTP API (integration)', () => {
     await store.init();
 
     const backend = new MockBackend();
-    backend.enqueue('minicpm5-router', () => ({ json: { intent: 'GENERAL_QUERY' } }));
-    backend.enqueue('minicpm5-analyst', () => 'Integration answer.');
+    // Queue enough responses for all test cases (5 POST /v1/runs calls)
+    for (let i = 0; i < 6; i++) {
+      backend.enqueue('minicpm5-router', () => ({ json: { intent: 'GENERAL_QUERY' } }));
+      backend.enqueue('minicpm5-analyst', () => 'Integration answer.');
+    }
 
     supervisor = new Supervisor({ backend, store });
     app = await createServer({ supervisor, store });
