@@ -1,0 +1,34 @@
+%%{init: {'theme':'neutral', 'themeVariables':{'fontFamily':'Inter, sans-serif'}}}%%
+flowchart LR
+  classDef node fill:#eef,stroke:#88f,color:#003
+  classDef store fill:#ffd,stroke:#cc8,color:#330
+  classDef model fill:#fee,stroke:#f88,color:#300
+
+  Q[User question]:::node
+  QP[Query planner]:::node
+  QP2[Query expansion / rewriting]:::node
+
+  V[(Vector index)]:::store
+  K[(Keyword / FTS index)]:::store
+  M[(Metadata filter)]:::store
+
+  HYB[Hybrid merge + dedup]:::node
+  RR[Reranker]:::node
+  PF[Permission filter]:::node
+  DED[Deduplication]:::node
+  COMP[Compression / snippet selection]:::node
+  CIT[Citation attachment]:::node
+
+  PCB[Prompt context builder §8]:::node
+  AN[MiniCPM5 analyst §13]:::model
+  CV[Citation validator]:::node
+  OUT[Answer with sources]:::node
+
+  Q --> QP --> QP2
+  QP2 --> V
+  QP2 --> K
+  QP2 --> M
+  V --> HYB
+  K --> HYB
+  M --> HYB
+  HYB --> RR --> PF --> DED --> COMP --> CIT --> PCB --> AN --> CV --> OUT

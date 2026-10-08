@@ -98,6 +98,21 @@ function envBool(key: string, fallback: boolean): boolean {
   return v === '1' || v === 'true' || v === 'yes' || v === 'on';
 }
 
+/** AGENT_MCP: 'all' | 'none' | comma-separated whitelist of server ids. */
+function mcpSetting(): AgentConfig['mcp'] {
+  const list = envList('AGENT_MCP', ['all']);
+  if (list[0] === 'all') return 'all';
+  if (list[0] === 'none') return 'none';
+  return list as AgentConfig['mcp'];
+}
+
+/** Whether MCP server `id` should launch under `cfg` (honors AGENT_MCP). */
+export function isMcpEnabled(id: string, cfg: AgentConfig): boolean {
+  if (cfg.mcp === 'none') return false;
+  if (cfg.mcp === 'all') return true;
+  return Array.isArray(cfg.mcp) && cfg.mcp.includes(id);
+}
+
 /** Build the runtime config from environment variables. */
 export function loadConfig(): AgentConfig {
   const ollamaHost = env('OLLAMA_HOST', 'http://localhost:11434');
@@ -139,7 +154,7 @@ export function loadConfig(): AgentConfig {
     temperature: Number(env('AGENT_TEMPERATURE', '0.7')),
     thinking: envBool('AGENT_THINKING', true),
     tools: envList('AGENT_TOOLS', ['all'])[0] === 'all' ? 'all' : envList('AGENT_TOOLS', []),
-    mcp: envList('AGENT_MCP', ['all'])[0] === 'all' ? 'all' : (envList('AGENT_MCP', ['all']) as any),
+    mcp: mcpSetting(),
     logLevel: env('AGENT_LOG_LEVEL', 'info') as AgentConfig['logLevel'],
     logFile: env('AGENT_LOG_FILE', '.agent/logs/agent.log'),
     sessionsDir: env('AGENT_SESSIONS_DIR', '.agent/sessions'),

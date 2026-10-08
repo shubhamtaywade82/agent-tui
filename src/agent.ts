@@ -169,7 +169,7 @@ export async function runAgent(
       const result = opts.noStream
         ? await provider.chat({ model, messages: budgeted, tools: toolDefs, think: !opts.noThinking, temperature: cfg.temperature, signal: opts.signal })
         : await provider.chatStream(
-            { model, messages: budgeted, tools: toolDefs, think: !opts.noThinking, temperature: cfg.temperature, numCtx: 16384, signal: opts.signal, timeoutMs: cfg.wallTimeMs },
+            { model, messages: budgeted, tools: toolDefs, think: !opts.noThinking, temperature: cfg.temperature, numCtx: 32768, signal: opts.signal, timeoutMs: cfg.wallTimeMs },
             { onThinking: (d) => { opts.onThinking?.(d); }, onToken: (d) => { opts.onPhase?.('responding'); opts.onToken?.(d); } },
           );
 

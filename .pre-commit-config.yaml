@@ -1,0 +1,26 @@
+repos:
+  - repo: https://github.com/biomejs/pre-commit
+    rev: v0.7.0
+    hooks:
+      - id: biome-check
+        files: ^(src/supervisor|test/supervisor)/.*\.(ts|js)$
+        args: [--reporter=github]
+  - repo: local
+    hooks:
+      - id: tsc-noemit
+        name: tsc --noEmit
+        entry: npx tsc --noEmit
+        language: system
+        types: [ts]
+        pass_filenames: false
+        files: ^(src|test|supervisor)/
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+        files: ^(src/supervisor|test/supervisor|docs/supervisor|supervisor)/
+      - id: trailing-whitespace
+        files: ^(src/supervisor|test/supervisor|docs/supervisor|supervisor)/
+      - id: check-yaml
+        files: ^(\.github/workflows|supervisor)/.*\.(yml|yaml)$
+      - id: check-merge-conflict

@@ -109,7 +109,7 @@ class OllamaProvider implements LLMProvider {
       tools: opts.tools as any,
       stream: false,
       think: opts.think === false ? false : 'high',
-      options: { temperature: opts.temperature ?? 0.7, num_ctx: opts.numCtx ?? 16384 },
+      options: { temperature: opts.temperature ?? 0.7, num_ctx: opts.numCtx ?? 32768 },
       signal: opts.signal,
     });
     const msg = (res as any).message ?? (res as any);
@@ -127,7 +127,7 @@ class OllamaProvider implements LLMProvider {
       messages: opts.messages as any,
       think: opts.think === false ? false : 'high',
       tools: opts.tools as any,
-      options: { temperature: opts.temperature ?? 0.7, num_ctx: opts.numCtx ?? 16384 },
+      options: { temperature: opts.temperature ?? 0.7, num_ctx: opts.numCtx ?? 32768 },
       timeoutMs: opts.timeoutMs ?? 120_000,
     });
     let thinking = ''; let content = '';

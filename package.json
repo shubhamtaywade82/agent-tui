@@ -1,7 +1,7 @@
 {
   "name": "agentic-tui",
   "version": "2.0.0",
-  "description": "Agentic TUI + Headless CLI + API server — multi-provider AI agent (Ollama, OpenAI, Anthropic, Z.ai) with MCP, RAG, multimodal tools, and session persistence",
+  "description": "Agentic TUI + Headless CLI + API server — multi-provider AI agent (Ollama, OpenAI, Anthropic, Z.ai) with MCP, RAG, multimodal tools, and the MiniCPM5 Supervisor orchestration layer",
   "main": "src/index.ts",
   "bin": {
     "agent-tui": "src/index.ts"
@@ -18,7 +18,16 @@
     "demo": "tsx src/index.ts run 'Use the calculator tool to compute 125 * 38 and explain the result.'",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/tasks.test.ts"
+    "test": "node --import tsx --test test/tasks.test.ts",
+    "supervisor:serve": "tsx src/supervisor/main.ts",
+    "supervisor:typecheck": "tsc --noEmit",
+    "supervisor:test": "vitest run",
+    "supervisor:test:watch": "vitest",
+    "supervisor:lint": "biome check src/supervisor test/supervisor",
+    "supervisor:lint:fix": "biome check --write src/supervisor test/supervisor",
+    "supervisor:migrate": "tsx src/supervisor/db/migrate.ts",
+    "supervisor:seed-models": "bash supervisor/scripts/seed-models.sh",
+    "supervisor:evals": "vitest run test/supervisor/evals"
   },
   "keywords": [
     "ai",
@@ -26,7 +35,10 @@
     "ollama",
     "tui",
     "ink",
-    "mcp"
+    "mcp",
+    "minicpm5",
+    "supervisor",
+    "orchestration"
   ],
   "author": "",
   "license": "ISC",
@@ -35,16 +47,43 @@
     "@nemesis-oss/agentic-runtime": "^0.2.1",
     "@nemesis-oss/binance-sdk": "^2.0.0",
     "@nemesis-oss/ollama-sdk": "^1.8.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.62.0",
+    "@opentelemetry/sdk-node": "^0.203.0",
+    "dockerode": "^4.0.7",
     "dotenv": "^17.4.2",
+    "drizzle-orm": "^0.41.0",
+    "fastify": "^5.4.0",
+    "@fastify/cors": "^11.1.0",
+    "@fastify/swagger": "^9.5.0",
+    "@fastify/swagger-ui": "^5.2.2",
+    "gpt-tokenizer": "^2.9.0",
     "ink": "^7.1.1",
+    "ioredis": "^5.6.1",
+    "ollama": "^0.5.17",
+    "openai": "^5.12.2",
+    "pg": "^8.16.0",
+    "pino": "^10.0.0",
+    "pino-pretty": "^13.0.0",
     "react": "^19.3.0",
+    "tree-sitter": "^0.21.1",
+    "tree-sitter-javascript": "^0.23.1",
+    "tree-sitter-python": "0.23.4",
+    "tree-sitter-typescript": "^0.23.2",
     "z-ai-web-dev-sdk": "^0.0.18",
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.2.0",
+    "@testcontainers/postgresql": "^11.5.0",
+    "@types/dockerode": "^3.3.39",
     "@types/node": "^22.20.2",
+    "@types/pg": "^8.15.5",
     "@types/react": "^19.3.0",
+    "drizzle-kit": "^0.31.0",
+    "testcontainers": "^11.5.0",
     "tsx": "^4.19.3",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^3.2.0"
   }
 }

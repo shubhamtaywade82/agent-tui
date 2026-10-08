@@ -8,7 +8,7 @@
  */
 import { ToolRegistry, defineTool } from '@nemesis-oss/ollama-sdk';
 import { z } from 'zod';
-import { loadConfig, type AgentConfig } from '../config.js';
+import { loadConfig, isMcpEnabled, type AgentConfig } from '../config.js';
 import { log } from '../logger.js';
 import { zaiTools } from './zai.js';
 import { execTools } from './code.js';
@@ -63,12 +63,6 @@ function shouldInclude(name: string, cfg: AgentConfig): boolean {
   return Array.isArray(cfg.tools) && cfg.tools.includes(name);
 }
 
-function shouldEnableMcp(id: string, cfg: AgentConfig): boolean {
-  if (cfg.mcp === 'none') return false;
-  if (cfg.mcp === 'all') return true;
-  return Array.isArray(cfg.mcp) && cfg.mcp.includes(id);
-}
-
 /** Build (and cache) the active tool registry with local tools + MCP. */
 export async function getToolRegistry(cfg?: AgentConfig): Promise<ToolRegistry> {
   const c = cfg ?? loadConfig();
@@ -83,7 +77,7 @@ export async function getToolRegistry(cfg?: AgentConfig): Promise<ToolRegistry> 
     });
     log.info('Local tools loaded', { count: localTools.length, names: localTools.map((t) => t.name).join(',') });
 
-    const mcpServers = MCP_SERVERS.filter((s) => s.enabled && shouldEnableMcp(s.id, c));
+    const mcpServers = MCP_SERVERS.filter((s) => s.enabled && isMcpEnabled(s.id, c));
     await Promise.allSettled(mcpServers.map(async (serverCfg) => {
       const client = await connectMcpServer(serverCfg);
       if (!client) { log.warn('MCP server failed to connect', { id: serverCfg.id }); return; }
