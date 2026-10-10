@@ -8,6 +8,7 @@
 import { OllamaClient, HttpClient, OpenAICompatClient, AnthropicCompatClient } from '@nemesis-oss/ollama-sdk';
 import ZAI from 'z-ai-web-dev-sdk';
 import { loadConfig, type AgentConfig, type ProviderName } from './config.js';
+import { buildOllamaClientOptions } from './ollama-endpoints.js';
 import { log } from './logger.js';
 
 export interface ChatMessage {
@@ -81,12 +82,7 @@ export interface LLMProvider {
 // ---------------------------------------------------------------------------
 
 function ollamaClient(cfg: AgentConfig): OllamaClient {
-  return new OllamaClient({
-    endpoints: cfg.provider.ollama.endpoints,
-    timeoutMs: 120_000,
-    retries: 3,
-    endpointHealth: { strategy: 'least-connections', maxConcurrentPerEndpoint: 4 },
-  });
+  return new OllamaClient(buildOllamaClientOptions(cfg.provider.ollama, cfg.wallTimeMs));
 }
 
 class OllamaProvider implements LLMProvider {

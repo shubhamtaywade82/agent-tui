@@ -68,7 +68,24 @@ agent-tui models
 agent-tui doctor
 ```
 
-**Flags:** `-p/--provider`, `-m/--model`, `--max-iter`, `--no-stream`, `--no-tools`, `--no-thinking`, `-s/--session`, `--save`, `--json`, `-q/--quiet`
+**Flags:** `-p/--provider`, `-m/--model`, `--max-iter`, `--no-stream`, `--no-tools`, `--no-thinking`, `-s/--session`, `--save`, `--json`, `-q/--quiet`, `--auto` / `--yolo`
+
+### Unattended mode (`--auto` / `--yolo`)
+
+In the **TUI**, the agent normally pauses after a plan step or turn limit and asks **[Y] continue** or **[N] pause**. With auto mode enabled, it chains continuations automatically until:
+
+- every task in `.agent/tasks.json` is completed or cancelled, or
+- the current run finishes with no pending work, or
+- the safety cap (`AGENT_AUTO_MAX_CHAINS`, default 50) is hit — then it falls back to the manual prompt.
+
+```bash
+npm start -- --auto
+# or
+AGENT_AUTO=1 npm start
+npx tsx src/index.ts --auto    # launches TUI with auto mode
+```
+
+Headless `run` / `repl` with `--auto` sets `AGENT_AUTO` and bumps the default iteration budget unless you pass `--max-iter`.
 
 ### 3. HTTP API Server (`agent-tui serve [port]`)
 Exposes the agent as REST + SSE for other apps:
@@ -95,10 +112,12 @@ Switch providers by setting `AGENT_PROVIDER` in `.env`:
 
 | Provider | Env vars needed | Default model |
 |---|---|---|
-| `ollama` | `OLLAMA_HOST` (local) | `qwen3:8b` |
+| `ollama` | `OLLAMA_HOST` (local), optional `OLLAMA_API_KEY` (cloud) | `qwen3:8b` |
 | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` |
 | `anthropic` | `ANTHROPIC_API_KEY` | `claude-3-5-sonnet-20241022` |
 | `zai` | `ZAI_API_KEY` | `glm-4.6` |
+
+**Ollama local + cloud:** set `OLLAMA_API_KEY` (from [ollama.com](https://ollama.com)) and optionally `OLLAMA_CLOUD_URL=https://ollama.com`. The client registers **local** (`OLLAMA_HOST`) and **cloud** endpoints with failover (`local-first` or `cloud-first` via `AGENT_OLLAMA_ROUTING`). Pin cloud-only models with `OLLAMA_CLOUD_MODELS`. For task-based escalation, use `AGENT_OLLAMA_ROUTING=auto` and set `OLLAMA_CLOUD_MODEL` to the larger cloud model.
 
 All providers implement a unified interface: `chat()`, `chatStream()`, `generate()`, `embed()`, `listModels()`. The agent loop and tools are provider-agnostic.
 

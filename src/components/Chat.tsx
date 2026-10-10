@@ -5,8 +5,12 @@ import { OllamaClient, Message } from '@nemesis-oss/ollama-sdk'; import { ToastS
 import { useFocusManager, useTerminalSize } from './ui/hooks/index.js';
 import { getActiveToolRegistry, consumeStream, dispatchSlashCommand, SLASH_COMMANDS, executeMcpCalls, loadAvailableSkills, loadUserConfig, saveUserConfig, matchBestSkill, findSkillFile } from '../tools.js';
 import { ChatAccordion, renderSingleTurn, renderStreamingRows, parseTextToolCalls } from './ChatAccordion.js';
-import { budgetMessages } from '../utils/context.js';
-import { getTaskRuntime, buildTaskPrompt } from '../tasks.js';
+import { budgetMessages, resolveMessageTokenBudget } from '../utils/context.js';
+import { ToolCallLedger } from '../utils/tool-loop-guard.js';
+import { loadConfig } from '../config.js';
+import { resolveOllamaModelForTask } from '../ollama-routing.js';
+import { autoMaxChains } from '../auto-mode.js';
+import { getTaskRuntime, buildTaskPrompt, isPlanSatisfied } from '../tasks.js';
 
 export interface ChatMessage extends Message { timestamp?: number; thinking?: string; tokens?: number; skill?: string; }
 export interface PendingContinuation { type: 'task' | 'turn_limit'; taskId?: string; label: string; detail?: string; prompt: string; }
@@ -28,11 +32,8 @@ const loadHistory = (): string[] => {
   try { return filterValidHistory(readFileSync(HIST, 'utf-8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return l; } })); } catch { return []; }
 };
 
-// KV window must hold tool schemas + budgeted history + the reply; 16k was
-// exceeded every turn (Ollama context shift dropped the system prompt).
-const NUM_CTX = 32768;
 const DEFAULT_SYSTEM_PROMPT = `You are an expert AI assistant. Workspace: ${process.cwd()}. Use run_shell to execute commands (e.g. rails new, bundle, npm, git). Use filesystem tools to inspect or edit files. For multi-step tasks, create a plan with create_task (with id, title, objective), execute the steps, and call complete_task when done. Do not stall or narrate future steps; execute tools directly.`;
-const prepareMessages = (h: ChatMessage[], skillName?: string, budget = 9000): ChatMessage[] => {
+const prepareMessages = (h: ChatMessage[], skillName?: string, budget = 9000, compactionHint?: string | null): ChatMessage[] => {
   let prompt = DEFAULT_SYSTEM_PROMPT;
   if (skillName) {
     const file = findSkillFile(skillName);
@@ -44,7 +45,7 @@ const prepareMessages = (h: ChatMessage[], skillName?: string, budget = 9000): C
       } catch {}
     }
   }
-  return budgetMessages(h.some((m) => m.role === 'system') ? h : [{ role: 'system', content: prompt, timestamp: Date.now() }, ...h], budget);
+  return budgetMessages(h.some((m) => m.role === 'system') ? h : [{ role: 'system', content: prompt, timestamp: Date.now() }, ...h], budget, compactionHint);
 };
 const isPrematureStall = (t: string): boolean =>
   t.length <= 300 && /(let me|i('ll| will))\s+(start|inspect|check|create|look|run|examine|verify|see|read|find)/i.test(t);
@@ -87,16 +88,42 @@ function getMenuOptions(input: string, models: string[], ghost?: string, pool: s
   return items;
 }
 
+function resolvePendingContinuation(isDone: boolean): PendingContinuation | null {
+  const rt = getTaskRuntime();
+  const next = rt.nextReady();
+  if (next) {
+    return {
+      type: 'task',
+      taskId: next.id,
+      label: `Next Task: [${next.id}] ${next.title}`,
+      detail: next.objective,
+      prompt: buildTaskPrompt(next),
+    };
+  }
+  if (!isDone) {
+    return {
+      type: 'turn_limit',
+      label: 'Step Limit Reached with Pending Work',
+      detail: 'Would you like to continue execution from where it left off?',
+      prompt: 'Please continue execution directly from where you left off. Proceed with the remaining tasks and verify the implementation.',
+    };
+  }
+  return null;
+}
+
 interface ChatProps {
   client: OllamaClient | null; messages: ChatMessage[]; theme?: any; isActive?: boolean;
   onSendMessage: (u?: string, a?: string, t?: string, x?: Partial<ChatMessage>) => void; setMessages?: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
   models?: string[]; isConnected?: boolean; columns?: number; rows?: number; selectedModel?: string; onSelectModel?: (m: string) => void;
   isSelectingModel?: boolean; onOpenModal?: (m: 'model' | 'clear' | 'skills') => void;
+  /** Auto-continue through tasks / turn limits without Y/N prompts. */
+  autoMode?: boolean;
 }
 
 const Chat: React.FC<ChatProps> = ({
   client, messages, onSendMessage, setMessages, models = [], theme, isActive = true,
   columns: propCols, rows: propRows, selectedModel: propModel, isSelectingModel = false, onSelectModel, onOpenModal,
+  autoMode = false,
 }) => {
   const [input, setInput] = useState(''); const [selectedCmdIndex, setSelectedCmdIndex] = useState(0);
   const [phase, setPhase] = useState<'idle' | 'thinking' | 'responding' | 'executing-tools'>('idle');
@@ -119,6 +146,8 @@ const Chat: React.FC<ChatProps> = ({
   const [ghostText, setGhostText] = useState(''); const [dismissedInput, setDismissedInput] = useState('');
   const lastReq = React.useRef(0); const abortRef = React.useRef<AbortController | null>(null);
   const chatAbortRef = React.useRef<AbortController | null>(null); const userCancelledRef = React.useRef(false);
+  const loopLedgerRef = React.useRef<ToolCallLedger | null>(null);
+  const runModelRef = React.useRef<string | undefined>(undefined);
 
   const promptPool = useMemo(() => Array.from(new Set([...history.filter((h) => !h.startsWith('/')), ...DEFAULT_PROMPTS])), [history]);
   const activeMenu = useMemo(() => dismissedInput === input ? [] : getMenuOptions(input, models, ghostText, promptPool), [input, models, ghostText, promptPool, dismissedInput]);
@@ -196,8 +225,21 @@ const Chat: React.FC<ChatProps> = ({
     if (p === 'idle') setActiveSkill(undefined);
   };
 
+  const pickModelForRun = (prompt: string, toolCount = 0): string => {
+    const cfg = loadConfig();
+    const pick = resolveOllamaModelForTask(cfg, prompt, {
+      explicitModel: cfg.provider.ollama.routingMode === 'auto' ? undefined : selectedModel,
+      toolCount,
+    });
+    if (pick.reason.startsWith('auto') || pick.reason === 'cloud-first') {
+      show(`Model route: ${pick.model} (${pick.reason})`, 'info', 2800);
+    }
+    return pick.model;
+  };
+
   const runPrompt = async (text: string) => {
     if (phase !== 'idle') { show('Agent is busy; try again once it finishes', 'warning', 2500); return; }
+    runModelRef.current = pickModelForRun(text, registry?.definitions?.()?.length ?? 0);
     const match = matchBestSkill(text);
     if (match) { setActiveSkill(match.name); show(`Matched skill: ${match.name}`, 'info', 2000); }
     onSendMessage(text); resetStream('thinking');
@@ -220,14 +262,20 @@ const Chat: React.FC<ChatProps> = ({
     const reg = registry || await getActiveToolRegistry();
     if (!registry && reg) setRegistry(reg);
     const tools = (allowTools && reg) ? reg.definitions() : undefined;
-    // llama.cpp expands tool schemas into prose in the prompt (~2.2 chars/token,
-    // measured) — size the history budget against that or the window overflows.
-    const toolTokens = tools?.length ? Math.ceil(JSON.stringify(tools).length / 2.2) : 0;
+    const cfg = loadConfig();
+    const tokenBudget = resolveMessageTokenBudget({
+      configuredBudget: cfg.contextBudget,
+      numCtx: cfg.numCtx,
+      toolDefs: tools,
+      reserveTokens: cfg.contextReserve,
+    });
+    const ledger = loopLedgerRef.current;
     const ac = new AbortController();
     chatAbortRef.current = ac;
+    const activeModel = runModelRef.current || selectedModel;
     const stream = await client!.chatStream({
-      model: selectedModel, messages: prepareMessages(chatHistory, currentSkill, Math.max(2048, NUM_CTX - toolTokens - 4096)),
-      think: 'high', tools, options: { temperature: 0.7, num_ctx: NUM_CTX }, timeoutMs: 120000, signal: ac.signal,
+      model: activeModel, messages: prepareMessages(chatHistory, currentSkill, tokenBudget, ledger?.compactionNote()),
+      think: 'high', tools, options: { temperature: 0.7, num_ctx: cfg.numCtx }, timeoutMs: 120000, signal: ac.signal,
     });
     const { thinking, content } = await consumeStream(stream, (d) => setStreamedThinking((p) => p + d), (d) => { setPhase('responding'); setStreamedContent((p) => p + d); });
     const final = await stream.finalResult;
@@ -246,7 +294,7 @@ const Chat: React.FC<ChatProps> = ({
       const asst: ChatMessage = { role: 'assistant', content: rawContent, thinking: thinking || undefined, tool_calls: toolCalls, timestamp: Date.now(), skill: skillName };
       onSendMessage(undefined, asst.content, asst.thinking, asst); setPhase('executing-tools');
       show(`Executing: ${toolCalls.map((tc: any) => tc.function?.name || 'tool').join(', ')}...`, 'info', 2500);
-      const toolMsgs = await executeMcpCalls(reg, toolCalls);
+      const toolMsgs = await executeMcpCalls(reg, toolCalls, loopLedgerRef.current ?? undefined);
       setActiveTool(undefined);
       toolMsgs.forEach((tm) => onSendMessage(undefined, tm.content, undefined, tm));
       return { asst, toolMsgs, done: false as const };
@@ -257,65 +305,100 @@ const Chat: React.FC<ChatProps> = ({
   };
 
   const runAgentLoop = async (initialHistory: ChatMessage[], skillName?: string) => {
-    let currentHistory = initialHistory; let isDone = false;
+    const cfg = loadConfig();
+    if (!runModelRef.current) {
+      const lastUser = [...initialHistory].reverse().find((m) => m.role === 'user');
+      runModelRef.current = pickModelForRun(lastUser?.content ?? '', registry?.definitions?.()?.length ?? 0);
+    }
+    loopLedgerRef.current = new ToolCallLedger({ repeatLimit: cfg.toolRepeatLimit });
     const maxTurns = 15;
+    let history = initialHistory;
+    let autoChains = 0;
+    const maxAuto = autoMaxChains();
     try {
-      for (let turn = 0; turn < maxTurns; turn++) {
-        if (userCancelledRef.current) { userCancelledRef.current = false; return; }
-        const res = await executeSingleTurn(currentHistory, true, skillName);
-        if (res.done) {
-          if (res.content && isPrematureStall(res.content)) {
-            currentHistory = [
-              ...currentHistory,
-              { role: 'assistant', content: res.content, timestamp: Date.now(), skill: skillName },
-              { role: 'user', content: 'Proceed directly with executing the required tools and commands now without waiting.', timestamp: Date.now() },
-            ];
+      loop: while (true) {
+        let currentHistory = history;
+        let isDone = false;
+        try {
+          for (let turn = 0; turn < maxTurns; turn++) {
+            if (userCancelledRef.current) { userCancelledRef.current = false; return; }
+            const res = await executeSingleTurn(currentHistory, true, skillName);
+            if (res.done) {
+              if (res.content && isPrematureStall(res.content)) {
+                currentHistory = [
+                  ...currentHistory,
+                  { role: 'assistant', content: res.content, timestamp: Date.now(), skill: skillName },
+                  { role: 'user', content: 'Proceed directly with executing the required tools and commands now without waiting.', timestamp: Date.now() },
+                ];
+                resetStream('thinking');
+                continue;
+              }
+              isDone = true;
+              break;
+            }
+            if (res.asst && res.toolMsgs) currentHistory = [...currentHistory, res.asst, ...res.toolMsgs];
             resetStream('thinking');
-            continue;
+            if (skillName) setActiveSkill(skillName);
           }
-          isDone = true;
+          if (!isDone) {
+            show('Synthesizing final response...', 'info', 3000); resetStream('thinking');
+            if (skillName) setActiveSkill(skillName);
+            await executeSingleTurn([...currentHistory, { role: 'user', content: 'Output final comprehensive response in full detail.', timestamp: Date.now() }], false, skillName);
+          }
+          history = currentHistory;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (userCancelledRef.current) {
+            userCancelledRef.current = false;
+            return;
+          }
+          if (/exceed.*context/i.test(msg)) {
+            show(autoMode ? 'Context limit — compacting (auto)...' : 'Context limit reached. Compacting & recovering...', 'warning', 3000);
+            if (autoMode) {
+              history = currentHistory.slice(-4);
+              resetStream('thinking');
+              continue loop;
+            }
+            try { await executeSingleTurn(currentHistory.slice(-2), false, skillName); return; } catch {}
+            show(`Error: ${msg}`, 'error', 4000); onSendMessage(undefined, `⚠️ Error: ${msg}`);
+            return;
+          }
+          if (/abort/i.test(msg)) {
+            show('Stream interrupted (timeout or connection lost)', 'warning', 4000);
+            onSendMessage(undefined, '⚠️ Stream interrupted (timeout or connection lost)');
+          } else {
+            show(`Error: ${msg}`, 'error', 4000); onSendMessage(undefined, `⚠️ Error: ${msg}`);
+          }
+          return;
+        }
+
+        if (isPlanSatisfied()) {
+          show('Plan complete — all tasks finished', 'success', 3000);
           break;
         }
-        if (res.asst && res.toolMsgs) currentHistory = [...currentHistory, res.asst, ...res.toolMsgs];
+
+        const cont = resolvePendingContinuation(isDone);
+        if (!cont) break;
+
+        if (!autoMode) {
+          setPendingContinuation(cont);
+          break;
+        }
+
+        if (autoChains >= maxAuto) {
+          show(`Auto mode stopped after ${maxAuto} continuations — confirm to proceed`, 'warning', 4000);
+          setPendingContinuation(cont);
+          break;
+        }
+
+        autoChains += 1;
+        show(`Auto [${autoChains}/${maxAuto}]: ${cont.label}`, 'info', 2500);
+        if (cont.taskId) {
+          try { getTaskRuntime().start(cont.taskId); } catch {}
+        }
+        onSendMessage(cont.prompt);
+        history = [...history, { role: 'user', content: cont.prompt, timestamp: Date.now() }];
         resetStream('thinking');
-        if (skillName) setActiveSkill(skillName);
-      }
-      if (!isDone) {
-        show('Synthesizing final response...', 'info', 3000); resetStream('thinking');
-        if (skillName) setActiveSkill(skillName);
-        await executeSingleTurn([...currentHistory, { role: 'user', content: 'Output final comprehensive response in full detail.', timestamp: Date.now() }], false, skillName);
-      }
-      const rt = getTaskRuntime();
-      const next = rt.nextReady();
-      if (next) {
-        setPendingContinuation({
-          type: 'task',
-          taskId: next.id,
-          label: `Next Task: [${next.id}] ${next.title}`,
-          detail: next.objective,
-          prompt: buildTaskPrompt(next),
-        });
-      } else if (!isDone) {
-        setPendingContinuation({
-          type: 'turn_limit',
-          label: 'Step Limit Reached with Pending Work',
-          detail: 'Would you like to continue execution from where it left off?',
-          prompt: 'Please continue execution directly from where you left off. Proceed with the remaining tasks and verify the implementation.',
-        });
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (userCancelledRef.current) {
-        userCancelledRef.current = false; // Esc already showed 'Cancelled' — not an error.
-      } else if (/exceed.*context/i.test(msg)) {
-        show('Context limit reached. Compacting & recovering...', 'warning', 3000);
-        try { await executeSingleTurn(currentHistory.slice(-2), false, skillName); return; } catch {}
-        show(`Error: ${msg}`, 'error', 4000); onSendMessage(undefined, `⚠️ Error: ${msg}`);
-      } else if (/abort/i.test(msg)) {
-        show('Stream interrupted (timeout or connection lost)', 'warning', 4000);
-        onSendMessage(undefined, '⚠️ Stream interrupted (timeout or connection lost)');
-      } else {
-        show(`Error: ${msg}`, 'error', 4000); onSendMessage(undefined, `⚠️ Error: ${msg}`);
       }
     } finally { resetStream('idle'); }
   };
@@ -343,6 +426,7 @@ const Chat: React.FC<ChatProps> = ({
       saveEntry(cmd); setInput(''); setSelectedCmdIndex(0);
       return executeSlashCommand(cmd) ? undefined : (show(`Unknown command: ${cmd}. Type /help for manual`, 'error', 3000), undefined);
     }
+    runModelRef.current = pickModelForRun(trimmed, registry?.definitions?.()?.length ?? 0);
     const match = matchBestSkill(trimmed);
     if (match) { setActiveSkill(match.name); show(`Matched skill: ${match.name}`, 'info', 2000); }
     saveEntry(trimmed); setInput(''); setScrollOffset(Infinity); onSendMessage(trimmed); resetStream('thinking');
@@ -401,6 +485,7 @@ const Chat: React.FC<ChatProps> = ({
               <Box flexDirection="row" gap={1}><Text bold color="cyan">⚡ AGENTIC HARNESS</Text><Text color="gray">│ <Text color="white" bold>Autonomous Agent Cockpit</Text></Text></Box>
               <Text color="gray">Model: <Text color="cyan" bold>{selectedModel}</Text> • <Text color="green">● MCP Active</Text></Text>
               <Text color="gray"><Text color="yellow">❯ </Text>Type prompt to reason & tools • <Text color="cyan">/model</Text> switch • <Text color="cyan">/skills</Text> load</Text>
+              {autoMode && <Text color="green">Auto mode — continues through plan steps without Y/N prompts</Text>}
               <Text color="gray" dimColor>[Tab Autocomplete • Ctrl+O Model • Ctrl+T View • Ctrl+A Accordion]</Text>
             </Box>
           </Box>

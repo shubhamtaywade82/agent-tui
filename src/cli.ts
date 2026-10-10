@@ -14,7 +14,8 @@
  *   agent-tui models                    list available models
  *
  * Flags: --provider/-p, --model/-m, --max-iter, --no-stream, --no-tools,
- *        --no-thinking, --session/-s, --save, --json, --quiet/-q
+ *        --no-thinking, --session/-s, --save, --json, --quiet/-q,
+ *        --auto, --yolo (sets AGENT_AUTO for unattended TUI; headless uses higher iteration budget)
  */
 import { runAgent, shutdownAgent, type AgentRunOptions } from './agent.js';
 import { getProviderAsync } from './providers.js';
@@ -55,6 +56,7 @@ OPTIONS (apply to run/repl/batch):
       --save              Auto-save the session
       --json              Emit structured JSON result (for run/batch)
   -q, --quiet             Suppress logging to stderr
+      --auto, --yolo      Unattended mode (TUI: auto-continue plan steps; env AGENT_AUTO=1)
 
 EXAMPLES:
   agent-tui run "Explain the architecture of this project"
@@ -80,6 +82,7 @@ interface ParsedArgs {
     save?: boolean;
     json?: boolean;
     quiet?: boolean;
+    auto?: boolean;
   };
 }
 
@@ -89,6 +92,10 @@ function parseArgs(argv: string[]): ParsedArgs {
   const command = argv[0] ?? 'help';
   for (let i = 1; i < argv.length; i++) {
     const a = argv[i]!;
+    if (a === '--auto' || a === '--yolo') {
+      flags.auto = true;
+      continue;
+    }
     switch (a) {
       case '-p': case '--provider': flags.provider = argv[++i]; break;
       case '-m': case '--model': flags.model = argv[++i]; break;
@@ -107,10 +114,13 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function optsFromFlags(f: ParsedArgs['flags']): AgentRunOptions {
+  if (f.auto) process.env.AGENT_AUTO = '1';
+  const cfg = loadConfig();
+  const maxIterations = f.maxIter ?? (f.auto ? Math.max(cfg.maxIterations, 24) : undefined);
   return {
     provider: f.provider,
     model: f.model,
-    maxIterations: f.maxIter,
+    maxIterations,
     noStream: f.noStream,
     noTools: f.noTools,
     noThinking: f.noThinking,
@@ -272,10 +282,25 @@ async function cmdDoctor(): Promise<number> {
   console.log('=== Agent TUI Doctor ===\n');
   console.log(`Active provider: ${cfg.provider.active}`);
   console.log(`Default model:   ${cfg.provider[cfg.provider.active].defaultModel}`);
+  if (cfg.provider.active === 'ollama') {
+    const o = cfg.provider.ollama;
+    console.log(`Ollama routing:  ${o.routingMode}`);
+    console.log(`Ollama endpoints: ${o.endpoints.map((e) => e.name).join(', ') || 'none'}`);
+    if (o.apiKey) console.log(`Ollama cloud:    ${o.cloudBaseUrl} (API key set)`);
+    if (o.cloudDefaultModel) console.log(`Cloud model:     ${o.cloudDefaultModel}`);
+  }
   console.log(`Context budget:   ${cfg.contextBudget} tokens`);
   console.log(`Max iterations:   ${cfg.maxIterations}`);
   console.log(`Thinking:         ${cfg.thinking}`);
-  console.log(`Log level:        ${cfg.logLevel}\n`);
+  console.log(`Log level:        ${cfg.logLevel}`);
+  if (cfg.provider.active === 'ollama') {
+    const o = cfg.provider.ollama;
+    console.log(`Ollama routing:   ${o.routingMode}`);
+    console.log(`Ollama endpoints: ${o.endpoints.map((e) => e.name).join(', ')}`);
+    console.log(`Cloud API key:    ${o.apiKey ? 'set' : 'not set'}`);
+    if (o.cloudDefaultModel) console.log(`Cloud model:      ${o.cloudDefaultModel}`);
+  }
+  console.log('');
 
   try {
     const provider = await getProviderAsync(cfg);

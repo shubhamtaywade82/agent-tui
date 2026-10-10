@@ -9,6 +9,38 @@ export interface ContextMessage {
 
 export const estimateTokens = (text: string): number => Math.ceil((text || '').length / 3.5);
 
+/** llama.cpp-style expansion: tool JSON in prompt ≈ chars / 2.2 */
+export function estimateToolSchemaTokens(toolDefs: unknown): number {
+  if (!toolDefs) return 0;
+  try {
+    return Math.ceil(JSON.stringify(toolDefs).length / 2.2);
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Message history token budget from model window minus tools, response reserve,
+ * and configured ceiling (AGENT_CONTEXT_BUDGET).
+ */
+export function resolveMessageTokenBudget(params: {
+  configuredBudget: number;
+  numCtx?: number;
+  toolDefs?: unknown;
+  reserveTokens?: number;
+  minBudget?: number;
+}): number {
+  const min = params.minBudget ?? 2048;
+  const reserve = params.reserveTokens ?? 4096;
+  const toolTokens = estimateToolSchemaTokens(params.toolDefs);
+  if (params.numCtx && params.numCtx > 0) {
+    const fromWindow = params.numCtx - toolTokens - reserve;
+    return Math.max(min, Math.min(params.configuredBudget, fromWindow));
+  }
+  const headroom = Math.max(min, params.configuredBudget - toolTokens);
+  return headroom;
+}
+
 export function truncateToolOutput(raw: string, maxChars = 3500): string {
   if (!raw || raw.length <= maxChars) return raw;
   const trimmed = raw.trim();
@@ -28,9 +60,13 @@ export function truncateToolOutput(raw: string, maxChars = 3500): string {
   return `${cleanSlice}\n... [truncated ${raw.length - slicePoint} chars to fit context window]`;
 }
 
-export function budgetMessages<T extends ContextMessage>(messages: T[], maxTokens = 9000): T[] {
+export function budgetMessages<T extends ContextMessage>(
+  messages: T[],
+  maxTokens = 9000,
+  compactionHint?: string | null,
+): T[] {
   if (!messages.length) return [];
-  const systemMsg = messages.find((m) => m.role === 'system');
+  let systemMsg = messages.find((m) => m.role === 'system');
   const nonSystem = messages.filter((m) => m.role !== 'system');
   if (!nonSystem.length) return systemMsg ? [systemMsg] : [];
 
@@ -50,5 +86,13 @@ export function budgetMessages<T extends ContextMessage>(messages: T[], maxToken
   }
 
   const windowed = startIdx > 0 ? pruned.slice(startIdx) : pruned;
+  if (startIdx > 0 && compactionHint) {
+    const extra = `\n\n${compactionHint}`;
+    if (systemMsg) {
+      systemMsg = { ...systemMsg, content: (systemMsg.content || '') + extra };
+    } else {
+      systemMsg = { role: 'system', content: compactionHint } as T;
+    }
+  }
   return systemMsg ? [systemMsg, ...windowed] : windowed;
 }

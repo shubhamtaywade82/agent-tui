@@ -3,6 +3,7 @@ import { resolve, basename } from 'node:path';
 import { z } from 'zod';
 import { defineTool, ToolRegistry, registerMcpTools, type McpClientLike } from '@nemesis-oss/ollama-sdk';
 import { truncateToolOutput } from './utils/context.js';
+import type { ToolCallLedger } from './utils/tool-loop-guard.js';
 import { StdioTransport, StreamableHttpTransport, McpClient } from '@nemesis-oss/agentic-runtime/mcp';
 import { TASK_SLASH_COMMANDS, handleTasksCommand, taskTools } from './tasks.js';
 import { envList, loadConfig, isMcpEnabled } from './config.js';
@@ -396,16 +397,30 @@ function resolveToolName(name: string, registry: ToolRegistry): string {
 export async function executeMcpCalls(
   registry: ToolRegistry,
   toolCalls: readonly any[],
+  ledger?: ToolCallLedger,
 ): Promise<Array<{ role: 'tool'; content: string; tool_call_id?: string; timestamp: number }>> {
-  const resolved = toolCalls.map((tc) => ({
-    ...tc,
-    function: { ...tc.function, name: resolveToolName(tc.function?.name || '', registry), arguments: parseArgs(tc.function?.arguments) },
-  }));
-  const results = await registry.executeToolCalls(resolved);
-  return results.map((res) => ({
-    role: 'tool' as const,
-    content: truncateToolOutput(res.outputString || (res.success ? 'Success' : 'Execution error'), 3500),
-    tool_call_id: res.toolCallId,
-    timestamp: Date.now(),
-  }));
+  const out: Array<{ role: 'tool'; content: string; tool_call_id?: string; timestamp: number }> = [];
+  for (const tc of toolCalls) {
+    const name = resolveToolName(tc.function?.name || '', registry);
+    const args = parseArgs(tc.function?.arguments);
+    const blocked = ledger?.beforeExecute(name, args);
+    if (blocked) {
+      out.push({ role: 'tool', content: blocked, tool_call_id: tc.id, timestamp: Date.now() });
+      continue;
+    }
+    const results = await registry.executeToolCalls([{
+      ...tc,
+      function: { ...tc.function, name, arguments: args },
+    }]);
+    const res = results[0];
+    const content = truncateToolOutput(res?.outputString || (res?.success ? 'Success' : 'Execution error'), 3500);
+    ledger?.afterExecute(name, args, res?.outputString ?? content);
+    out.push({
+      role: 'tool' as const,
+      content,
+      tool_call_id: res?.toolCallId ?? tc.id,
+      timestamp: Date.now(),
+    });
+  }
+  return out;
 }

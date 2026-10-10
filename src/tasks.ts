@@ -139,6 +139,13 @@ export function getTaskRuntime(): TaskRuntime {
   return runtime;
 }
 
+/** True when a task plan exists and every item is completed or cancelled. */
+export function isPlanSatisfied(): boolean {
+  const tasks = getTaskRuntime().listTasks();
+  if (tasks.length === 0) return false;
+  return tasks.every((t) => t.status === 'completed' || t.status === 'cancelled');
+}
+
 export function buildTaskPrompt(task: Task): string {
   const section = (label: string, items: string[]) => (items.length ? `${label}:\n${items.map((i) => `- ${i}`).join('\n')}\n` : '');
   return [

@@ -14,6 +14,7 @@ import { useTerminalSize } from './components/ui/hooks/index.js';
 import { myTheme } from './theme.js';
 import { readFileSync } from 'node:fs';
 import { closeMcpServers, loadAvailableSkills, loadUserConfig, saveUserConfig, findSkillFile } from './tools.js';
+import { isAutoMode } from './auto-mode.js';
 
 export type ModalType = 'model' | 'clear' | 'skills' | null;
 
@@ -23,6 +24,7 @@ const TABS: Tab[] = [
 ];
 
 const App: React.FC = () => {
+  const autoMode = isAutoMode();
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     const saved = loadUserConfig();
     return saved.systemPrompt ? [{ role: 'system', content: saved.systemPrompt, timestamp: Date.now() }] : [];
@@ -119,6 +121,7 @@ const App: React.FC = () => {
         <StatusIndicator status={isConnected ? 'online' : 'offline'} label={isConnected ? 'Online' : 'Offline'} theme={myTheme} />
         <Badge variant="success">MCP Active</Badge>
         <Badge variant="info">{`📚 ${loadAvailableSkills().length} Skills`}</Badge>
+        {autoMode && <Badge variant="warning">AUTO</Badge>}
         <Box flexDirection="row" gap={1} alignItems="center">
           <Text bold color={activeModal === 'model' ? (myTheme.colors.focus ?? 'green') : 'cyan'}>
             Model: <Text color="white">{selectedModel || 'none'}</Text>
@@ -215,6 +218,7 @@ const App: React.FC = () => {
               models={models} isConnected={isConnected} theme={myTheme} isActive={activeTab === 'chat'}
               columns={columns} rows={rows} selectedModel={selectedModel} onSelectModel={(m) => { setSelectedModel(m); saveUserConfig({ model: m }); }}
               isSelectingModel={Boolean(activeModal)} onOpenModal={(m) => setActiveModal(m)}
+              autoMode={autoMode}
             />
           </Box>
           <Box display={activeTab === 'system' ? 'flex' : 'none'} width={columns} flexDirection="column">

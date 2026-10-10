@@ -18,7 +18,7 @@
     "demo": "tsx src/index.ts run 'Use the calculator tool to compute 125 * 38 and explain the result.'",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/tasks.test.ts",
+    "test": "node --import tsx --test test/tasks.test.ts test/context-guard.test.ts test/ollama-routing.test.ts",
     "supervisor:serve": "tsx src/supervisor/main.ts",
     "supervisor:typecheck": "tsc --noEmit",
     "supervisor:test": "vitest run",

@@ -10,6 +10,7 @@
  * the headless path runs; otherwise the TUI launches. This keeps the existing
  * `npm start` (TUI) behavior while adding `npx tsx src/index.ts run "..."` etc.
  */
+import { argvHasAutoFlag, stripAutoFlags } from './auto-mode.js';
 import { runCli } from './cli.js';
 
 const CLI_COMMANDS = new Set([
@@ -18,18 +19,23 @@ const CLI_COMMANDS = new Set([
 ]);
 
 async function main(): Promise<void> {
-  const firstArg = process.argv[2];
+  if (argvHasAutoFlag(process.argv)) {
+    process.env.AGENT_AUTO = '1';
+  }
+  const args = stripAutoFlags(process.argv.slice(2));
+  const firstArg = args[0];
 
   // Explicit TUI request, or no args at all (and stdin is a TTY) → launch the UI.
   if (!firstArg || firstArg === 'tui' || firstArg === '--tui') {
     if (!process.stdin.isTTY && !firstArg) {
       // stdin is piped but no command given → treat as `run` reading from stdin.
-      const code = await runCli(['run']);
+      const code = await runCli(['run', ...args]);
       process.exit(code);
     }
     // Defer to the TUI entry (src/index.tsx). We launch tsx on it directly.
     const { spawn } = await import('node:child_process');
-    const child = spawn('npx', ['tsx', 'src/index.tsx', ...process.argv.slice(3)], {
+    const tuiArgs = firstArg === 'tui' || firstArg === '--tui' ? args.slice(1) : args;
+    const child = spawn('npx', ['tsx', 'src/index.tsx', ...tuiArgs], {
       stdio: 'inherit',
       env: { ...process.env },
     });
@@ -38,7 +44,7 @@ async function main(): Promise<void> {
   }
 
   if (CLI_COMMANDS.has(firstArg)) {
-    const code = await runCli(process.argv.slice(2));
+    const code = await runCli(args);
     process.exit(code);
     return;
   }
@@ -46,7 +52,7 @@ async function main(): Promise<void> {
   // Unknown arg — if it looks like a prompt (a quoted string), treat as `run`.
   // Otherwise print help.
   if (firstArg && !firstArg.startsWith('-')) {
-    const code = await runCli(['run', ...process.argv.slice(2)]);
+    const code = await runCli(['run', ...args]);
     process.exit(code);
   } else {
     const code = await runCli(['help']);

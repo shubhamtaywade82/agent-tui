@@ -9,6 +9,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import dotenv from 'dotenv';
+import { buildOllamaEndpoints, OLLAMA_CLOUD_BASE_URL, type OllamaRoutingMode } from './ollama-endpoints.js';
 
 // Load .env once at import time. `override: false` keeps real shell env wins.
 const envPath = resolve(process.cwd(), '.env');
@@ -32,6 +33,18 @@ export interface ProviderConfig {
   ollama: {
     endpoints: OllamaEndpointConfig[];
     defaultModel: string;
+    localHost: string;
+    cloudBaseUrl: string;
+    apiKey?: string;
+    cloudModels: string[];
+    localModels: string[];
+    cloudDefaultModel: string;
+    routingMode: OllamaRoutingMode;
+    autoEscalateScore: number;
+    routerModel: string;
+    routerBackend: 'heuristic' | 'model' | 'hybrid';
+    escalateAfterTools: number;
+    escalateAfterIterations: number;
   };
   openai: {
     apiKey?: string;
@@ -58,6 +71,12 @@ export interface AgentConfig {
   wallTimeMs: number;
   /** Context window budget in approximate tokens. */
   contextBudget: number;
+  /** Model context window (Ollama num_ctx). 0 = infer only from AGENT_CONTEXT_BUDGET. */
+  numCtx: number;
+  /** Tokens reserved for reply + thinking (subtracted from numCtx). */
+  contextReserve: number;
+  /** Block identical tool calls after this many successful runs. */
+  toolRepeatLimit: number;
   /** Default chat temperature. */
   temperature: number;
   /** Enable thinking/reasoning traces when supported. */
@@ -114,23 +133,44 @@ export function isMcpEnabled(id: string, cfg: AgentConfig): boolean {
 }
 
 /** Build the runtime config from environment variables. */
+function ollamaRoutingMode(): OllamaRoutingMode {
+  const v = env('AGENT_OLLAMA_ROUTING', 'local-first').toLowerCase();
+  if (v === 'auto' || v === 'cloud-first' || v === 'local-first') return v;
+  return 'local-first';
+}
+
 export function loadConfig(): AgentConfig {
   const ollamaHost = env('OLLAMA_HOST', 'http://localhost:11434');
-  const ollamaEndpoints: OllamaEndpointConfig[] = [
-    { name: 'local', baseUrl: ollamaHost, priority: 10 },
-  ];
-  const cloudUrl = env('OLLAMA_CLOUD_URL');
-  const cloudKey = env('OLLAMA_API_KEY');
-  if (cloudUrl && cloudKey) {
-    ollamaEndpoints.push({ name: 'cloud', baseUrl: cloudUrl, apiKey: cloudKey, priority: 5 });
-  }
+  const cloudKey = env('OLLAMA_API_KEY') || undefined;
+  const routingMode = ollamaRoutingMode();
+  const ollamaBlock = {
+    localHost: ollamaHost,
+    cloudBaseUrl: env('OLLAMA_CLOUD_URL', OLLAMA_CLOUD_BASE_URL),
+    apiKey: cloudKey,
+    cloudModels: envList('OLLAMA_CLOUD_MODELS', []),
+    localModels: envList('OLLAMA_LOCAL_MODELS', []),
+    defaultModel: env('OLLAMA_MODEL', 'qwen3:8b'),
+    cloudDefaultModel: env('OLLAMA_CLOUD_MODEL', env('OLLAMA_CLOUD_DEFAULT_MODEL', '')),
+    routingMode,
+    autoEscalateScore: Number(env('AGENT_OLLAMA_AUTO_ESCALATE_SCORE', '0.35')),
+    routerModel: env('OLLAMA_ROUTER_MODEL', ''),
+    routerBackend: (() => {
+      const v = env('AGENT_OLLAMA_ROUTER', 'heuristic').toLowerCase();
+      if (v === 'model' || v === 'hybrid') return v;
+      return 'heuristic';
+    })(),
+    escalateAfterTools: envInt('AGENT_OLLAMA_ESCALATE_AFTER_TOOLS', 6),
+    escalateAfterIterations: envInt('AGENT_OLLAMA_ESCALATE_AFTER_ITER', 3),
+  };
+
+  const ollamaEndpoints = buildOllamaEndpoints(ollamaBlock);
 
   return {
     provider: {
       active: env('AGENT_PROVIDER', 'ollama') as ProviderName,
       ollama: {
+        ...ollamaBlock,
         endpoints: ollamaEndpoints,
-        defaultModel: env('OLLAMA_MODEL', 'qwen3:8b'),
       },
       openai: {
         apiKey: env('OPENAI_API_KEY') || undefined,
@@ -151,6 +191,9 @@ export function loadConfig(): AgentConfig {
     maxIterations: envInt('AGENT_MAX_ITERATIONS', 12),
     wallTimeMs: envInt('AGENT_WALL_TIME_MS', 120_000),
     contextBudget: envInt('AGENT_CONTEXT_BUDGET', 12000),
+    numCtx: envInt('AGENT_NUM_CTX', 32768),
+    contextReserve: envInt('AGENT_CONTEXT_RESERVE', 4096),
+    toolRepeatLimit: envInt('AGENT_TOOL_REPEAT_LIMIT', 2),
     temperature: Number(env('AGENT_TEMPERATURE', '0.7')),
     thinking: envBool('AGENT_THINKING', true),
     tools: envList('AGENT_TOOLS', ['all'])[0] === 'all' ? 'all' : envList('AGENT_TOOLS', []),

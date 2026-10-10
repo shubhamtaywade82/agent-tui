@@ -10,8 +10,10 @@
 import { getProviderAsync, parseTextToolCalls, type LLMProvider, type ChatMessage, type ToolCall, type StreamCallbacks } from './providers.js';
 import { getToolRegistry, closeToolRegistry } from './toolbox/index.js';
 import { resetSkillLookupBudget } from './tools.js';
-import { budgetMessages, truncateToolOutput } from './utils/context.js';
+import { budgetMessages, resolveMessageTokenBudget, truncateToolOutput } from './utils/context.js';
+import { ToolCallLedger } from './utils/tool-loop-guard.js';
 import { loadConfig, type AgentConfig } from './config.js';
+import { resolveOllamaModelForTask } from './ollama-routing.js';
 import { log, RunMetrics } from './logger.js';
 import { saveSession, appendToConversationLog } from './session.js';
 import { resolve } from 'node:path';
@@ -85,6 +87,7 @@ async function executeToolCalls(
   registry: any,
   metrics: RunMetrics,
   opts: AgentRunOptions,
+  ledger: ToolCallLedger,
 ): Promise<ChatMessage[]> {
   const results: ChatMessage[] = [];
   for (const tc of toolCalls) {
@@ -92,6 +95,13 @@ async function executeToolCalls(
     const args = typeof tc.function.arguments === 'string' ? safeParse(tc.function.arguments) : tc.function.arguments;
     opts.onToolCall?.(name, args);
     metrics.incToolCall();
+    const blocked = ledger.beforeExecute(name, args);
+    if (blocked) {
+      opts.onToolResult?.(name, blocked, false);
+      results.push({ role: 'tool', content: blocked, tool_call_id: tc.id });
+      log.warn('Tool blocked (loop guard)', { name });
+      continue;
+    }
     try {
       const execResults = await registry.executeToolCalls([{
         id: tc.id ?? name,
@@ -100,6 +110,7 @@ async function executeToolCalls(
       const res = execResults[0];
       const output = res?.outputString ?? (res?.success ? 'Success' : 'Execution error');
       const success = res?.success ?? false;
+      ledger.afterExecute(name, args, output);
       opts.onToolResult?.(name, truncateToolOutput(output, 3000), success);
       results.push({
         role: 'tool',
@@ -132,12 +143,9 @@ export async function runAgent(
 ): Promise<AgentRunResult> {
   const cfg = loadConfig();
   const provider = await getProviderAsync(cfg);
-  const model = opts.model ?? cfg.provider[cfg.provider.active].defaultModel;
   const maxIter = opts.maxIterations ?? cfg.maxIterations;
   const metrics = new RunMetrics();
   resetSkillLookupBudget();
-
-  log.info('Agent run starting', { provider: provider.name, model, prompt: userPrompt.slice(0, 80), history: history.length });
 
   const hasSystem = history.some((m) => m.role === 'system');
   const messages: ChatMessage[] = hasSystem ? [...history] : [
@@ -155,7 +163,29 @@ export async function runAgent(
     try { registry = await getToolRegistry(cfg); } catch (e: any) { log.warn('Tool registry unavailable', { error: e.message }); }
   }
 
+  let model = opts.model ?? cfg.provider[cfg.provider.active].defaultModel;
+  if (cfg.provider.active === 'ollama') {
+    const pick = resolveOllamaModelForTask(cfg, userPrompt, {
+      explicitModel: opts.model,
+      toolCount: registry?.definitions?.()?.length ?? 0,
+    });
+    model = pick.model;
+    if (!opts.model || pick.reason.startsWith('auto')) {
+      log.info('Ollama model route', { model: pick.model, tier: pick.tier, reason: pick.reason });
+    }
+  }
+
   const toolDefs = registry ? registry.definitions() : undefined;
+
+  log.info('Agent run starting', { provider: provider.name, model, prompt: userPrompt.slice(0, 80), history: history.length });
+
+  const tokenBudget = resolveMessageTokenBudget({
+    configuredBudget: cfg.contextBudget,
+    numCtx: cfg.numCtx > 0 ? cfg.numCtx : undefined,
+    toolDefs,
+    reserveTokens: cfg.contextReserve,
+  });
+  const ledger = new ToolCallLedger({ repeatLimit: cfg.toolRepeatLimit });
   let allToolCalls: ToolCall[] = [];
   let finalContent = '';
   let finalThinking: string | undefined;
@@ -163,13 +193,13 @@ export async function runAgent(
   try {
     for (let iter = 0; iter < maxIter; iter++) {
       metrics.incIteration();
-      const budgeted = budgetMessages(messages, cfg.contextBudget);
+      const budgeted = budgetMessages(messages, tokenBudget, ledger.compactionNote());
       opts.onPhase?.('thinking');
 
       const result = opts.noStream
         ? await provider.chat({ model, messages: budgeted, tools: toolDefs, think: !opts.noThinking, temperature: cfg.temperature, signal: opts.signal })
         : await provider.chatStream(
-            { model, messages: budgeted, tools: toolDefs, think: !opts.noThinking, temperature: cfg.temperature, numCtx: 32768, signal: opts.signal, timeoutMs: cfg.wallTimeMs },
+            { model, messages: budgeted, tools: toolDefs, think: !opts.noThinking, temperature: cfg.temperature, numCtx: cfg.numCtx, signal: opts.signal, timeoutMs: cfg.wallTimeMs },
             { onThinking: (d) => { opts.onThinking?.(d); }, onToken: (d) => { opts.onPhase?.('responding'); opts.onToken?.(d); } },
           );
 
@@ -189,7 +219,7 @@ export async function runAgent(
         opts.onPhase?.('executing-tools');
         const asstMsg: ChatMessage = { role: 'assistant', content, thinking: result.thinking, tool_calls: toolCalls };
         messages.push(asstMsg);
-        const toolResults = await executeToolCalls(toolCalls, registry, metrics, opts);
+        const toolResults = await executeToolCalls(toolCalls, registry, metrics, opts, ledger);
         messages.push(...toolResults);
         log.info('Iteration complete', { iter, toolCalls: toolCalls.length });
         continue;
@@ -206,9 +236,9 @@ export async function runAgent(
       opts.onPhase?.('thinking');
       log.info('Synthesizing final response after max iterations', { iterations: maxIter });
       const synth = opts.noStream
-        ? await provider.chat({ model, messages: budgetMessages([...messages, { role: 'user', content: 'Provide a final comprehensive response.' }], cfg.contextBudget), think: false, signal: opts.signal })
+        ? await provider.chat({ model, messages: budgetMessages([...messages, { role: 'user', content: 'Provide a final comprehensive response.' }], tokenBudget, ledger.compactionNote()), think: false, signal: opts.signal })
         : await provider.chatStream(
-            { model, messages: budgetMessages([...messages, { role: 'user', content: 'Provide a final comprehensive response.' }], cfg.contextBudget), think: false, signal: opts.signal },
+            { model, messages: budgetMessages([...messages, { role: 'user', content: 'Provide a final comprehensive response.' }], tokenBudget, ledger.compactionNote()), think: false, signal: opts.signal },
             { onToken: (d) => { opts.onPhase?.('responding'); opts.onToken?.(d); } },
           );
       finalContent = synth.content;
@@ -240,7 +270,7 @@ export async function runAgent(
     log.error('Agent run failed', { error: msg, iterations: metrics.summary().iterations });
     if (/context|too long|exceed/i.test(msg) && messages.length > 4) {
       log.warn('Context overflow — compacting and retrying once');
-      const compacted = budgetMessages(messages.slice(-4), cfg.contextBudget);
+      const compacted = budgetMessages(messages.slice(-4), tokenBudget, ledger.compactionNote());
       return runAgent(userPrompt, compacted, { ...opts, maxIterations: Math.min(opts.maxIterations ?? maxIter, 3) });
     }
     throw err;
