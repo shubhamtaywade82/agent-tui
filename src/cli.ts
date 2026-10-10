@@ -288,6 +288,8 @@ async function cmdDoctor(): Promise<number> {
     console.log(`Ollama endpoints: ${o.endpoints.map((e) => e.name).join(', ') || 'none'}`);
     if (o.apiKey) console.log(`Ollama cloud:    ${o.cloudBaseUrl} (API key set)`);
     if (o.cloudDefaultModel) console.log(`Cloud model:     ${o.cloudDefaultModel}`);
+    if (o.routerModel) console.log(`Router model:    ${o.routerModel} (${o.routerBackend})`);
+    console.log(`Mid-run escalate: ${o.escalateAfterTools} tools / ${o.escalateAfterIterations} iters`);
   }
   console.log(`Context budget:   ${cfg.contextBudget} tokens`);
   console.log(`Max iterations:   ${cfg.maxIterations}`);

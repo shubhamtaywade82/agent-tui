@@ -7,13 +7,18 @@
  * that can reason, call tools, observe results, and iterate — across Ollama,
  * OpenAI, Anthropic, and Z.ai providers.
  */
-import { getProviderAsync, parseTextToolCalls, type LLMProvider, type ChatMessage, type ToolCall, type StreamCallbacks } from './providers.js';
+import { getProviderAsync, parseTextToolCalls, rawOllama, type LLMProvider, type ChatMessage, type ToolCall, type StreamCallbacks } from './providers.js';
 import { getToolRegistry, closeToolRegistry } from './toolbox/index.js';
 import { resetSkillLookupBudget } from './tools.js';
 import { budgetMessages, resolveMessageTokenBudget, truncateToolOutput } from './utils/context.js';
 import { ToolCallLedger } from './utils/tool-loop-guard.js';
 import { loadConfig, type AgentConfig } from './config.js';
-import { resolveOllamaModelForTask } from './ollama-routing.js';
+import {
+  createOllamaRunRoutingState,
+  maybeEscalateOllamaModel,
+  resolveOllamaModelForTaskAsync,
+  type OllamaRunRoutingState,
+} from './ollama-routing.js';
 import { log, RunMetrics } from './logger.js';
 import { saveSession, appendToConversationLog } from './session.js';
 import { resolve } from 'node:path';
@@ -42,6 +47,8 @@ export interface AgentRunOptions {
   onPhase?: (phase: 'thinking' | 'responding' | 'executing-tools' | 'done') => void;
   /** Session id to continue, or undefined for no persistence. */
   sessionId?: string;
+  /** Optional shared Ollama mid-run routing counters (TUI can pass a ref). */
+  ollamaRouting?: OllamaRunRoutingState;
 }
 
 export interface AgentRunResult {
@@ -97,6 +104,7 @@ async function executeToolCalls(
     metrics.incToolCall();
     const blocked = ledger.beforeExecute(name, args);
     if (blocked) {
+      if (opts.ollamaRouting) opts.ollamaRouting.loopBlocks += 1;
       opts.onToolResult?.(name, blocked, false);
       results.push({ role: 'tool', content: blocked, tool_call_id: tc.id });
       log.warn('Tool blocked (loop guard)', { name });
@@ -163,14 +171,28 @@ export async function runAgent(
     try { registry = await getToolRegistry(cfg); } catch (e: any) { log.warn('Tool registry unavailable', { error: e.message }); }
   }
 
+  const routingState = opts.ollamaRouting ?? createOllamaRunRoutingState();
+  const runOpts = { ...opts, ollamaRouting: routingState };
+
   let model = opts.model ?? cfg.provider[cfg.provider.active].defaultModel;
   if (cfg.provider.active === 'ollama') {
-    const pick = resolveOllamaModelForTask(cfg, userPrompt, {
+    const o = cfg.provider.ollama;
+    const ollamaRaw = rawOllama();
+    const routerGenerate =
+      o.routerModel && ollamaRaw
+        ? (p: string) => ollamaRaw.generateText({
+          model: o.routerModel,
+          prompt: p,
+          options: { temperature: 0, num_predict: 8 },
+        })
+        : undefined;
+    const pick = await resolveOllamaModelForTaskAsync(cfg, userPrompt, {
       explicitModel: opts.model,
       toolCount: registry?.definitions?.()?.length ?? 0,
+      routerGenerate,
     });
     model = pick.model;
-    if (!opts.model || pick.reason.startsWith('auto')) {
+    if (!opts.model || pick.reason.startsWith('auto') || pick.reason.startsWith('router') || pick.reason.startsWith('mid-run')) {
       log.info('Ollama model route', { model: pick.model, tier: pick.tier, reason: pick.reason });
     }
   }
@@ -193,6 +215,14 @@ export async function runAgent(
   try {
     for (let iter = 0; iter < maxIter; iter++) {
       metrics.incIteration();
+      routingState.iterations += 1;
+      if (cfg.provider.active === 'ollama') {
+        const mid = maybeEscalateOllamaModel(cfg, routingState, model, opts.model);
+        if (mid) {
+          model = mid.model;
+          log.info('Ollama model route', { model: mid.model, tier: mid.tier, reason: mid.reason });
+        }
+      }
       const budgeted = budgetMessages(messages, tokenBudget, ledger.compactionNote());
       opts.onPhase?.('thinking');
 
@@ -219,7 +249,8 @@ export async function runAgent(
         opts.onPhase?.('executing-tools');
         const asstMsg: ChatMessage = { role: 'assistant', content, thinking: result.thinking, tool_calls: toolCalls };
         messages.push(asstMsg);
-        const toolResults = await executeToolCalls(toolCalls, registry, metrics, opts, ledger);
+        routingState.toolCalls += toolCalls.length;
+        const toolResults = await executeToolCalls(toolCalls, registry, metrics, runOpts, ledger);
         messages.push(...toolResults);
         log.info('Iteration complete', { iter, toolCalls: toolCalls.length });
         continue;

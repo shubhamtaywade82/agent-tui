@@ -9,7 +9,12 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import dotenv from 'dotenv';
-import { buildOllamaEndpoints, OLLAMA_CLOUD_BASE_URL, type OllamaRoutingMode } from './ollama-endpoints.js';
+import {
+  buildOllamaEndpoints,
+  OLLAMA_CLOUD_BASE_URL,
+  type OllamaRouterBackend,
+  type OllamaRoutingMode,
+} from './ollama-endpoints.js';
 
 // Load .env once at import time. `override: false` keeps real shell env wins.
 const envPath = resolve(process.cwd(), '.env');
@@ -154,7 +159,7 @@ export function loadConfig(): AgentConfig {
     routingMode,
     autoEscalateScore: Number(env('AGENT_OLLAMA_AUTO_ESCALATE_SCORE', '0.35')),
     routerModel: env('OLLAMA_ROUTER_MODEL', ''),
-    routerBackend: (() => {
+    routerBackend: ((): OllamaRouterBackend => {
       const v = env('AGENT_OLLAMA_ROUTER', 'heuristic').toLowerCase();
       if (v === 'model' || v === 'hybrid') return v;
       return 'heuristic';

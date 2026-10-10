@@ -5,6 +5,7 @@
 import { OLLAMA_CLOUD_BASE_URL } from '@nemesis-oss/ollama-sdk';
 
 export type OllamaRoutingMode = 'local-first' | 'cloud-first' | 'auto';
+export type OllamaRouterBackend = 'heuristic' | 'model' | 'hybrid';
 
 export interface OllamaEndpointWire {
   name: string;

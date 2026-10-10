@@ -117,7 +117,7 @@ Switch providers by setting `AGENT_PROVIDER` in `.env`:
 | `anthropic` | `ANTHROPIC_API_KEY` | `claude-3-5-sonnet-20241022` |
 | `zai` | `ZAI_API_KEY` | `glm-4.6` |
 
-**Ollama local + cloud:** set `OLLAMA_API_KEY` (from [ollama.com](https://ollama.com)) and optionally `OLLAMA_CLOUD_URL=https://ollama.com`. The client registers **local** (`OLLAMA_HOST`) and **cloud** endpoints with failover (`local-first` or `cloud-first` via `AGENT_OLLAMA_ROUTING`). Pin cloud-only models with `OLLAMA_CLOUD_MODELS`. For task-based escalation, use `AGENT_OLLAMA_ROUTING=auto` and set `OLLAMA_CLOUD_MODEL` to the larger cloud model.
+**Ollama local + cloud:** set `OLLAMA_API_KEY` (from [ollama.com](https://ollama.com)) and optionally `OLLAMA_CLOUD_URL=https://ollama.com`. The client registers **local** (`OLLAMA_HOST`) and **cloud** endpoints with failover (`local-first` or `cloud-first` via `AGENT_OLLAMA_ROUTING`). Pin cloud-only models with `OLLAMA_CLOUD_MODELS`. With `AGENT_OLLAMA_ROUTING=auto` and `OLLAMA_CLOUD_MODEL`, the agent escalates on **heavy prompts**, **mid-run** (after `AGENT_OLLAMA_ESCALATE_AFTER_TOOLS` / `AGENT_OLLAMA_ESCALATE_AFTER_ITER` tool rounds), or **loop-guard** repeats. Optional `OLLAMA_ROUTER_MODEL` + `AGENT_OLLAMA_ROUTER=hybrid` uses a tiny classifier for borderline tasks.
 
 All providers implement a unified interface: `chat()`, `chatStream()`, `generate()`, `embed()`, `listModels()`. The agent loop and tools are provider-agnostic.
 

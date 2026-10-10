@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildOllamaEndpoints } from '../src/ollama-endpoints.js';
-import { resolveOllamaModelForTask } from '../src/ollama-routing.js';
+import {
+  createOllamaRunRoutingState,
+  maybeEscalateOllamaModel,
+  resolveOllamaModelForTask,
+} from '../src/ollama-routing.js';
 import type { AgentConfig } from '../src/config.js';
 
 test('buildOllamaEndpoints adds cloud when API key is set', () => {
@@ -31,6 +35,10 @@ function mockOllamaCfg(overrides: Partial<AgentConfig['provider']['ollama']> = {
     cloudDefaultModel: 'gpt-oss:120b',
     routingMode: 'auto' as const,
     autoEscalateScore: 0.35,
+    routerModel: '',
+    routerBackend: 'heuristic' as const,
+    escalateAfterTools: 6,
+    escalateAfterIterations: 3,
     endpoints: [],
     ...overrides,
   };
@@ -72,4 +80,14 @@ test('resolveOllamaModelForTask keeps local model for light prompts', () => {
   const cfg = mockOllamaCfg();
   const pick = resolveOllamaModelForTask(cfg, 'What is 2+2?');
   assert.equal(pick.model, 'qwen3:8b');
+});
+
+test('maybeEscalateOllamaModel upgrades after enough tool calls', () => {
+  const cfg = mockOllamaCfg({ escalateAfterTools: 4, escalateAfterIterations: 99 });
+  const state = createOllamaRunRoutingState();
+  state.toolCalls = 5;
+  const mid = maybeEscalateOllamaModel(cfg, state, 'qwen3:8b');
+  assert.ok(mid);
+  assert.equal(mid!.model, 'gpt-oss:120b');
+  assert.match(mid!.reason, /mid-run escalate/);
 });

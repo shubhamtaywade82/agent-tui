@@ -8,7 +8,11 @@ import { ChatAccordion, renderSingleTurn, renderStreamingRows, parseTextToolCall
 import { budgetMessages, resolveMessageTokenBudget } from '../utils/context.js';
 import { ToolCallLedger } from '../utils/tool-loop-guard.js';
 import { loadConfig } from '../config.js';
-import { resolveOllamaModelForTask } from '../ollama-routing.js';
+import {
+  createOllamaRunRoutingState,
+  maybeEscalateOllamaModel,
+  resolveOllamaModelForTaskAsync,
+} from '../ollama-routing.js';
 import { autoMaxChains } from '../auto-mode.js';
 import { getTaskRuntime, buildTaskPrompt, isPlanSatisfied } from '../tasks.js';
 
@@ -148,6 +152,7 @@ const Chat: React.FC<ChatProps> = ({
   const chatAbortRef = React.useRef<AbortController | null>(null); const userCancelledRef = React.useRef(false);
   const loopLedgerRef = React.useRef<ToolCallLedger | null>(null);
   const runModelRef = React.useRef<string | undefined>(undefined);
+  const routingStateRef = React.useRef<ReturnType<typeof createOllamaRunRoutingState> | null>(null);
 
   const promptPool = useMemo(() => Array.from(new Set([...history.filter((h) => !h.startsWith('/')), ...DEFAULT_PROMPTS])), [history]);
   const activeMenu = useMemo(() => dismissedInput === input ? [] : getMenuOptions(input, models, ghostText, promptPool), [input, models, ghostText, promptPool, dismissedInput]);
@@ -225,13 +230,28 @@ const Chat: React.FC<ChatProps> = ({
     if (p === 'idle') setActiveSkill(undefined);
   };
 
-  const pickModelForRun = (prompt: string, toolCount = 0): string => {
+  const pickModelForRun = async (prompt: string, toolCount = 0): Promise<string> => {
     const cfg = loadConfig();
-    const pick = resolveOllamaModelForTask(cfg, prompt, {
-      explicitModel: cfg.provider.ollama.routingMode === 'auto' ? undefined : selectedModel,
+    const explicitModel = cfg.provider.ollama.routingMode === 'auto' ? undefined : selectedModel;
+    const routerGenerate =
+      client && cfg.provider.ollama.routerModel
+        ? (p: string) => client.generateText({
+          model: cfg.provider.ollama.routerModel,
+          prompt: p,
+          options: { temperature: 0, num_predict: 8 },
+        })
+        : undefined;
+    const pick = await resolveOllamaModelForTaskAsync(cfg, prompt, {
+      explicitModel,
       toolCount,
+      routerGenerate,
     });
-    if (pick.reason.startsWith('auto') || pick.reason === 'cloud-first') {
+    if (
+      pick.reason.startsWith('auto')
+      || pick.reason === 'cloud-first'
+      || pick.reason.startsWith('router')
+      || pick.reason.startsWith('mid-run')
+    ) {
       show(`Model route: ${pick.model} (${pick.reason})`, 'info', 2800);
     }
     return pick.model;
@@ -239,7 +259,7 @@ const Chat: React.FC<ChatProps> = ({
 
   const runPrompt = async (text: string) => {
     if (phase !== 'idle') { show('Agent is busy; try again once it finishes', 'warning', 2500); return; }
-    runModelRef.current = pickModelForRun(text, registry?.definitions?.()?.length ?? 0);
+    runModelRef.current = await pickModelForRun(text, registry?.definitions?.()?.length ?? 0);
     const match = matchBestSkill(text);
     if (match) { setActiveSkill(match.name); show(`Matched skill: ${match.name}`, 'info', 2000); }
     onSendMessage(text); resetStream('thinking');
@@ -295,6 +315,12 @@ const Chat: React.FC<ChatProps> = ({
       onSendMessage(undefined, asst.content, asst.thinking, asst); setPhase('executing-tools');
       show(`Executing: ${toolCalls.map((tc: any) => tc.function?.name || 'tool').join(', ')}...`, 'info', 2500);
       const toolMsgs = await executeMcpCalls(reg, toolCalls, loopLedgerRef.current ?? undefined);
+      if (routingStateRef.current) {
+        routingStateRef.current.toolCalls += toolCalls.length;
+        if (toolMsgs.some((tm) => tm.content.includes('[Loop guard]'))) {
+          routingStateRef.current.loopBlocks += 1;
+        }
+      }
       setActiveTool(undefined);
       toolMsgs.forEach((tm) => onSendMessage(undefined, tm.content, undefined, tm));
       return { asst, toolMsgs, done: false as const };
@@ -306,9 +332,10 @@ const Chat: React.FC<ChatProps> = ({
 
   const runAgentLoop = async (initialHistory: ChatMessage[], skillName?: string) => {
     const cfg = loadConfig();
+    routingStateRef.current = createOllamaRunRoutingState();
     if (!runModelRef.current) {
       const lastUser = [...initialHistory].reverse().find((m) => m.role === 'user');
-      runModelRef.current = pickModelForRun(lastUser?.content ?? '', registry?.definitions?.()?.length ?? 0);
+      runModelRef.current = await pickModelForRun(lastUser?.content ?? '', registry?.definitions?.()?.length ?? 0);
     }
     loopLedgerRef.current = new ToolCallLedger({ repeatLimit: cfg.toolRepeatLimit });
     const maxTurns = 15;
@@ -322,6 +349,16 @@ const Chat: React.FC<ChatProps> = ({
         try {
           for (let turn = 0; turn < maxTurns; turn++) {
             if (userCancelledRef.current) { userCancelledRef.current = false; return; }
+            const rs = routingStateRef.current;
+            if (rs) {
+              rs.iterations += 1;
+              const explicitModel = cfg.provider.ollama.routingMode === 'auto' ? undefined : selectedModel;
+              const mid = maybeEscalateOllamaModel(cfg, rs, runModelRef.current || selectedModel, explicitModel);
+              if (mid) {
+                runModelRef.current = mid.model;
+                show(`Model route: ${mid.model} (${mid.reason})`, 'info', 2800);
+              }
+            }
             const res = await executeSingleTurn(currentHistory, true, skillName);
             if (res.done) {
               if (res.content && isPrematureStall(res.content)) {
@@ -426,7 +463,7 @@ const Chat: React.FC<ChatProps> = ({
       saveEntry(cmd); setInput(''); setSelectedCmdIndex(0);
       return executeSlashCommand(cmd) ? undefined : (show(`Unknown command: ${cmd}. Type /help for manual`, 'error', 3000), undefined);
     }
-    runModelRef.current = pickModelForRun(trimmed, registry?.definitions?.()?.length ?? 0);
+    runModelRef.current = await pickModelForRun(trimmed, registry?.definitions?.()?.length ?? 0);
     const match = matchBestSkill(trimmed);
     if (match) { setActiveSkill(match.name); show(`Matched skill: ${match.name}`, 'info', 2000); }
     saveEntry(trimmed); setInput(''); setScrollOffset(Infinity); onSendMessage(trimmed); resetStream('thinking');

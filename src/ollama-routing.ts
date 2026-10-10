@@ -11,7 +11,7 @@ const HEAVY_TASK = [
   { re: /\b(production|deploy|security audit)\b/i, w: 0.25 },
 ];
 
-export type OllamaRouterBackend = 'heuristic' | 'model' | 'hybrid';
+export type { OllamaRouterBackend } from './ollama-endpoints.js';
 
 export interface ModelPick {
   model: string;
