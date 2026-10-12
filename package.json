@@ -49,7 +49,7 @@
     "@fastify/swagger-ui": "^5.2.2",
     "@nemesis-oss/agentic-runtime": "^0.2.1",
     "@nemesis-oss/binance-sdk": "^2.0.0",
-    "@nemesis-oss/ollama-sdk": "^1.8.0",
+    "@nemesis-oss/ollama-sdk": "^1.14.0",
     "@nemesis-oss/termina-core": "0.1.0",
     "@nemesis-oss/termina-ui": "0.1.0",
     "@opentelemetry/api": "^1.9.0",
