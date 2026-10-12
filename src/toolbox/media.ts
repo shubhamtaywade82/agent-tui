@@ -11,7 +11,7 @@ import { defineTool } from '@nemesis-oss/ollama-sdk';
 import OpenAI from 'openai';
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { basename, extname, resolve } from 'node:path';
-import { loadConfig, normalizeOpenAIBaseUrl, resolvePath, type MediaConfig } from '../config.js';
+import { loadConfig, parseOpenAIBaseUrl, resolvePath, type MediaConfig } from '../config.js';
 import { log } from '../logger.js';
 import * as ops from './media-ops.js';
 import { IMAGE_SIZES, sniffImageMime } from './media-ops.js';
@@ -19,11 +19,15 @@ import { IMAGE_SIZES, sniffImageMime } from './media-ops.js';
 /** OpenAI's documented input limit for the speech endpoint. */
 const TTS_MAX_CHARS = 4096;
 
+/** Input formats the image edit endpoint accepts for gpt-image-1 (per the openai SDK docs). */
+const EDIT_INPUT_MIME = ['image/png', 'image/jpeg', 'image/webp'];
+
+/** Audio formats the transcription endpoint lists in the openai SDK docs. */
 const AUDIO_MIME: Record<string, string> = {
   '.mp3': 'audio/mpeg', '.mpga': 'audio/mpeg', '.mpeg': 'audio/mpeg',
   '.mp4': 'audio/mp4', '.m4a': 'audio/mp4',
   '.wav': 'audio/wav', '.webm': 'audio/webm',
-  '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.flac': 'audio/flac',
+  '.ogg': 'audio/ogg', '.flac': 'audio/flac',
 };
 
 let cached: { key: string; client: OpenAI } | null = null;
@@ -31,9 +35,11 @@ let cached: { key: string; client: OpenAI } | null = null;
 /** OpenAI client for media calls, or null when no key is configured. Cached per key and base URL. */
 export function mediaClient(cfg: MediaConfig = loadConfig().media): OpenAI | null {
   if (!cfg.apiKey) return null;
-  const baseURL = normalizeOpenAIBaseUrl(cfg.baseUrl);
-  const key = `${cfg.apiKey}\n${baseURL}`;
-  if (cached?.key !== key) cached = { key, client: new OpenAI({ apiKey: cfg.apiKey, baseURL }) };
+  const key = `${cfg.apiKey}\n${cfg.baseUrl}`;
+  if (cached?.key !== key) {
+    const { baseURL, defaultQuery } = parseOpenAIBaseUrl(cfg.baseUrl);
+    cached = { key, client: new OpenAI({ apiKey: cfg.apiKey, baseURL, defaultQuery }) };
+  }
   return cached.client;
 }
 
@@ -117,7 +123,9 @@ export const analyzeImageTool = defineTool({
       imageUrl,
       question: question || 'Describe this image in detail.',
     });
-    log.info('Vision analysis done', { image: image.slice(0, 60), question: (question || 'describe').slice(0, 40) });
+    // Log the kind of source, not the value: a URL or path can carry tokens in its query or name.
+    const source = /^https?:\/\//i.test(image) ? 'remote URL' : image.startsWith('data:') ? 'data URL' : basename(image);
+    log.info('Vision analysis done', { source, question: (question || 'describe').slice(0, 40) });
     return text;
   },
 });
@@ -195,6 +203,7 @@ export const editImageTool = defineTool({
     const client = mediaClient(cfg.media);
     if (!client) return notConfigured('edit_image');
     const { buf, mimeType } = imageBytes(image);
+    if (!EDIT_INPUT_MIME.includes(mimeType)) return `edit_image accepts PNG, JPEG or WEBP input, not ${mimeType}.`;
     const abs = resolvePath(outputPath || `${cfg.sessionsDir.replace(/\/sessions$/, '/generated')}/edit-${Date.now()}.png`);
     const png = await ops.editImage(client, {
       model: cfg.media.imageModel,

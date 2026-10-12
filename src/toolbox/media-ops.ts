@@ -22,16 +22,27 @@ export function sniffImageMime(buf: Buffer): string | null {
   return null;
 }
 
-/** First image from an images response. gpt-image-* returns base64; dall-e-* returns a URL unless asked for base64. */
+/** Bound on downloading an image when the API returns a URL instead of base64. */
+const IMAGE_DOWNLOAD_TIMEOUT_MS = 30_000;
+
+/**
+ * First image from an images response. gpt-image-* returns base64; dall-e-* returns a URL
+ * unless asked for base64. The bytes must be a supported image before anything is written.
+ */
 async function firstImage(res: { data?: ReadonlyArray<{ b64_json?: string; url?: string }> | null }): Promise<Buffer> {
   const image = res.data?.[0];
-  if (image?.b64_json) return Buffer.from(image.b64_json, 'base64');
-  if (image?.url) {
-    const download = await fetch(image.url);
+  let buf: Buffer;
+  if (image?.b64_json) {
+    buf = Buffer.from(image.b64_json, 'base64');
+  } else if (image?.url) {
+    const download = await fetch(image.url, { signal: AbortSignal.timeout(IMAGE_DOWNLOAD_TIMEOUT_MS) });
     if (!download.ok) throw new Error(`Downloading the generated image failed: HTTP ${download.status}`);
-    return Buffer.from(await download.arrayBuffer());
+    buf = Buffer.from(await download.arrayBuffer());
+  } else {
+    throw new Error('Image API returned no image data');
   }
-  throw new Error('Image API returned no image data');
+  if (!sniffImageMime(buf)) throw new Error('Image API returned data that is not a PNG, JPEG, WEBP or GIF image');
+  return buf;
 }
 
 export async function generateImage(

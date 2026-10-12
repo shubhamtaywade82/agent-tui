@@ -154,25 +154,47 @@ function ollamaRoutingMode(): OllamaRoutingMode {
   return 'local-first';
 }
 
+const OPENAI_HOST = 'api.openai.com';
+
+/** True when a URL points at OpenAI's own API host. Unparseable values are not OpenAI. */
+function isOpenAIHost(url: string): boolean {
+  try {
+    return new URL(url).hostname === OPENAI_HOST;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Normalize an OpenAI-compatible base URL. The official `openai` SDK appends
- * `/chat/completions`, `/images/generations`, and similar paths directly to `baseURL`,
- * so the version segment must be part of it. A bare origin such as
- * `https://api.openai.com` gets `/v1`. Any other path is used as given, for example
- * Z.ai's `https://api.z.ai/api/paas/v4`. Query strings are kept.
+ * Split an OpenAI-compatible base URL into the `baseURL` and `defaultQuery` that the
+ * official `openai` SDK expects. The SDK appends `/chat/completions` and similar paths to
+ * `baseURL` as text, so a query string is moved into `defaultQuery`.
+ *
+ * The path must end in an API version. A bare origin gets `/v1`, and a base without a
+ * version segment (for example `https://gw.example/llm`) gets `/v1` appended after it. A
+ * version segment is kept as given: `/v1`, and Z.ai's `/api/paas/v4`.
+ *
+ * Credentials in the URL are rejected. Put the key in OPENAI_API_KEY, so it is never
+ * echoed or logged with the URL.
  */
-export function normalizeOpenAIBaseUrl(raw: string): string {
+export function parseOpenAIBaseUrl(raw: string): { baseURL: string; defaultQuery?: Record<string, string> } {
   let url: URL;
   try {
     url = new URL(raw.trim());
   } catch {
-    throw new Error(`Invalid OpenAI-compatible base URL: "${raw}"`);
+    throw new Error('Invalid OpenAI-compatible base URL (check OPENAI_BASE_URL or OPENAI_MEDIA_BASE_URL)');
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error(`OpenAI-compatible base URL must use http or https: "${raw}"`);
+    throw new Error('OpenAI-compatible base URL must use http or https (check OPENAI_BASE_URL or OPENAI_MEDIA_BASE_URL)');
   }
-  const path = url.pathname.replace(/\/+$/, '') || '/v1';
-  return `${url.origin}${path}${url.search}`;
+  if (url.username || url.password) {
+    throw new Error('OpenAI-compatible base URL must not contain credentials; put the key in OPENAI_API_KEY');
+  }
+  const path = url.pathname.replace(/\/+$/, '');
+  const hasVersion = /\/v\d+[a-z0-9.]*$/i.test(path);
+  const basePath = path === '' ? '/v1' : hasVersion ? path : `${path}/v1`;
+  const defaultQuery = url.search ? Object.fromEntries(url.searchParams) : undefined;
+  return { baseURL: `${url.origin}${basePath}`, ...(defaultQuery ? { defaultQuery } : {}) };
 }
 
 export function loadConfig(): AgentConfig {
@@ -201,6 +223,13 @@ export function loadConfig(): AgentConfig {
 
   const ollamaEndpoints = buildOllamaEndpoints(ollamaBlock);
 
+  // OPENAI_API_KEY also serves the media tools, but only while chat and media both use
+  // OpenAI's own host. Otherwise a key for another provider (for example a Z.ai key set in
+  // OPENAI_API_KEY) would be sent to api.openai.com. OPENAI_MEDIA_API_KEY always overrides.
+  const openaiBaseUrl = env('OPENAI_BASE_URL', 'https://api.openai.com/v1');
+  const mediaBaseUrl = env('OPENAI_MEDIA_BASE_URL', 'https://api.openai.com/v1');
+  const sharedOpenAIKey = isOpenAIHost(openaiBaseUrl) && isOpenAIHost(mediaBaseUrl) ? env('OPENAI_API_KEY') : '';
+
   return {
     provider: {
       active: env('AGENT_PROVIDER', 'ollama') as ProviderName,
@@ -220,8 +249,8 @@ export function loadConfig(): AgentConfig {
       },
     },
     media: {
-      apiKey: env('OPENAI_MEDIA_API_KEY') || env('OPENAI_API_KEY') || undefined,
-      baseUrl: env('OPENAI_MEDIA_BASE_URL', 'https://api.openai.com/v1'),
+      apiKey: env('OPENAI_MEDIA_API_KEY') || sharedOpenAIKey || undefined,
+      baseUrl: mediaBaseUrl,
       imageModel: env('OPENAI_IMAGE_MODEL', 'gpt-image-1'),
       visionModel: env('OPENAI_VISION_MODEL', 'gpt-4o-mini'),
       ttsModel: env('OPENAI_TTS_MODEL', 'tts-1'),

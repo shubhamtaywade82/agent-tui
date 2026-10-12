@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import OpenAI from 'openai';
 import * as ops from '../src/toolbox/media-ops.js';
 import { sniffImageMime } from '../src/toolbox/media-ops.js';
+import { loadConfig } from '../src/config.js';
 import {
   analyzeImageTool, editImageTool, generateImageTool, mediaTools, textToSpeechTool, transcribeAudioTool,
 } from '../src/toolbox/media.js';
@@ -224,5 +225,57 @@ test('edit_image rejects input that is neither a file nor image data', async () 
   await assert.rejects(
     withEnv({ AGENT_LOG_LEVEL: 'silent', OPENAI_MEDIA_API_KEY: 'k' }, () => editImageTool.execute({ prompt: 'x', image: 'not-an-image-path.png' }, {} as never)),
     /neither an existing file nor PNG, JPEG, WEBP or GIF data/,
+  );
+});
+
+test('edit_image rejects GIF input before any request, since the edit endpoint does not accept it', async () => {
+  const s = await startStubServer(() => b64Image(PNG));
+  try {
+    const gif = `data:image/gif;base64,${Buffer.from('GIF89a....').toString('base64')}`;
+    const reply = await withEnv({ AGENT_LOG_LEVEL: 'silent', OPENAI_MEDIA_API_KEY: 'k', OPENAI_MEDIA_BASE_URL: `${s.baseUrl}/v1` }, () =>
+      editImageTool.execute({ prompt: 'x', image: gif }, {} as never));
+    assert.equal(reply, 'edit_image accepts PNG, JPEG or WEBP input, not image/gif.');
+    assert.equal(s.requests.length, 0);
+  } finally {
+    await s.close();
+  }
+});
+
+test('transcribe_audio rejects .oga, which the transcription endpoint does not list', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'media-tools-'));
+  const oga = join(dir, 'clip.oga');
+  writeFileSync(oga, 'OggS');
+  const s = await startStubServer(() => json({ text: 'unreachable' }));
+  try {
+    const reply = await withEnv({ AGENT_LOG_LEVEL: 'silent', OPENAI_MEDIA_API_KEY: 'k', OPENAI_MEDIA_BASE_URL: `${s.baseUrl}/v1` }, () =>
+      transcribeAudioTool.execute({ filePath: oga }, {} as never));
+    assert.match(reply, /Unsupported audio format "\.oga"/);
+    assert.equal(s.requests.length, 0);
+  } finally {
+    await s.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a generated image that is not an image is rejected rather than saved as .png', async () => {
+  const s = await startStubServer(() => b64Image(Buffer.from('<html>error page</html>')));
+  try {
+    await assert.rejects(
+      ops.generateImage(clientFor(s.baseUrl), { model: 'gpt-image-1', prompt: 'x', size: 'auto' }),
+      /not a PNG, JPEG, WEBP or GIF image/,
+    );
+  } finally {
+    await s.close();
+  }
+});
+
+test('OPENAI_API_KEY is reused for media only when chat and media both use api.openai.com', async () => {
+  const base = { AGENT_LOG_LEVEL: 'silent', OPENAI_API_KEY: 'sk-openai', OPENAI_BASE_URL: undefined, OPENAI_MEDIA_API_KEY: undefined, OPENAI_MEDIA_BASE_URL: undefined };
+  assert.equal(await withEnv(base, () => loadConfig().media.apiKey), 'sk-openai');
+  assert.equal(await withEnv({ ...base, OPENAI_BASE_URL: 'https://api.z.ai/api/paas/v4' }, () => loadConfig().media.apiKey), undefined);
+  assert.equal(await withEnv({ ...base, OPENAI_MEDIA_BASE_URL: 'https://gw.example/v1' }, () => loadConfig().media.apiKey), undefined);
+  assert.equal(
+    await withEnv({ ...base, OPENAI_BASE_URL: 'https://api.z.ai/api/paas/v4', OPENAI_MEDIA_API_KEY: 'sk-media' }, () => loadConfig().media.apiKey),
+    'sk-media',
   );
 });

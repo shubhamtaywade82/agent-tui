@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:net';
-import { loadConfig, normalizeOpenAIBaseUrl } from '../src/config.js';
+import { loadConfig, parseOpenAIBaseUrl } from '../src/config.js';
 import { getProviderAsync, resetProvider, type LLMProvider, type ChatMessage, type ToolDefinition } from '../src/providers.js';
 import { chatCompletion, json, startStubServer, withEnv, type StubServer } from './helpers/stub-http.js';
 
@@ -26,19 +26,33 @@ async function freePort(): Promise<number> {
   });
 }
 
-test('normalizeOpenAIBaseUrl adds /v1 to a bare origin and keeps other paths', () => {
-  assert.equal(normalizeOpenAIBaseUrl('https://api.openai.com'), 'https://api.openai.com/v1');
-  assert.equal(normalizeOpenAIBaseUrl('https://api.openai.com/'), 'https://api.openai.com/v1');
-  assert.equal(normalizeOpenAIBaseUrl('https://api.openai.com/v1/'), 'https://api.openai.com/v1');
-  assert.equal(normalizeOpenAIBaseUrl('https://api.z.ai/api/paas/v4'), 'https://api.z.ai/api/paas/v4');
-  assert.equal(normalizeOpenAIBaseUrl('http://127.0.0.1:8000'), 'http://127.0.0.1:8000/v1');
-  assert.equal(normalizeOpenAIBaseUrl('https://example.test/v1?api-version=2024-06-01'), 'https://example.test/v1?api-version=2024-06-01');
+test('parseOpenAIBaseUrl appends /v1 to a bare origin or to a base without a version segment', () => {
+  assert.deepEqual(parseOpenAIBaseUrl('https://api.openai.com'), { baseURL: 'https://api.openai.com/v1' });
+  assert.deepEqual(parseOpenAIBaseUrl('https://api.openai.com/'), { baseURL: 'https://api.openai.com/v1' });
+  assert.deepEqual(parseOpenAIBaseUrl('http://127.0.0.1:8000'), { baseURL: 'http://127.0.0.1:8000/v1' });
+  assert.deepEqual(parseOpenAIBaseUrl('https://gw.example/llm'), { baseURL: 'https://gw.example/llm/v1' });
+  assert.deepEqual(parseOpenAIBaseUrl('https://gw.example/llm/'), { baseURL: 'https://gw.example/llm/v1' });
 });
 
-test('normalizeOpenAIBaseUrl rejects invalid and non-http URLs', () => {
-  assert.throws(() => normalizeOpenAIBaseUrl(''), /Invalid OpenAI-compatible base URL/);
-  assert.throws(() => normalizeOpenAIBaseUrl('not a url'), /Invalid OpenAI-compatible base URL/);
-  assert.throws(() => normalizeOpenAIBaseUrl('ftp://example.test/v1'), /must use http or https/);
+test('parseOpenAIBaseUrl keeps an existing version segment', () => {
+  assert.deepEqual(parseOpenAIBaseUrl('https://api.openai.com/v1/'), { baseURL: 'https://api.openai.com/v1' });
+  assert.deepEqual(parseOpenAIBaseUrl('https://api.z.ai/api/paas/v4'), { baseURL: 'https://api.z.ai/api/paas/v4' });
+  assert.deepEqual(parseOpenAIBaseUrl('https://gw.example/v1beta'), { baseURL: 'https://gw.example/v1beta' });
+});
+
+test('parseOpenAIBaseUrl moves the query string into defaultQuery', () => {
+  assert.deepEqual(parseOpenAIBaseUrl('https://example.test/v1?api-version=2024-06-01'), {
+    baseURL: 'https://example.test/v1',
+    defaultQuery: { 'api-version': '2024-06-01' },
+  });
+});
+
+test('parseOpenAIBaseUrl rejects invalid, non-http, and credential-bearing URLs without echoing them', () => {
+  assert.throws(() => parseOpenAIBaseUrl(''), /Invalid OpenAI-compatible base URL/);
+  assert.throws(() => parseOpenAIBaseUrl('ftp://example.test/v1'), /must use http or https/);
+  assert.throws(() => parseOpenAIBaseUrl('https://user:s3cret@example.test/v1'), (err: Error) =>
+    /must not contain credentials/.test(err.message) && !err.message.includes('s3cret'));
+  assert.throws(() => parseOpenAIBaseUrl('not a url?key=abc123'), (err: Error) => !err.message.includes('abc123'));
 });
 
 test('Z.ai-style base URL posts to /api/paas/v4/chat/completions with bearer auth', async () => {
@@ -120,7 +134,7 @@ test('a tool result without tool_call_id fails before any request is sent', asyn
     const provider = await openaiProvider({ OPENAI_BASE_URL: `${s.baseUrl}/v1` });
     await assert.rejects(
       provider.chat({ messages: [{ role: 'user', content: 'x' }, { role: 'tool', content: 'orphan' }] }),
-      /require tool_call_id/,
+      /cannot be matched to a tool call/,
     );
     assert.equal(s.requests.length, 0);
   } finally {
@@ -128,15 +142,22 @@ test('a tool result without tool_call_id fails before any request is sent', asyn
   }
 });
 
-test('an assistant tool call without an id fails before any request is sent', async () => {
-  const s = await startStubServer(() => json(chatCompletion({ content: 'unreachable' })));
+test('an assistant tool call without an id gets a synthetic id, and its result is matched in order', async () => {
+  const s = await startStubServer(() => json(chatCompletion({ content: 'done' })));
   try {
     const provider = await openaiProvider({ OPENAI_BASE_URL: `${s.baseUrl}/v1` });
-    await assert.rejects(
-      provider.chat({ messages: [{ role: 'assistant', content: '', tool_calls: [{ function: { name: 'calculator', arguments: {} } }] }] }),
-      /has no id/,
-    );
-    assert.equal(s.requests.length, 0);
+    await provider.chat({
+      messages: [
+        { role: 'user', content: 'run it' },
+        { role: 'assistant', content: '', tool_calls: [{ function: { name: 'calculator', arguments: { expression: '1+1' } } }] },
+        { role: 'tool', content: '2' },
+      ],
+    });
+    const body = JSON.parse(s.requests[0]!.body.toString('utf8'));
+    const call = body.messages[1].tool_calls[0];
+    assert.equal(typeof call.id, 'string');
+    assert.equal(call.function.arguments, '{"expression":"1+1"}');
+    assert.equal(body.messages[2].tool_call_id, call.id);
   } finally {
     await s.close();
   }
@@ -273,4 +294,77 @@ test('an unknown AGENT_PROVIDER fails with the list of supported providers', asy
     }),
     /Unknown AGENT_PROVIDER "mystery"\. Expected ollama \| openai \| anthropic/,
   );
+});
+
+test('a query string in the base URL is sent with every request, not appended to the path', async () => {
+  const s = await startStubServer(() => json(chatCompletion({ content: 'ok' })));
+  try {
+    const provider = await openaiProvider({ OPENAI_BASE_URL: `${s.baseUrl}/v1?api-version=2024-06-01` });
+    await provider.chat({ messages: [{ role: 'user', content: 'hi' }] });
+    assert.equal(s.requests[0]!.path, '/v1/chat/completions?api-version=2024-06-01');
+  } finally {
+    await s.close();
+  }
+});
+
+test('a prefix-style base URL keeps its prefix and gets /v1 after it', async () => {
+  const s = await startStubServer(() => json(chatCompletion({ content: 'ok' })));
+  try {
+    const provider = await openaiProvider({ OPENAI_BASE_URL: `${s.baseUrl}/llm` });
+    await provider.chat({ messages: [{ role: 'user', content: 'hi' }] });
+    assert.equal(s.requests[0]!.path, '/llm/v1/chat/completions');
+  } finally {
+    await s.close();
+  }
+});
+
+test('non-stream tool calls without a type or arguments are kept, as in streaming', async () => {
+  const s = await startStubServer(() => json(chatCompletion({ tool_calls: [{ id: 'call_x', function: { name: 'now' } }] })));
+  try {
+    const provider = await openaiProvider({ OPENAI_BASE_URL: `${s.baseUrl}/v1` });
+    const res = await provider.chat({ messages: [{ role: 'user', content: 'x' }] });
+    assert.deepEqual(res.tool_calls, [{ id: 'call_x', function: { name: 'now', arguments: {} } }]);
+  } finally {
+    await s.close();
+  }
+});
+
+test('a response or stream chunk without choices is treated as empty instead of throwing', async () => {
+  const s = await startStubServer((req) => {
+    if (req.path.startsWith('/v1/chat/completions') && JSON.parse(req.body.toString('utf8')).stream) {
+      return { headers: { 'content-type': 'text/event-stream' }, body: 'data: {"id":"c","object":"chat.completion.chunk","created":0,"model":"m"}\n\ndata: [DONE]\n\n' };
+    }
+    return json({ id: 'c', object: 'chat.completion', created: 0, model: 'm' });
+  });
+  try {
+    const provider = await openaiProvider({ OPENAI_BASE_URL: `${s.baseUrl}/v1` });
+    const res = await provider.chat({ messages: [{ role: 'user', content: 'x' }] });
+    assert.equal(res.content, '');
+    const streamed = await provider.chatStream({ messages: [{ role: 'user', content: 'x' }] });
+    assert.equal(streamed.content, '');
+  } finally {
+    await s.close();
+  }
+});
+
+test('parallel streamed tool calls that reuse index 0 with different ids stay separate', async () => {
+  const chunk = (delta: Record<string, unknown>, finish: string | null = null) =>
+    `data: ${JSON.stringify({ id: 'c', object: 'chat.completion.chunk', created: 0, model: 'm', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+  const sse = [
+    chunk({ tool_calls: [{ index: 0, id: 'call_a', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.txt"}' } }] }),
+    chunk({ tool_calls: [{ index: 0, id: 'call_b', type: 'function', function: { name: 'delete_file', arguments: '{"path":"b.txt"}' } }] }),
+    chunk({}, 'tool_calls'),
+    'data: [DONE]\n\n',
+  ].join('');
+  const s = await startStubServer(() => ({ headers: { 'content-type': 'text/event-stream' }, body: sse }));
+  try {
+    const provider = await openaiProvider({ OPENAI_BASE_URL: `${s.baseUrl}/v1` });
+    const res = await provider.chatStream({ messages: [{ role: 'user', content: 'x' }] });
+    assert.deepEqual(res.tool_calls, [
+      { id: 'call_a', function: { name: 'read_file', arguments: { path: 'a.txt' } } },
+      { id: 'call_b', function: { name: 'delete_file', arguments: { path: 'b.txt' } } },
+    ]);
+  } finally {
+    await s.close();
+  }
 });

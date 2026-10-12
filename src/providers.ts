@@ -12,7 +12,7 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from 'openai/resources/chat/completions';
-import { loadConfig, normalizeOpenAIBaseUrl, type AgentConfig, type ProviderName } from './config.js';
+import { loadConfig, parseOpenAIBaseUrl, type AgentConfig, type ProviderName } from './config.js';
 import { buildOllamaClientOptions } from './ollama-endpoints.js';
 import { log } from './logger.js';
 
@@ -164,26 +164,60 @@ class OllamaProvider implements LLMProvider {
 // OpenAI-compatible provider
 // ---------------------------------------------------------------------------
 
-/** Map an internal message to the OpenAI wire format. Tool results must carry the id of the call they answer. */
-function toWireMessage(m: ChatMessage): ChatCompletionMessageParam {
-  switch (m.role) {
-    case 'system': return { role: 'system', content: m.content };
-    case 'user': return { role: 'user', content: m.content };
-    case 'tool':
-      if (!m.tool_call_id) throw new Error('OpenAI-compatible providers require tool_call_id on tool results');
-      return { role: 'tool', tool_call_id: m.tool_call_id, content: m.content };
-    case 'assistant':
-      if (!m.tool_calls?.length) return { role: 'assistant', content: m.content };
-      return {
-        role: 'assistant',
-        content: m.content || null,
-        tool_calls: m.tool_calls.map((tc) => {
-          if (!tc.id) throw new Error(`Tool call "${tc.function.name}" has no id; OpenAI-compatible providers require one`);
-          const args = typeof tc.function.arguments === 'string' ? tc.function.arguments : JSON.stringify(tc.function.arguments ?? {});
-          return { id: tc.id, type: 'function' as const, function: { name: tc.function.name, arguments: args } };
-        }),
-      };
+/** Tool arguments as a JSON string for the wire. Strings pass through unchanged. */
+function argumentsJson(args: unknown): string {
+  return typeof args === 'string' ? args : JSON.stringify(args ?? {});
+}
+
+/**
+ * Map internal messages to the OpenAI wire format. A tool call without an id gets a
+ * synthetic one, and a tool result without an id is matched in order to the calls of the
+ * assistant message just before it. Text-fallback tool calls and sessions saved before ids
+ * were kept both take this path.
+ */
+function toWireMessages(messages: readonly ChatMessage[]): ChatCompletionMessageParam[] {
+  const wire: ChatCompletionMessageParam[] = [];
+  let unmatched: string[] = [];
+  let synthetic = 0;
+  for (const m of messages) {
+    switch (m.role) {
+      case 'system':
+        wire.push({ role: 'system', content: m.content });
+        unmatched = [];
+        break;
+      case 'user':
+        wire.push({ role: 'user', content: m.content });
+        unmatched = [];
+        break;
+      case 'assistant': {
+        if (!m.tool_calls?.length) {
+          wire.push({ role: 'assistant', content: m.content });
+          unmatched = [];
+          break;
+        }
+        const ids = m.tool_calls.map((tc) => tc.id ?? `call_${synthetic++}`);
+        unmatched = [...ids];
+        wire.push({
+          role: 'assistant',
+          content: m.content || null,
+          tool_calls: m.tool_calls.map((tc, i) => ({
+            id: ids[i]!,
+            type: 'function' as const,
+            function: { name: tc.function.name, arguments: argumentsJson(tc.function.arguments) },
+          })),
+        });
+        break;
+      }
+      case 'tool': {
+        const id = m.tool_call_id ?? unmatched[0];
+        if (!id) throw new Error('Tool result has no tool_call_id and cannot be matched to a tool call');
+        unmatched = unmatched.filter((u) => u !== id);
+        wire.push({ role: 'tool', tool_call_id: id, content: m.content });
+        break;
+      }
+    }
   }
+  return wire;
 }
 
 function toWireTool(t: ToolDefinition): ChatCompletionTool {
@@ -196,9 +230,26 @@ function parseArguments(raw: string): unknown {
   try { return JSON.parse(raw); } catch { return raw; }
 }
 
+/** A tool call as the wire sends it. Non-conforming servers may omit `type` or `arguments`. */
+interface WireToolCall {
+  id?: string;
+  type?: string;
+  function?: { name?: string; arguments?: string };
+}
+
+/** Convert wire tool calls. Calls without a function name are skipped, and custom tool calls are not supported. */
+function toToolCalls(calls: readonly WireToolCall[] | undefined): ToolCall[] | undefined {
+  const out: ToolCall[] = [];
+  for (const tc of calls ?? []) {
+    if (tc.type === 'custom' || !tc.function?.name) continue;
+    out.push({ id: tc.id, function: { name: tc.function.name, arguments: parseArguments(tc.function.arguments ?? '') } });
+  }
+  return out.length ? out : undefined;
+}
+
 // The OpenAI-compatible provider runs on the official `openai` SDK. The SDK appends
 // `/chat/completions` to `baseURL`, so the version segment must be part of it (see
-// normalizeOpenAIBaseUrl). Z.ai GLM is served this way at https://api.z.ai/api/paas/v4.
+// parseOpenAIBaseUrl). Z.ai GLM is served this way at https://api.z.ai/api/paas/v4.
 class OpenAIProvider implements LLMProvider {
   readonly name = 'openai' as const;
   readonly defaultModel: string;
@@ -206,17 +257,18 @@ class OpenAIProvider implements LLMProvider {
   constructor(cfg: AgentConfig) {
     const apiKey = cfg.provider.openai.apiKey;
     if (!apiKey) throw new Error('OpenAI provider requires OPENAI_API_KEY in .env');
-    this.client = new OpenAI({ apiKey, baseURL: normalizeOpenAIBaseUrl(cfg.provider.openai.baseUrl) });
+    const { baseURL, defaultQuery } = parseOpenAIBaseUrl(cfg.provider.openai.baseUrl);
+    this.client = new OpenAI({ apiKey, baseURL, defaultQuery });
     this.defaultModel = cfg.provider.openai.defaultModel;
   }
   async listModels(signal?: AbortSignal): Promise<string[]> {
-    const page = await this.client.models.list({ signal });
+    const page = await this.client.models.list(signal ? { signal } : undefined);
     return page.data.map((m) => m.id);
   }
   private request(opts: ChatOptions, model: string): Omit<ChatCompletionCreateParamsBase, 'stream'> {
     return {
       model,
-      messages: opts.messages.map(toWireMessage),
+      messages: toWireMessages(opts.messages),
       ...(opts.tools?.length ? { tools: opts.tools.map(toWireTool) } : {}),
       temperature: opts.temperature ?? 0.7,
     };
@@ -231,16 +283,12 @@ class OpenAIProvider implements LLMProvider {
   async chat(opts: ChatOptions): Promise<ChatResult> {
     const model = opts.model ?? this.defaultModel;
     const res = await this.client.chat.completions.create({ ...this.request(opts, model), stream: false }, this.requestOptions(opts));
-    const message = res.choices[0]?.message;
-    const reasoning = (message as { reasoning_content?: string | null } | undefined)?.reasoning_content;
-    const toolCalls: ToolCall[] = [];
-    for (const tc of message?.tool_calls ?? []) {
-      if (tc.type === 'function') toolCalls.push({ id: tc.id, function: { name: tc.function.name, arguments: parseArguments(tc.function.arguments) } });
-    }
+    // `reasoning_content` is the de-facto reasoning field (GLM, DeepSeek, vLLM); it is not in the OpenAI types.
+    const message = res.choices?.[0]?.message as { content?: string | null; tool_calls?: WireToolCall[]; reasoning_content?: string | null } | undefined;
     return {
       content: message?.content ?? '',
-      thinking: reasoning || undefined,
-      tool_calls: toolCalls.length ? toolCalls : undefined,
+      thinking: message?.reasoning_content || undefined,
+      tool_calls: toToolCalls(message?.tool_calls),
       usage: res.usage ? { inputTokens: res.usage.prompt_tokens, outputTokens: res.usage.completion_tokens } : undefined,
       model,
     };
@@ -249,21 +297,24 @@ class OpenAIProvider implements LLMProvider {
     const model = opts.model ?? this.defaultModel;
     const stream = await this.client.chat.completions.create({ ...this.request(opts, model), stream: true }, this.requestOptions(opts));
     let content = ''; let thinking = '';
-    // Tool-call arguments are streamed in fragments keyed by `index`; accumulate per slot.
-    const pending = new Map<number, { id?: string; name: string; args: string }>();
+    // Tool-call fragments are keyed by index. A different id on the same index starts a new call,
+    // so non-conforming servers that reuse an index do not merge two calls into one.
+    const pending = new Map<string, { id?: string; name: string; args: string }>();
     for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta;
+      const delta = chunk.choices?.[0]?.delta;
       if (!delta) continue;
       if (delta.content) { content += delta.content; cb?.onToken?.(delta.content); }
-      // `reasoning_content` is the de-facto reasoning field (GLM, DeepSeek, vLLM); it is not in the OpenAI types.
       const reasoning = (delta as { reasoning_content?: string | null }).reasoning_content;
       if (reasoning) { thinking += reasoning; cb?.onThinking?.(reasoning); }
       for (const part of delta.tool_calls ?? []) {
-        const slot = pending.get(part.index) ?? { name: '', args: '' };
+        let key = String(part.index);
+        const current = pending.get(key);
+        if (part.id && current?.id && current.id !== part.id) key = `${key}:${part.id}`;
+        const slot = pending.get(key) ?? { name: '', args: '' };
         if (part.id) slot.id = part.id;
         if (part.function?.name && !slot.name) slot.name = part.function.name;
         if (part.function?.arguments) slot.args += part.function.arguments;
-        pending.set(part.index, slot);
+        pending.set(key, slot);
       }
     }
     const toolCalls: ToolCall[] = [];

@@ -8,7 +8,7 @@ Built on `@nemesis-oss/ollama-sdk` + the official `openai` SDK + Ink (React for 
 
 - **Reason & iterate** — think → call tools → observe → respond, across up to 12 iterations per run.
 - **Talk to any LLM** — Ollama (local), OpenAI (GPT-4o), any OpenAI-compatible endpoint such as Z.ai (GLM-4.6), or Anthropic (Claude). Swap with one env var.
-- **Use 46+ tools** — filesystem, git, web search, code execution, embeddings/RAG, image generation, vision, TTS/ASR, and MCP servers (memory, time, fetch, sequential-thinking, Binance).
+- **Use 45+ tools** — filesystem, git, web search, code execution, embeddings/RAG, image generation, vision, TTS/ASR, and MCP servers (memory, time, fetch, sequential-thinking, Binance).
 - **Run three ways** — interactive TUI (`npm start`), headless CLI (`agent-tui run "..."`), or HTTP API (`agent-tui serve`).
 - **Persist conversations** — sessions saved as JSON, resumable, exportable to Markdown.
 - **Stay secure** — secrets live in `.env` (git-ignored); the GitHub token is injected at runtime and never persisted.
@@ -33,7 +33,7 @@ npm start
 # 4. Or use the headless CLI
 npx tsx src/index.ts run "Explain the architecture of this project"
 npx tsx src/index.ts doctor        # check provider/tool health
-npx tsx src/index.ts tools list    # list all 46+ tools
+npx tsx src/index.ts tools list    # list all 45+ tools
 npx tsx src/index.ts serve 8787    # start the HTTP API server
 ```
 
@@ -125,9 +125,11 @@ OPENAI_BASE_URL=https://api.z.ai/api/paas/v4
 OPENAI_MODEL=glm-4.6
 ```
 
-The base URL includes the API version path. A bare origin such as `https://api.openai.com` gets `/v1` appended automatically.
+The base URL includes the API version path. A bare origin such as `https://api.openai.com` gets `/v1` appended. A base without a version segment, such as `https://gw.example/llm`, gets `/v1` appended after it. A query string such as `?api-version=...` is sent with every request. Credentials in the URL are rejected, so put the key in `OPENAI_API_KEY`.
 
 **Migrating from the old `zai` provider:** `AGENT_PROVIDER=zai`, `ZAI_API_KEY`, `ZAI_BASE_URL`, and `ZAI_MODEL` were removed. Use `AGENT_PROVIDER=openai`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL` as shown above. Starting with `AGENT_PROVIDER=zai` fails with these instructions. The image, speech, and transcription tools now call the OpenAI media API (configured with `OPENAI_MEDIA_*`). `read_web_page` is now `web_fetch`. `search_images` was removed because no standard API in this stack provides it.
+
+**Media tools key:** `generate_image`, `analyze_image`, `text_to_speech`, `transcribe_audio`, and `edit_image` use `OPENAI_MEDIA_API_KEY` with `OPENAI_MEDIA_BASE_URL` (default `https://api.openai.com/v1`). They reuse `OPENAI_API_KEY` only when both chat and media use `api.openai.com`, so a Z.ai key in `OPENAI_API_KEY` is never sent to OpenAI. With Z.ai chat, set `OPENAI_MEDIA_API_KEY` to an OpenAI key to keep the media tools.
 
 **Ollama local + cloud:** set `OLLAMA_API_KEY` (from [ollama.com](https://ollama.com)) and optionally `OLLAMA_CLOUD_URL=https://ollama.com`. The client registers **local** (`OLLAMA_HOST`) and **cloud** endpoints with failover (`local-first` or `cloud-first` via `AGENT_OLLAMA_ROUTING`). Pin cloud-only models with `OLLAMA_CLOUD_MODELS`. With `AGENT_OLLAMA_ROUTING=auto` and `OLLAMA_CLOUD_MODEL`, the agent escalates on **heavy prompts**, **mid-run** (after `AGENT_OLLAMA_ESCALATE_AFTER_TOOLS` / `AGENT_OLLAMA_ESCALATE_AFTER_ITER` tool rounds), or **loop-guard** repeats. Optional `OLLAMA_ROUTER_MODEL` + `AGENT_OLLAMA_ROUTER=hybrid` uses a tiny classifier for borderline tasks.
 
@@ -219,7 +221,7 @@ src/
 | `npm run serve` | Start the HTTP API server (port 8787) |
 | `npm run doctor` | Diagnose provider/tool/MCP health |
 | `npm run typecheck` | Type-check without emitting |
-| `npm test` | Run the task-runtime test suite |
+| `npm test` | Run the unit suites: tasks, context guard, Ollama routing, OpenAI provider, media tools, web tools |
 | `npm run build` | Compile TypeScript to `dist/` |
 
 ## MiniCPM5 Supervisor (orchestration layer)
