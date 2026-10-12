@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useStdout } from 'ink';
+import { useStdout } from '@nemesis-oss/termina-core';
 
 declare const process: any;
 

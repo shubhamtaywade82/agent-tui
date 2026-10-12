@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { useInput } from 'ink';
+import { useInput } from '@nemesis-oss/termina-core';
 
 export interface FocusManagerOptions {
   count: number;

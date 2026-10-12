@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text } from '@nemesis-oss/termina-core';
 import { ProgressBar } from './ui/progress-bar/index.js';
 import { StatusIndicator } from './ui/status-indicator/index.js';
 import { Gauge } from './ui/gauge/index.js';

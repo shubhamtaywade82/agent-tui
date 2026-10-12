@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput, useWindowSize } from '@nemesis-oss/termina-core';
+import { ThemeProvider, defaultTheme } from '@nemesis-oss/termina-ui';
 import { StatusIndicator } from './components/ui/status-indicator/index.js';
 import { Badge } from './components/ui/badge/index.js';
 import { Select } from './components/ui/select/index.js';
@@ -10,7 +11,6 @@ import { Dialog } from './components/ui/dialog/index.js';
 import Chat, { type ChatMessage } from './components/Chat.js';
 import StatusBar from './components/StatusBar.js';
 import { useOllama } from './hooks/useOllama.js';
-import { useTerminalSize } from './components/ui/hooks/index.js';
 import { myTheme } from './theme.js';
 import { readFileSync } from 'node:fs';
 import { closeMcpServers, loadAvailableSkills, loadUserConfig, saveUserConfig, findSkillFile } from './tools.js';
@@ -34,7 +34,7 @@ const App: React.FC = () => {
   const [activeModal, setActiveModal] = useState<ModalType>(null);
 
   const { client, models, isLoading } = useOllama();
-  const { columns, rows } = useTerminalSize();
+  const { columns, rows } = useWindowSize();
   const [selectedModel, setSelectedModel] = useState<string>(() => loadUserConfig().model || '');
 
   useEffect(() => {
@@ -139,94 +139,98 @@ const App: React.FC = () => {
 
   if (isLoading) {
     return (
-      <Box flexDirection="column" width={columns}>
-        <Box paddingX={1} flexDirection="row" justifyContent="space-between" alignItems="center" width={columns}>
-          <Text bold color={myTheme.colors.primary}>
-            ⚡ Agentic TUI <Text color="gray" dimColor>v1.0.0</Text>
-          </Text>
+      <ThemeProvider theme={defaultTheme}>
+        <Box flexDirection="column" width={columns}>
+          <Box paddingX={1} flexDirection="row" justifyContent="space-between" alignItems="center" width={columns}>
+            <Text bold color={myTheme.colors.primary}>
+              ⚡ Agentic TUI <Text color="gray" dimColor>v1.0.0</Text>
+            </Text>
+          </Box>
+          <Divider width={columns} theme={myTheme} />
+          <Box marginTop={1} paddingX={1} width={columns}>
+            <StatusIndicator
+              status="loading"
+              label="Initializing Ollama client..."
+              theme={myTheme}
+            />
+          </Box>
         </Box>
-        <Divider width={columns} theme={myTheme} />
-        <Box marginTop={1} paddingX={1} width={columns}>
-          <StatusIndicator
-            status="loading"
-            label="Initializing Ollama client..."
-            theme={myTheme}
-          />
-        </Box>
-      </Box>
+      </ThemeProvider>
     );
   }
 
   return (
-    <Box flexDirection="column" width={columns}>
-      {/* Top Header */}
-      {renderStatusLine()}
-      <Divider width={columns} theme={myTheme} style={activeModal ? 'bold' : 'single'} />
+    <ThemeProvider theme={defaultTheme}>
+      <Box flexDirection="column" width={columns}>
+        {/* Top Header */}
+        {renderStatusLine()}
+        <Divider width={columns} theme={myTheme} style={activeModal ? 'bold' : 'single'} />
 
-      {activeModal ? (
-        <Box height={Math.max(6, rows - 4)} width={columns} alignItems="center" paddingTop={Math.max(1, Math.floor((rows - 16) / 2))}>
-          {activeModal === 'model' && (
-            <Box flexDirection="column" borderStyle="round" borderColor={myTheme.colors.primary} paddingX={2} paddingY={1} width={Math.min(64, columns - 4)}>
-              <Text bold color={myTheme.colors.primary}>Select Ollama Model</Text>
-              <Text color="gray" dimColor>Current: {selectedModel || 'none'}</Text>
-              <Box marginTop={1}>
-                <Select
-                  items={models.map((m) => ({ label: `${m === selectedModel ? '● ' : '○ '}${m}${m === selectedModel ? ' (active)' : ''}`, value: m }))}
-                  onSelect={(item) => { setSelectedModel(item.value); saveUserConfig({ model: item.value }); setActiveModal(null); }}
-                  focus={true} theme={myTheme} maxVisible={6}
-                />
+        {activeModal ? (
+          <Box height={Math.max(6, rows - 4)} width={columns} alignItems="center" paddingTop={Math.max(1, Math.floor((rows - 16) / 2))}>
+            {activeModal === 'model' && (
+              <Box flexDirection="column" borderStyle="round" borderColor={myTheme.colors.primary} paddingX={2} paddingY={1} width={Math.min(64, columns - 4)}>
+                <Text bold color={myTheme.colors.primary}>Select Ollama Model</Text>
+                <Text color="gray" dimColor>Current: {selectedModel || 'none'}</Text>
+                <Box marginTop={1}>
+                  <Select
+                    items={models.map((m) => ({ label: `${m === selectedModel ? '● ' : '○ '}${m}${m === selectedModel ? ' (active)' : ''}`, value: m }))}
+                    onSelect={(item) => { setSelectedModel(item.value); saveUserConfig({ model: item.value }); setActiveModal(null); }}
+                    focus={true} theme={myTheme} maxVisible={6}
+                  />
+                </Box>
+                <Box marginTop={1}><Text color="gray" dimColor>[↑/↓ Navigate • Enter Select • Esc Close]</Text></Box>
               </Box>
-              <Box marginTop={1}><Text color="gray" dimColor>[↑/↓ Navigate • Enter Select • Esc Close]</Text></Box>
-            </Box>
-          )}
+            )}
 
-          {activeModal === 'clear' && (
-            <Dialog
-              isOpen={true} title="Clear Chat History" message="Are you sure you want to clear all chat messages?"
-              actions={[{ label: 'Clear History', value: 'clear' }, { label: 'Cancel', value: 'cancel' }]}
-              onAction={(a) => { if (a.value === 'clear') setMessages([]); setActiveModal(null); }}
-              onDismiss={() => setActiveModal(null)} theme={myTheme}
-            />
-          )}
+            {activeModal === 'clear' && (
+              <Dialog
+                isOpen={true} title="Clear Chat History" message="Are you sure you want to clear all chat messages?"
+                actions={[{ label: 'Clear History', value: 'clear' }, { label: 'Cancel', value: 'cancel' }]}
+                onAction={(a) => { if (a.value === 'clear') setMessages([]); setActiveModal(null); }}
+                onDismiss={() => setActiveModal(null)} theme={myTheme}
+              />
+            )}
 
-          {activeModal === 'skills' && (
-            <Box flexDirection="column" borderStyle="round" borderColor={myTheme.colors.primary} paddingX={2} paddingY={1} width={Math.min(74, columns - 4)}>
-              <Text bold color={myTheme.colors.primary}>Engineering Skills (ruby + react + node packs)</Text>
-              <Text color="gray" dimColor>Select a skill to load into session instructions:</Text>
-              <Box marginTop={1}>
-                <Select
-                  items={loadAvailableSkills().map((s) => ({ label: `${s.name} [${s.pack}/${s.family}] - ${s.triggers.slice(0, 28) || 'standard'}`, value: s.name }))}
-                  onSelect={(item) => {
-                    const file = findSkillFile(item.value);
-                    if (file) {
-                      setMessages((prev) => [{ role: 'system', content: `[Skill loaded: ${item.value}]\n\n${readFileSync(file, 'utf8')}`, timestamp: Date.now() }, ...prev]);
-                    }
-                    setActiveModal(null);
-                  }}
-                  focus={true} theme={myTheme} maxVisible={6}
-                />
+            {activeModal === 'skills' && (
+              <Box flexDirection="column" borderStyle="round" borderColor={myTheme.colors.primary} paddingX={2} paddingY={1} width={Math.min(74, columns - 4)}>
+                <Text bold color={myTheme.colors.primary}>Engineering Skills (ruby + react + node packs)</Text>
+                <Text color="gray" dimColor>Select a skill to load into session instructions:</Text>
+                <Box marginTop={1}>
+                  <Select
+                    items={loadAvailableSkills().map((s) => ({ label: `${s.name} [${s.pack}/${s.family}] - ${s.triggers.slice(0, 28) || 'standard'}`, value: s.name }))}
+                    onSelect={(item) => {
+                      const file = findSkillFile(item.value);
+                      if (file) {
+                        setMessages((prev) => [{ role: 'system', content: `[Skill loaded: ${item.value}]\n\n${readFileSync(file, 'utf8')}`, timestamp: Date.now() }, ...prev]);
+                      }
+                      setActiveModal(null);
+                    }}
+                    focus={true} theme={myTheme} maxVisible={6}
+                  />
+                </Box>
+                <Box marginTop={1}><Text color="gray" dimColor>[↑/↓ Navigate • Enter Load Skill • Esc Close]</Text></Box>
               </Box>
-              <Box marginTop={1}><Text color="gray" dimColor>[↑/↓ Navigate • Enter Load Skill • Esc Close]</Text></Box>
+            )}
+          </Box>
+        ) : (
+          <>
+            <Box display={activeTab === 'chat' ? 'flex' : 'none'} width={columns}>
+              <Chat
+                client={client} messages={messages} onSendMessage={handleSendMessage} setMessages={setMessages}
+                models={models} isConnected={isConnected} theme={myTheme} isActive={activeTab === 'chat'}
+                columns={columns} rows={rows} selectedModel={selectedModel} onSelectModel={(m) => { setSelectedModel(m); saveUserConfig({ model: m }); }}
+                isSelectingModel={Boolean(activeModal)} onOpenModal={(m) => setActiveModal(m)}
+                autoMode={autoMode}
+              />
             </Box>
-          )}
-        </Box>
-      ) : (
-        <>
-          <Box display={activeTab === 'chat' ? 'flex' : 'none'} width={columns}>
-            <Chat
-              client={client} messages={messages} onSendMessage={handleSendMessage} setMessages={setMessages}
-              models={models} isConnected={isConnected} theme={myTheme} isActive={activeTab === 'chat'}
-              columns={columns} rows={rows} selectedModel={selectedModel} onSelectModel={(m) => { setSelectedModel(m); saveUserConfig({ model: m }); }}
-              isSelectingModel={Boolean(activeModal)} onOpenModal={(m) => setActiveModal(m)}
-              autoMode={autoMode}
-            />
-          </Box>
-          <Box display={activeTab === 'system' ? 'flex' : 'none'} width={columns} flexDirection="column">
-            <StatusBar client={client} tokenCount={calculateTokenCount()} theme={myTheme} width={columns} />
-          </Box>
-        </>
-      )}
-    </Box>
+            <Box display={activeTab === 'system' ? 'flex' : 'none'} width={columns} flexDirection="column">
+              <StatusBar client={client} tokenCount={calculateTokenCount()} theme={myTheme} width={columns} />
+            </Box>
+          </>
+        )}
+      </Box>
+    </ThemeProvider>
   );
 };
 

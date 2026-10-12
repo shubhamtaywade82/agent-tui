@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Text, Box, useStdout } from 'ink';
+import { Text, Box, useWindowSize } from '@nemesis-oss/termina-core';
 import { darkTheme } from '../_core.js';
 import type { InkUITheme } from '../_core.js';
 
@@ -23,8 +23,8 @@ export const LoadingBar: React.FC<LoadingBarProps> = ({
   color,
   theme = darkTheme,
 }) => {
-  const { stdout } = useStdout();
-  const totalWidth = width ?? (stdout?.columns ?? 80);
+  const { columns } = useWindowSize();
+  const totalWidth = width ?? columns;
   const barColor = color ?? theme.colors.primary;
   const isDeterminate = value !== undefined;
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Text, Box } from 'ink';
+import { Text, Box } from '@nemesis-oss/termina-core';
 import { spinnerFrames, darkTheme } from '../_core.js';
 import type { SpinnerType, InkUITheme } from '../_core.js';
 

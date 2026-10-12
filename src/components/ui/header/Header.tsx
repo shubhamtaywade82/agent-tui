@@ -1,5 +1,5 @@
 import React from 'react';
-import { Text, Box, useStdout } from 'ink';
+import { Text, Box, useWindowSize } from '@nemesis-oss/termina-core';
 import { darkTheme } from '../_core.js';
 import type { InkUITheme } from '../_core.js';
 
@@ -24,8 +24,8 @@ export const Header: React.FC<HeaderProps> = ({
   theme = darkTheme,
   width,
 }) => {
-  const { stdout } = useStdout();
-  const w = width ?? stdout?.columns ?? 80;
+  const { columns } = useWindowSize();
+  const w = width ?? columns;
   const fullTitle = version ? `${title} v${version}` : title;
 
   if (style === 'box') {

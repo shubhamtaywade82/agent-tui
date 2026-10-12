@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { useStdout } from 'ink';
+import { useStdout } from '@nemesis-oss/termina-core';
 
 export interface ClipboardResult {
   copy: (text: string) => boolean;

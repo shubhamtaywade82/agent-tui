@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput } from '@nemesis-oss/termina-core';
 import { Spinner } from './ui/spinner/index.js';
 import { Stepper, type Step } from './ui/stepper/index.js';
 import { parseMarkdownBlocks, wrapTextLine } from './ui/markdown/index.js';

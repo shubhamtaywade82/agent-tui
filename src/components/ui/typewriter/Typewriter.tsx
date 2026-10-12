@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Text } from 'ink';
+import { Text } from '@nemesis-oss/termina-core';
 import { darkTheme } from '../_core.js';
 import type { InkUITheme } from '../_core.js';
 

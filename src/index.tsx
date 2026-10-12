@@ -1,29 +1,15 @@
 import React from 'react';
-import { render } from 'ink';
+import { render } from '@nemesis-oss/termina-core';
 import App from './App.js';
 import { initLogger } from './logger.js';
 
 initLogger();
 
-// Switch to alternate screen buffer to prevent shell scrollback flicker
-if (process.stdout.isTTY) {
-  process.stdout.write('\x1b[?1049h\x1b[H');
-}
-
-render(<App />);
-
-const cleanup = () => {
-  if (process.stdout.isTTY) {
-    process.stdout.write('\x1b[?1049l');
-  }
-};
-
-process.on('exit', cleanup);
-process.on('SIGINT', () => {
-  cleanup();
-  process.exit(0);
+// Termina manages alternate screen buffer and mouse tracking cleanly on mount and exit
+const instance = render(<App />, {
+  alternateScreen: true,
+  mouse: true,
 });
-process.on('SIGTERM', () => {
-  cleanup();
-  process.exit(0);
-});
+
+await instance.waitUntilExit();
+

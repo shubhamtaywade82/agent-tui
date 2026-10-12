@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Box, Text, useInput, useApp, useStdin } from 'ink';
+import { Box, Text, useInput, useApp, useStdin } from '@nemesis-oss/termina-core';
 import { darkTheme } from '../_core.js';
 import type { InkUITheme } from '../_core.js';
 

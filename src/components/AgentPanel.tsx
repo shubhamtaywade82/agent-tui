@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text } from '@nemesis-oss/termina-core';
 import { Agent, defineTool, ToolRegistry, OllamaClient, type AgentTurn } from '@nemesis-oss/ollama-sdk';
 import { z } from 'zod';
 import { Badge } from '../components/ui/badge';

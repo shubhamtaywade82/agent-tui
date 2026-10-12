@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
-import { useInput } from 'ink';
-import type { Key } from 'ink';
+import { useInput } from '@nemesis-oss/termina-core';
+import type { Key } from '@nemesis-oss/termina-core';
 
 export interface KeyBinding {
   key: string;

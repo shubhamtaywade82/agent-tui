@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Text, useStdout } from 'ink';
+import { Box, Text, useWindowSize } from '@nemesis-oss/termina-core';
 import stringWidth from 'string-width';
 import { borderStyles, darkTheme } from '../_core.js';
 import type { BorderStyle, InkUITheme } from '../_core.js';
@@ -77,16 +77,7 @@ export function Panel({
   titleColor: _titleColor,
   theme = darkTheme,
 }: PanelProps) {
-  const { stdout } = useStdout();
-
-  // Track terminal width for auto-sizing
-  const [termCols, setTermCols] = useState(stdout?.columns ?? 80);
-  useEffect(() => {
-    if (!stdout) return;
-    const handler = () => setTermCols(stdout.columns ?? 80);
-    stdout.on('resize', handler);
-    return () => { stdout.off('resize', handler); };
-  }, [stdout]);
+  const { columns: termCols } = useWindowSize();
 
   const chars = borderStyles[borderStyle];
   const bc = borderColor ?? theme.colors.border;

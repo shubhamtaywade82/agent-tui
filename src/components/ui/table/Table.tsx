@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Text, useStdout } from 'ink';
+import { Box, Text, useWindowSize } from '@nemesis-oss/termina-core';
 import { borderStyles, darkTheme } from '../_core.js';
 import type { BorderStyle, InkUITheme } from '../_core.js';
 
@@ -172,8 +172,7 @@ export function Table<T extends Record<string, unknown> = Record<string, unknown
   borderStyle = 'single',
   theme = darkTheme,
 }: TableProps<T>) {
-  const { stdout } = useStdout();
-  const termWidth = stdout?.columns ?? 80;
+  const { columns: termWidth } = useWindowSize();
   return (
     <Box flexDirection="column">
       {renderTableLines(columns, data, { borderStyle, theme, maxWidth: termWidth })}

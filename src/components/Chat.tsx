@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { existsSync, readFileSync, writeFileSync } from 'fs'; import { Box, Text, useInput } from 'ink';
+import { existsSync, readFileSync, writeFileSync } from 'fs'; import { Box, Text, useInput } from '@nemesis-oss/termina-core';
 import { TextInput } from './ui/text-input/index.js'; import { Divider } from './ui/divider/index.js';
 import { OllamaClient, Message } from '@nemesis-oss/ollama-sdk'; import { ToastStack, useToast } from './ui/toast/index.js'; import { ScrollArea } from './ui/scroll-area/index.js';
 import { useFocusManager, useTerminalSize } from './ui/hooks/index.js';
