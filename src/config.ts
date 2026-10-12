@@ -22,7 +22,7 @@ if (existsSync(envPath)) {
   dotenv.config({ path: envPath, override: false });
 }
 
-export type ProviderName = 'ollama' | 'openai' | 'anthropic' | 'zai';
+export type ProviderName = 'ollama' | 'openai' | 'anthropic';
 
 export interface OllamaEndpointConfig {
   name: string;
@@ -61,15 +61,25 @@ export interface ProviderConfig {
     baseUrl: string;
     defaultModel: string;
   };
-  zai: {
-    apiKey?: string;
-    baseUrl: string;
-    defaultModel: string;
-  };
+}
+
+/** OpenAI media endpoints (image generation and editing, vision, speech, transcription). */
+export interface MediaConfig {
+  /** Falls back to OPENAI_API_KEY. */
+  apiKey?: string;
+  /** OpenAI-compatible base URL, including the version path. */
+  baseUrl: string;
+  imageModel: string;
+  visionModel: string;
+  ttsModel: string;
+  ttsVoice: string;
+  transcriptionModel: string;
 }
 
 export interface AgentConfig {
   provider: ProviderConfig;
+  /** OpenAI media settings used by the image, vision, speech and transcription tools. */
+  media: MediaConfig;
   /** Max agentic reasoning iterations per run. */
   maxIterations: number;
   /** Wall-clock ceiling per run in ms. */
@@ -144,6 +154,27 @@ function ollamaRoutingMode(): OllamaRoutingMode {
   return 'local-first';
 }
 
+/**
+ * Normalize an OpenAI-compatible base URL. The official `openai` SDK appends
+ * `/chat/completions`, `/images/generations`, and similar paths directly to `baseURL`,
+ * so the version segment must be part of it. A bare origin such as
+ * `https://api.openai.com` gets `/v1`. Any other path is used as given, for example
+ * Z.ai's `https://api.z.ai/api/paas/v4`. Query strings are kept.
+ */
+export function normalizeOpenAIBaseUrl(raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    throw new Error(`Invalid OpenAI-compatible base URL: "${raw}"`);
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`OpenAI-compatible base URL must use http or https: "${raw}"`);
+  }
+  const path = url.pathname.replace(/\/+$/, '') || '/v1';
+  return `${url.origin}${path}${url.search}`;
+}
+
 export function loadConfig(): AgentConfig {
   const ollamaHost = env('OLLAMA_HOST', 'http://localhost:11434');
   const cloudKey = env('OLLAMA_API_KEY') || undefined;
@@ -187,11 +218,15 @@ export function loadConfig(): AgentConfig {
         baseUrl: env('ANTHROPIC_BASE_URL', 'https://api.anthropic.com'),
         defaultModel: env('ANTHROPIC_MODEL', 'claude-3-5-sonnet-20241022'),
       },
-      zai: {
-        apiKey: env('ZAI_API_KEY') || undefined,
-        baseUrl: env('ZAI_BASE_URL', 'https://api.z.ai/api/paas/v4'),
-        defaultModel: env('ZAI_MODEL', 'glm-4.6'),
-      },
+    },
+    media: {
+      apiKey: env('OPENAI_MEDIA_API_KEY') || env('OPENAI_API_KEY') || undefined,
+      baseUrl: env('OPENAI_MEDIA_BASE_URL', 'https://api.openai.com/v1'),
+      imageModel: env('OPENAI_IMAGE_MODEL', 'gpt-image-1'),
+      visionModel: env('OPENAI_VISION_MODEL', 'gpt-4o-mini'),
+      ttsModel: env('OPENAI_TTS_MODEL', 'tts-1'),
+      ttsVoice: env('OPENAI_TTS_VOICE', 'alloy'),
+      transcriptionModel: env('OPENAI_TRANSCRIPTION_MODEL', 'whisper-1'),
     },
     maxIterations: envInt('AGENT_MAX_ITERATIONS', 12),
     wallTimeMs: envInt('AGENT_WALL_TIME_MS', 120_000),
@@ -232,7 +267,6 @@ export function hasCredential(provider: ProviderName, cfg: AgentConfig): boolean
     case 'ollama': return cfg.provider.ollama.endpoints.some((e) => Boolean(e.apiKey)) || true;
     case 'openai': return Boolean(cfg.provider.openai.apiKey);
     case 'anthropic': return Boolean(cfg.provider.anthropic.apiKey);
-    case 'zai': return Boolean(cfg.provider.zai.apiKey);
   }
 }
 

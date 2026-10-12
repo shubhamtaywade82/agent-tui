@@ -1,13 +1,18 @@
 /**
  * Multi-provider LLM abstraction.
  *
- * Unifies Ollama, OpenAI-compatible, Anthropic-compatible, and Z.ai (GLM)
- * behind a single `LLMProvider` interface so the agent loop, tools, CLI, and
+ * Unifies Ollama, OpenAI-compatible endpoints (OpenAI, Z.ai GLM, vLLM, ...), and
+ * Anthropic-compatible APIs behind a single `LLMProvider` interface so the agent loop, tools, CLI, and
  * server can swap providers without touching call-sites.
  */
-import { OllamaClient, HttpClient, OpenAICompatClient, AnthropicCompatClient } from '@nemesis-oss/ollama-sdk';
-import ZAI from 'z-ai-web-dev-sdk';
-import { loadConfig, type AgentConfig, type ProviderName } from './config.js';
+import { OllamaClient, HttpClient, AnthropicCompatClient } from '@nemesis-oss/ollama-sdk';
+import OpenAI from 'openai';
+import type {
+  ChatCompletionCreateParamsBase,
+  ChatCompletionMessageParam,
+  ChatCompletionTool,
+} from 'openai/resources/chat/completions';
+import { loadConfig, normalizeOpenAIBaseUrl, type AgentConfig, type ProviderName } from './config.js';
 import { buildOllamaClientOptions } from './ollama-endpoints.js';
 import { log } from './logger.js';
 
@@ -159,67 +164,125 @@ class OllamaProvider implements LLMProvider {
 // OpenAI-compatible provider
 // ---------------------------------------------------------------------------
 
+/** Map an internal message to the OpenAI wire format. Tool results must carry the id of the call they answer. */
+function toWireMessage(m: ChatMessage): ChatCompletionMessageParam {
+  switch (m.role) {
+    case 'system': return { role: 'system', content: m.content };
+    case 'user': return { role: 'user', content: m.content };
+    case 'tool':
+      if (!m.tool_call_id) throw new Error('OpenAI-compatible providers require tool_call_id on tool results');
+      return { role: 'tool', tool_call_id: m.tool_call_id, content: m.content };
+    case 'assistant':
+      if (!m.tool_calls?.length) return { role: 'assistant', content: m.content };
+      return {
+        role: 'assistant',
+        content: m.content || null,
+        tool_calls: m.tool_calls.map((tc) => {
+          if (!tc.id) throw new Error(`Tool call "${tc.function.name}" has no id; OpenAI-compatible providers require one`);
+          const args = typeof tc.function.arguments === 'string' ? tc.function.arguments : JSON.stringify(tc.function.arguments ?? {});
+          return { id: tc.id, type: 'function' as const, function: { name: tc.function.name, arguments: args } };
+        }),
+      };
+  }
+}
+
+function toWireTool(t: ToolDefinition): ChatCompletionTool {
+  return { type: 'function', function: { name: t.function.name, description: t.function.description, parameters: t.function.parameters } };
+}
+
+/** Tool arguments arrive as a JSON string. Keep unparseable text raw so the registry reports the error to the model. */
+function parseArguments(raw: string): unknown {
+  if (!raw.trim()) return {};
+  try { return JSON.parse(raw); } catch { return raw; }
+}
+
+// The OpenAI-compatible provider runs on the official `openai` SDK. The SDK appends
+// `/chat/completions` to `baseURL`, so the version segment must be part of it (see
+// normalizeOpenAIBaseUrl). Z.ai GLM is served this way at https://api.z.ai/api/paas/v4.
 class OpenAIProvider implements LLMProvider {
   readonly name = 'openai' as const;
   readonly defaultModel: string;
-  private client: OpenAICompatClient;
-  private apiKey?: string;
+  private client: OpenAI;
   constructor(cfg: AgentConfig) {
-    this.apiKey = cfg.provider.openai.apiKey;
-    if (!this.apiKey) throw new Error('OpenAI provider requires OPENAI_API_KEY in .env');
-    const http = new HttpClient({ baseUrl: cfg.provider.openai.baseUrl, apiKey: this.apiKey });
-    this.client = new OpenAICompatClient(http);
+    const apiKey = cfg.provider.openai.apiKey;
+    if (!apiKey) throw new Error('OpenAI provider requires OPENAI_API_KEY in .env');
+    this.client = new OpenAI({ apiKey, baseURL: normalizeOpenAIBaseUrl(cfg.provider.openai.baseUrl) });
     this.defaultModel = cfg.provider.openai.defaultModel;
   }
-  async listModels(signal?: AbortSignal) {
-    const res = await this.client.listModels(signal);
-    return (res.data ?? []).map((m: any) => m.id);
+  async listModels(signal?: AbortSignal): Promise<string[]> {
+    const page = await this.client.models.list({ signal });
+    return page.data.map((m) => m.id);
+  }
+  private request(opts: ChatOptions, model: string): Omit<ChatCompletionCreateParamsBase, 'stream'> {
+    return {
+      model,
+      messages: opts.messages.map(toWireMessage),
+      ...(opts.tools?.length ? { tools: opts.tools.map(toWireTool) } : {}),
+      temperature: opts.temperature ?? 0.7,
+    };
+  }
+  /** Omit unset keys: the SDK rejects an explicit `timeout: undefined` instead of using its default. */
+  private requestOptions(opts: ChatOptions): { signal?: AbortSignal; timeout?: number } {
+    return {
+      ...(opts.signal ? { signal: opts.signal } : {}),
+      ...(opts.timeoutMs !== undefined ? { timeout: opts.timeoutMs } : {}),
+    };
   }
   async chat(opts: ChatOptions): Promise<ChatResult> {
-    const res = await this.client.chatCompletions({
-      model: opts.model ?? this.defaultModel,
-      messages: opts.messages as any,
-      tools: opts.tools as any,
-      temperature: opts.temperature ?? 0.7,
-    });
-    const choice = res.choices?.[0];
+    const model = opts.model ?? this.defaultModel;
+    const res = await this.client.chat.completions.create({ ...this.request(opts, model), stream: false }, this.requestOptions(opts));
+    const message = res.choices[0]?.message;
+    const reasoning = (message as { reasoning_content?: string | null } | undefined)?.reasoning_content;
+    const toolCalls: ToolCall[] = [];
+    for (const tc of message?.tool_calls ?? []) {
+      if (tc.type === 'function') toolCalls.push({ id: tc.id, function: { name: tc.function.name, arguments: parseArguments(tc.function.arguments) } });
+    }
     return {
-      content: String(choice?.message?.content ?? ''),
-      tool_calls: (choice?.message?.tool_calls as ToolCall[] | undefined)?.map((t: any) => ({ id: t.id, function: { name: t.function?.name ?? '', arguments: t.function?.arguments ?? {} } })),
-      usage: res.usage ? { inputTokens: res.usage.prompt_tokens ?? 0, outputTokens: res.usage.completion_tokens ?? 0 } : undefined,
-      model: opts.model ?? this.defaultModel,
+      content: message?.content ?? '',
+      thinking: reasoning || undefined,
+      tool_calls: toolCalls.length ? toolCalls : undefined,
+      usage: res.usage ? { inputTokens: res.usage.prompt_tokens, outputTokens: res.usage.completion_tokens } : undefined,
+      model,
     };
   }
   async chatStream(opts: ChatOptions, cb?: StreamCallbacks): Promise<ChatResult> {
-    const stream = await this.client.chatCompletions({
-      model: opts.model ?? this.defaultModel,
-      messages: opts.messages as any,
-      tools: opts.tools as any,
-      temperature: opts.temperature ?? 0.7,
-      stream: true,
-    }, opts.signal);
-    let content = ''; const toolCalls: ToolCall[] = [];
+    const model = opts.model ?? this.defaultModel;
+    const stream = await this.client.chat.completions.create({ ...this.request(opts, model), stream: true }, this.requestOptions(opts));
+    let content = ''; let thinking = '';
+    // Tool-call arguments are streamed in fragments keyed by `index`; accumulate per slot.
+    const pending = new Map<number, { id?: string; name: string; args: string }>();
     for await (const chunk of stream) {
-      const delta = chunk.choices?.[0]?.delta;
-      if (delta?.content) { content += delta.content; cb?.onToken?.(delta.content); }
-      if (delta?.tool_calls) {
-        for (const tc of delta.tool_calls) {
-          if (tc.function?.name) {
-            const full: ToolCall = { id: tc.id, function: { name: tc.function.name, arguments: tc.function.arguments ?? '' } };
-            toolCalls.push(full); cb?.onToolCall?.(full);
-          }
-        }
+      const delta = chunk.choices[0]?.delta;
+      if (!delta) continue;
+      if (delta.content) { content += delta.content; cb?.onToken?.(delta.content); }
+      // `reasoning_content` is the de-facto reasoning field (GLM, DeepSeek, vLLM); it is not in the OpenAI types.
+      const reasoning = (delta as { reasoning_content?: string | null }).reasoning_content;
+      if (reasoning) { thinking += reasoning; cb?.onThinking?.(reasoning); }
+      for (const part of delta.tool_calls ?? []) {
+        const slot = pending.get(part.index) ?? { name: '', args: '' };
+        if (part.id) slot.id = part.id;
+        if (part.function?.name && !slot.name) slot.name = part.function.name;
+        if (part.function?.arguments) slot.args += part.function.arguments;
+        pending.set(part.index, slot);
       }
     }
-    return { content, tool_calls: toolCalls.length ? toolCalls : undefined, model: opts.model ?? this.defaultModel };
+    const toolCalls: ToolCall[] = [];
+    for (const slot of pending.values()) {
+      if (!slot.name) continue;
+      const tc: ToolCall = { id: slot.id, function: { name: slot.name, arguments: parseArguments(slot.args) } };
+      toolCalls.push(tc);
+      cb?.onToolCall?.(tc);
+    }
+    return { content, thinking: thinking || undefined, tool_calls: toolCalls.length ? toolCalls : undefined, model };
   }
   async generate(prompt: string, opts?: Partial<ChatOptions>): Promise<string> {
     const r = await this.chat({ ...opts, messages: [{ role: 'user', content: prompt }] });
     return r.content;
   }
   async embed(model: string, input: string | readonly string[]): Promise<readonly number[][]> {
-    const res = await this.client.embeddings({ model, input: Array.isArray(input) ? input : [input] });
-    return (res.data ?? []).map((d: any) => d.embedding);
+    // Ask for floats explicitly: when encoding_format is unset the SDK expects base64 and decodes float arrays to [].
+    const res = await this.client.embeddings.create({ model, input: typeof input === 'string' ? input : [...input], encoding_format: 'float' });
+    return res.data.map((d) => d.embedding);
   }
 }
 
@@ -295,59 +358,6 @@ class AnthropicProvider implements LLMProvider {
 }
 
 // ---------------------------------------------------------------------------
-// Z.ai (GLM) provider — wraps the z-ai-web-dev-sdk
-// ---------------------------------------------------------------------------
-
-class ZaiProvider implements LLMProvider {
-  readonly name = 'zai' as const;
-  readonly defaultModel: string;
-  private zai: ZAI;
-  private constructor(zai: ZAI, model: string) { this.zai = zai; this.defaultModel = model; }
-  static async create(cfg: AgentConfig): Promise<ZaiProvider> {
-    if (!cfg.provider.zai.apiKey) throw new Error('Z.ai provider requires ZAI_API_KEY in .env');
-    process.env.ZAI_API_KEY = cfg.provider.zai.apiKey;
-    process.env.ZAI_BASE_URL = cfg.provider.zai.baseUrl;
-    const zai = await ZAI.create();
-    return new ZaiProvider(zai, cfg.provider.zai.defaultModel);
-  }
-  get raw(): ZAI { return this.zai; }
-  async listModels(): Promise<string[]> {
-    return ['glm-4.6', 'glm-4.5v', 'glm-4.5-air', 'glm-4.5', 'glm-4-air', 'glm-4-flash'];
-  }
-  async chat(opts: ChatOptions): Promise<ChatResult> {
-    const res = await this.zai.chat.completions.create({
-      model: opts.model ?? this.defaultModel,
-      messages: opts.messages.filter((m) => m.role !== 'tool').map((m) => ({ role: m.role as 'system' | 'user' | 'assistant', content: m.content })),
-      thinking: { type: opts.think === false ? 'disabled' : 'enabled' },
-    });
-    const choice = res?.choices?.[0];
-    return { content: String(choice?.message?.content ?? ''), model: opts.model ?? this.defaultModel };
-  }
-  async chatStream(opts: ChatOptions, cb?: StreamCallbacks): Promise<ChatResult> {
-    const res = await this.zai.chat.completions.create({
-      model: opts.model ?? this.defaultModel,
-      messages: opts.messages.filter((m) => m.role !== 'tool').map((m) => ({ role: m.role as 'system' | 'user' | 'assistant', content: m.content })),
-      stream: true,
-      thinking: { type: opts.think === false ? 'disabled' : 'enabled' },
-    });
-    let content = '';
-    for await (const chunk of res as any) {
-      const delta = chunk?.choices?.[0]?.delta;
-      if (delta?.reasoning_content) cb?.onThinking?.(delta.reasoning_content);
-      if (delta?.content) { content += delta.content; cb?.onToken?.(delta.content); }
-    }
-    return { content, model: opts.model ?? this.defaultModel };
-  }
-  async generate(prompt: string, opts?: Partial<ChatOptions>): Promise<string> {
-    const r = await this.chat({ ...opts, messages: [{ role: 'user', content: prompt }] });
-    return r.content;
-  }
-  async embed(): Promise<readonly number[][]> {
-    throw new Error('Z.ai embeddings not supported via this provider; use ollama or openai');
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Helpers & factory
 // ---------------------------------------------------------------------------
 
@@ -387,7 +397,15 @@ export function parseTextToolCalls(text: string): ToolCall[] {
   return calls;
 }
 
-/** Build (and cache) the active provider. Z.ai is async so we keep a promise. */
+/** Error for providers that were removed or never existed. Names the replacement for removed ones. */
+export function unsupportedProviderError(name: string): Error {
+  if (name === 'zai') {
+    return new Error('AGENT_PROVIDER=zai was removed. Z.ai is OpenAI-compatible: set AGENT_PROVIDER=openai, OPENAI_BASE_URL=https://api.z.ai/api/paas/v4, OPENAI_API_KEY=<your Z.ai key>, OPENAI_MODEL=glm-4.6.');
+  }
+  return new Error(`Unknown AGENT_PROVIDER "${name}". Expected ollama | openai | anthropic.`);
+}
+
+/** Build (and cache) the active provider. */
 let _provider: LLMProvider | null = null;
 let _providerPromise: Promise<LLMProvider> | null = null;
 
@@ -398,7 +416,7 @@ export function getProvider(cfg?: AgentConfig): LLMProvider {
     case 'ollama': _provider = new OllamaProvider(c); return _provider;
     case 'openai': _provider = new OpenAIProvider(c); return _provider;
     case 'anthropic': _provider = new AnthropicProvider(c); return _provider;
-    case 'zai': throw new Error('Z.ai provider is async — use getProviderAsync()');
+    default: throw unsupportedProviderError(c.provider.active);
   }
 }
 
@@ -410,7 +428,7 @@ export async function getProviderAsync(cfg?: AgentConfig): Promise<LLMProvider> 
       case 'ollama': return _provider = new OllamaProvider(c);
       case 'openai': return _provider = new OpenAIProvider(c);
       case 'anthropic': return _provider = new AnthropicProvider(c);
-      case 'zai': return _provider = await ZaiProvider.create(c);
+      default: throw unsupportedProviderError(c.provider.active);
     }
   })();
   try {
@@ -428,7 +446,4 @@ export function resetProvider(): void { _provider = null; _providerPromise = nul
 /** Get the raw underlying client (for Ollama-specific features like webSearch/webFetch). */
 export function rawOllama(): OllamaClient | null {
   return _provider instanceof OllamaProvider ? _provider.raw : null;
-}
-export function rawZai(): ZAI | null {
-  return _provider instanceof ZaiProvider ? _provider.raw : null;
 }
