@@ -5,7 +5,7 @@
  *
  * Replaces the minimal `runner` (calculator-only) with a full-featured agent
  * that can reason, call tools, observe results, and iterate — across Ollama,
- * OpenAI, Anthropic, and Z.ai providers.
+ * OpenAI-compatible (including Z.ai GLM), and Anthropic providers.
  */
 import { getProviderAsync, parseTextToolCalls, rawOllama, type LLMProvider, type ChatMessage, type ToolCall, type StreamCallbacks } from './providers.js';
 import { getToolRegistry, closeToolRegistry } from './toolbox/index.js';

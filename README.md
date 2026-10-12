@@ -1,14 +1,14 @@
 # Agentic TUI
 
-A multi-mode AI agent for personal use — an interactive **terminal UI**, a fully scriptable **headless CLI**, and an **HTTP API server**, all powered by a unified multi-provider LLM layer (Ollama, OpenAI, Anthropic, Z.ai/GLM) with MCP tools, RAG, and multimodal capabilities.
+A multi-mode AI agent for personal use — an interactive **terminal UI**, a fully scriptable **headless CLI**, and an **HTTP API server**, all powered by a unified multi-provider LLM layer (Ollama, OpenAI-compatible endpoints including Z.ai GLM, Anthropic) with MCP tools, RAG, and multimodal capabilities.
 
 ## What it does
 
-Built on `@nemesis-oss/ollama-sdk` + `z-ai-web-dev-sdk` + Ink (React for terminals), this project gives you a single agent that can:
+Built on `@nemesis-oss/ollama-sdk` + the official `openai` SDK + Ink (React for terminals), this project gives you a single agent that can:
 
 - **Reason & iterate** — think → call tools → observe → respond, across up to 12 iterations per run.
-- **Talk to any LLM** — Ollama (local), OpenAI-compatible (GPT-4o), Anthropic (Claude), or Z.ai (GLM-4.6). Swap with one env var.
-- **Use 46+ tools** — filesystem, git, web search, code execution, embeddings/RAG, image generation, vision, TTS/ASR, and MCP servers (memory, time, fetch, sequential-thinking, Binance).
+- **Talk to any LLM** — Ollama (local), OpenAI (GPT-4o), any OpenAI-compatible endpoint such as Z.ai (GLM-4.6), or Anthropic (Claude). Swap with one env var.
+- **Use 45+ tools** — filesystem, git, web search, code execution, embeddings/RAG, image generation, vision, TTS/ASR, and MCP servers (memory, time, fetch, sequential-thinking, Binance).
 - **Run three ways** — interactive TUI (`npm start`), headless CLI (`agent-tui run "..."`), or HTTP API (`agent-tui serve`).
 - **Persist conversations** — sessions saved as JSON, resumable, exportable to Markdown.
 - **Stay secure** — secrets live in `.env` (git-ignored); the GitHub token is injected at runtime and never persisted.
@@ -33,7 +33,7 @@ npm start
 # 4. Or use the headless CLI
 npx tsx src/index.ts run "Explain the architecture of this project"
 npx tsx src/index.ts doctor        # check provider/tool health
-npx tsx src/index.ts tools list    # list all 46+ tools
+npx tsx src/index.ts tools list    # list all 45+ tools
 npx tsx src/index.ts serve 8787    # start the HTTP API server
 ```
 
@@ -115,20 +115,35 @@ Switch providers by setting `AGENT_PROVIDER` in `.env`:
 | `ollama` | `OLLAMA_HOST` (local), optional `OLLAMA_API_KEY` (cloud) | `qwen3:8b` |
 | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` |
 | `anthropic` | `ANTHROPIC_API_KEY` | `claude-3-5-sonnet-20241022` |
-| `zai` | `ZAI_API_KEY` | `glm-4.6` |
+
+**Z.ai (GLM) and other OpenAI-compatible endpoints:** use the `openai` provider with a different base URL. Z.ai’s chat endpoint is at the OpenAI-compatible route (`/chat/completions` under `https://api.z.ai/api/paas/v4`), so no vendor SDK is needed:
+
+```bash
+AGENT_PROVIDER=openai
+OPENAI_API_KEY=your-zai-key
+OPENAI_BASE_URL=https://api.z.ai/api/paas/v4
+OPENAI_MODEL=glm-4.6
+```
+
+The base URL includes the API version path. A bare origin such as `https://api.openai.com` gets `/v1` appended. A base without a version segment, such as `https://gw.example/llm`, gets `/v1` appended after it. A query string such as `?api-version=...` is sent with every request. Credentials in the URL are rejected, so put the key in `OPENAI_API_KEY`.
+
+**Migrating from the old `zai` provider:** `AGENT_PROVIDER=zai`, `ZAI_API_KEY`, `ZAI_BASE_URL`, and `ZAI_MODEL` were removed. Use `AGENT_PROVIDER=openai`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL` as shown above. Starting with `AGENT_PROVIDER=zai` fails with these instructions. The image, speech, and transcription tools now call the OpenAI media API (configured with `OPENAI_MEDIA_*`). `read_web_page` is now `web_fetch`. `search_images` was removed because no standard API in this stack provides it.
+
+**Media tools key:** `generate_image`, `analyze_image`, `text_to_speech`, `transcribe_audio`, and `edit_image` use `OPENAI_MEDIA_API_KEY` with `OPENAI_MEDIA_BASE_URL` (default `https://api.openai.com/v1`). They reuse `OPENAI_API_KEY` only when both chat and media use `api.openai.com`, so a Z.ai key in `OPENAI_API_KEY` is never sent to OpenAI. With Z.ai chat, set `OPENAI_MEDIA_API_KEY` to an OpenAI key to keep the media tools.
 
 **Ollama local + cloud:** set `OLLAMA_API_KEY` (from [ollama.com](https://ollama.com)) and optionally `OLLAMA_CLOUD_URL=https://ollama.com`. The client registers **local** (`OLLAMA_HOST`) and **cloud** endpoints with failover (`local-first` or `cloud-first` via `AGENT_OLLAMA_ROUTING`). Pin cloud-only models with `OLLAMA_CLOUD_MODELS`. With `AGENT_OLLAMA_ROUTING=auto` and `OLLAMA_CLOUD_MODEL`, the agent escalates on **heavy prompts**, **mid-run** (after `AGENT_OLLAMA_ESCALATE_AFTER_TOOLS` / `AGENT_OLLAMA_ESCALATE_AFTER_ITER` tool rounds), or **loop-guard** repeats. Optional `OLLAMA_ROUTER_MODEL` + `AGENT_OLLAMA_ROUTER=hybrid` uses a tiny classifier for borderline tasks.
 
 All providers implement a unified interface: `chat()`, `chatStream()`, `generate()`, `embed()`, `listModels()`. The agent loop and tools are provider-agnostic.
 
-## Tool Suite (46+ tools)
+## Tool Suite (45+ tools)
 
-### Local tools (21)
+### Local tools (20)
 - **Calculator** — safe expression evaluator (+, -, *, /, %, **, sqrt, sin, cos, log)
 - **Code execution** — `run_code` (JS/TS sandbox), `run_shell` (shell commands with deny-list)
 - **Filesystem** — `read_files`, `write_file`, `list_tree`, `clone_repo`, `delete_path`
 - **RAG / embeddings** — `index_document`, `semantic_search`, `list_vector_stores` (local vector store, no external DB)
-- **Z.ai multimodal** — `generate_image`, `analyze_image` (vision), `text_to_speech`, `transcribe_audio` (ASR), `web_search`, `read_web_page`, `search_images`, `edit_image`
+- **Media (OpenAI API)** — `generate_image`, `analyze_image` (vision), `text_to_speech`, `transcribe_audio` (ASR), `edit_image`
+- **Web (Ollama Cloud, needs `OLLAMA_API_KEY`)** — `web_search`, `web_fetch`
 - **Skills** — `list_skills`, `read_skill` (ruby-agent-skills pack — 93 skills covering Ruby, Rails, TypeScript, React, OOP, Clean Code, testing, refactoring, architecture). Auto-detected from `.agent/skills/` after `agent-tui bootstrap`; agent loads relevant skills proactively before coding tasks.
 
 ### MCP servers (auto-discovered)
@@ -185,7 +200,9 @@ src/
 ├── tools.ts           # Original tools + MCP server management
 ├── toolbox/           # New tool suite
 │   ├── index.ts       # Registry aggregator (local + MCP)
-│   ├── zai.ts         # Image gen, vision, TTS, ASR, web search
+│   ├── media.ts       # OpenAI image gen/edit, vision, TTS, ASR
+│   ├── media-ops.ts   # OpenAI media API calls (official SDK)
+│   ├── web.ts         # Ollama Cloud web search and fetch
 │   ├── code.ts        # Code execution & shell sandbox
 │   ├── embeddings.ts  # RAG: index_document, semantic_search
 │   └── files.ts       # Enhanced file ops & repo cloning
@@ -204,7 +221,7 @@ src/
 | `npm run serve` | Start the HTTP API server (port 8787) |
 | `npm run doctor` | Diagnose provider/tool/MCP health |
 | `npm run typecheck` | Type-check without emitting |
-| `npm test` | Run the task-runtime test suite |
+| `npm test` | Run the unit suites: tasks, context guard, Ollama routing, OpenAI provider, media tools, web tools |
 | `npm run build` | Compile TypeScript to `dist/` |
 
 ## MiniCPM5 Supervisor (orchestration layer)

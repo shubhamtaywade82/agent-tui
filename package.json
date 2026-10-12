@@ -1,7 +1,7 @@
 {
   "name": "agentic-tui",
   "version": "2.0.0",
-  "description": "Agentic TUI + Headless CLI + API server — multi-provider AI agent (Ollama, OpenAI, Anthropic, Z.ai) with MCP, RAG, multimodal tools, and the MiniCPM5 Supervisor orchestration layer",
+  "description": "Agentic TUI + Headless CLI + API server — multi-provider AI agent (Ollama, OpenAI-compatible endpoints incl. Z.ai GLM, Anthropic) with MCP, RAG, multimodal tools, and the MiniCPM5 Supervisor orchestration layer",
   "main": "src/index.ts",
   "bin": {
     "agent-tui": "src/index.ts"
@@ -18,7 +18,7 @@
     "demo": "tsx src/index.ts run 'Use the calculator tool to compute 125 * 38 and explain the result.'",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/tasks.test.ts test/context-guard.test.ts test/ollama-routing.test.ts",
+    "test": "node --import tsx --test test/tasks.test.ts test/context-guard.test.ts test/ollama-routing.test.ts test/openai-provider.test.ts test/media-tools.test.ts test/web-tools.test.ts",
     "supervisor:serve": "tsx src/supervisor/main.ts",
     "supervisor:typecheck": "tsc --noEmit",
     "supervisor:test": "vitest run",
@@ -49,9 +49,9 @@
     "@fastify/swagger-ui": "^5.2.2",
     "@nemesis-oss/agentic-runtime": "^0.2.1",
     "@nemesis-oss/binance-sdk": "^2.0.0",
-    "@nemesis-oss/ollama-sdk": "^1.8.0",
-    "@nemesis-oss/termina-core": "file:../../libraries/termina/nemesis-oss-termina-core-0.1.0.tgz",
-    "@nemesis-oss/termina-ui": "file:../../libraries/termina/nemesis-oss-termina-ui-0.1.0.tgz",
+    "@nemesis-oss/ollama-sdk": "^1.14.0",
+    "@nemesis-oss/termina-core": "0.1.0",
+    "@nemesis-oss/termina-ui": "0.1.0",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/auto-instrumentations-node": "^0.62.0",
     "@opentelemetry/sdk-node": "^0.203.0",
@@ -72,7 +72,6 @@
     "tree-sitter-javascript": "^0.23.1",
     "tree-sitter-python": "0.23.4",
     "tree-sitter-typescript": "^0.23.2",
-    "z-ai-web-dev-sdk": "^0.0.18",
     "zod": "^3.25.76"
   },
   "devDependencies": {

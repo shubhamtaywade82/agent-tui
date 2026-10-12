@@ -1,7 +1,7 @@
 /**
  * Tool registry aggregator — combines the original tools (calculator,
- * skills) with the new toolbox (z-ai multimodal, code execution, RAG,
- * file ops) and the MCP servers, all behind a single ToolRegistry.
+ * skills) with the new toolbox (OpenAI media, Ollama Cloud web, code execution,
+ * RAG, file ops) and the MCP servers, all behind a single ToolRegistry.
  *
  * Honors the AGENT_TOOLS / AGENT_MCP config: 'all' enables everything,
  * a list filters to named tools. MCP servers can be 'all' | 'none' | list.
@@ -10,7 +10,8 @@ import { ToolRegistry, defineTool } from '@nemesis-oss/ollama-sdk';
 import { z } from 'zod';
 import { loadConfig, isMcpEnabled, type AgentConfig } from '../config.js';
 import { log } from '../logger.js';
-import { zaiTools } from './zai.js';
+import { mediaTools } from './media.js';
+import { webTools } from './web.js';
 import { execTools } from './code.js';
 import { ragTools } from './embeddings.js';
 import { fileTools } from './files.js';
@@ -49,7 +50,8 @@ export const allLocalTools = [
   safeCalculator,
   listSkillsTool,
   readSkillTool,
-  ...zaiTools,
+  ...mediaTools,
+  ...webTools,
   ...execTools,
   ...ragTools,
   ...fileTools,

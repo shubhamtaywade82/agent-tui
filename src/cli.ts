@@ -46,7 +46,7 @@ COMMANDS:
   serve [port]           Start the HTTP API server (default 8787).
 
 OPTIONS (apply to run/repl/batch):
-  -p, --provider <name>   Provider: ollama | openai | anthropic | zai
+  -p, --provider <name>   Provider: ollama | openai | anthropic
   -m, --model <name>      Override the model
   -p, --max-iter <n>      Max reasoning iterations (default 12)
       --no-stream         Disable streaming (wait for full response)
@@ -61,7 +61,7 @@ OPTIONS (apply to run/repl/batch):
 EXAMPLES:
   agent-tui run "Explain the architecture of this project"
   cat error.log | agent-tui run "diagnose this error" --json
-  agent-tui run "draw a cat" -p zai --json
+  agent-tui run "draw a cat" -p openai --json
   agent-tui batch questions.txt --json > answers.json
   agent-tui repl -p ollama -m qwen3:8b
   agent-tui sessions list
