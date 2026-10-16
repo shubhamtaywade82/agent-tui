@@ -25,6 +25,7 @@ import type {
   Message,
   OllamaStreamEvent,
   OllamaClient,
+  ToolCall,
 } from '@nemesis-oss/ollama-sdk';
 
 /* ------------------------------------------------------------------ *
@@ -359,5 +360,287 @@ describe('ollama-bridge — abort handling', () => {
       signal: controller.signal,
     });
     assert.equal(receivedSignal, controller.signal);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Multi-turn tool execution (step 5 batch 4)
+ * ------------------------------------------------------------------ */
+
+describe('ollama-bridge — multi-turn tool execution', () => {
+  /**
+   * Fake client that returns a different stream each call. Useful for
+   * simulating "first turn requests a tool, second turn gives the final
+   * answer after seeing the tool result."
+   */
+  function makeMultiTurnClient(turns: readonly FakeStreamOptions[]): Pick<OllamaClient, 'chatStream'> {
+    let call = 0;
+    return {
+      chatStream: async () => {
+        const opts = turns[Math.min(call, turns.length - 1)]!;
+        call++;
+        return makeFakeStream(opts) as never;
+      },
+    };
+  }
+
+  /** A turn that requests a tool call. */
+  function toolRequestTurn(toolName: string, args: Record<string, unknown>, toolCallId = 'tc-1') {
+    return {
+      events: [
+        { type: 'token' as const, data: { delta: `Let me call ${toolName}.` } },
+        {
+          type: 'tool_call' as const,
+          data: {
+            toolCall: {
+              id: toolCallId,
+              function: { name: toolName, arguments: args },
+            },
+          },
+        },
+        {
+          type: 'done' as const,
+          data: {
+            result: {
+              message: {
+                role: 'assistant' as const,
+                content: `Let me call ${toolName}.`,
+                tool_calls: [
+                  { id: toolCallId, function: { name: toolName, arguments: args } },
+                ],
+              },
+              model: 'fake',
+              done: true,
+              usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+            } satisfies ChatStreamResult,
+          },
+        },
+      ],
+    } satisfies FakeStreamOptions;
+  }
+
+  /** A turn that gives the final answer (no tool calls). */
+  function finalAnswerTurn(answer: string) {
+    return {
+      events: [
+        { type: 'token' as const, data: { delta: answer } },
+        {
+          type: 'done' as const,
+          data: {
+            result: {
+              message: { role: 'assistant' as const, content: answer },
+              model: 'fake',
+              done: true,
+              usage: { promptTokens: 20, completionTokens: 10, totalTokens: 30 },
+            } satisfies ChatStreamResult,
+          },
+        },
+      ],
+    } satisfies FakeStreamOptions;
+  }
+
+  test('executes tool calls and loops for a second turn', async () => {
+    const { cb, getState } = makeTestState();
+    const client = makeMultiTurnClient([
+      toolRequestTurn('read_file', { path: '/etc/hosts' }, 'tc-1'),
+      finalAnswerTurn('The file contains localhost entries.'),
+    ]);
+    const onToolCallCalls: string[] = [];
+    const onToolCall = async (tc: { function: { name: string }; id?: string }) => {
+      onToolCallCalls.push(tc.function.name);
+      return {
+        result: '127.0.0.1 localhost\n',
+        durationMs: 8,
+      };
+    };
+
+    const result = await runOllamaChat(client as unknown as OllamaClient, cb, {
+      model: 'fake',
+      messages: baseMessages,
+      onToolCall,
+    });
+
+    // Two iterations: first requested the tool, second gave the final answer.
+    assert.equal(result.iterations, 2);
+    assert.equal(result.hitIterationLimit, false);
+    assert.deepEqual(onToolCallCalls, ['read_file']);
+
+    const events = getState().events;
+    // Turn 1: thinking(2), assistant(3), tool(4)
+    // Turn 2: thinking(5), assistant(6)
+    // Plus usage events from each turn's finalResult
+    const thinkEvents = events.filter((e) => e.kind === 'thinking');
+    const assistantEvents = events.filter((e) => e.kind === 'assistant');
+    const toolEvents = events.filter((e) => e.kind === 'tool');
+    assert.equal(thinkEvents.length, 2, 'expected two thinking events (one per turn)');
+    assert.equal(assistantEvents.length, 2, 'expected two assistant events (one per turn)');
+    assert.equal(toolEvents.length, 1, 'expected one tool event');
+
+    // The tool event should have been patched with the result + success status
+    const tool = toolEvents[0] as { status: string; result: string; durationMs: number };
+    assert.equal(tool.status, 'success');
+    assert.equal(tool.result, '127.0.0.1 localhost\n');
+    assert.equal(tool.durationMs, 8);
+
+    // The final assistant event is the one returned in the result
+    const finalAssistant = assistantEvents[1] as { text: string };
+    assert.equal(finalAssistant.text, 'The file contains localhost entries.');
+    assert.equal(result.assistantEventId, (assistantEvents[1] as { id: number }).id);
+  });
+
+  test('multiple tool calls in one turn are executed sequentially', async () => {
+    const { cb, getState } = makeTestState();
+    const client = makeMultiTurnClient([
+      {
+        events: [
+          { type: 'token' as const, data: { delta: 'Checking both files.' } },
+          {
+            type: 'tool_call' as const,
+            data: {
+              toolCall: {
+                id: 'tc-a',
+                function: { name: 'read_file', arguments: { path: '/a' } },
+              },
+            },
+          },
+          {
+            type: 'tool_call' as const,
+            data: {
+              toolCall: {
+                id: 'tc-b',
+                function: { name: 'read_file', arguments: { path: '/b' } },
+              },
+            },
+          },
+          {
+            type: 'done' as const,
+            data: {
+              result: {
+                message: {
+                  role: 'assistant' as const,
+                  content: 'Checking both files.',
+                  tool_calls: [
+                    { id: 'tc-a', function: { name: 'read_file', arguments: { path: '/a' } } },
+                    { id: 'tc-b', function: { name: 'read_file', arguments: { path: '/b' } } },
+                  ],
+                },
+                model: 'fake',
+                done: true,
+                usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+              } satisfies ChatStreamResult,
+            },
+          },
+        ],
+      },
+      finalAnswerTurn('Both files exist.'),
+    ]);
+
+    const onToolCall = async (tc: ToolCall) => {
+      const args = tc.function.arguments as { path?: string };
+      return {
+        result: `content of ${args.path ?? '/?'}`,
+        durationMs: 5,
+      };
+    };
+
+    const result = await runOllamaChat(client as unknown as OllamaClient, cb, {
+      model: 'fake',
+      messages: baseMessages,
+      onToolCall,
+    });
+
+    assert.equal(result.iterations, 2);
+    const toolEvents = getState().events.filter((e) => e.kind === 'tool');
+    assert.equal(toolEvents.length, 2);
+    const tool0 = toolEvents[0] as { result: string };
+    const tool1 = toolEvents[1] as { result: string };
+    assert.equal(tool0.result, 'content of /a');
+    assert.equal(tool1.result, 'content of /b');
+  });
+
+  test('tool callback error is surfaced as a failed tool result + error event', async () => {
+    const { cb, getState } = makeTestState();
+    const client = makeMultiTurnClient([
+      toolRequestTurn('run_shell', { command: 'rm -rf /' }, 'tc-bad'),
+      finalAnswerTurn('Cannot proceed.'),
+    ]);
+    const onToolCall = async () => {
+      throw new Error('Permission denied');
+    };
+
+    const result = await runOllamaChat(client as unknown as OllamaClient, cb, {
+      model: 'fake',
+      messages: baseMessages,
+      onToolCall,
+    });
+
+    assert.equal(result.iterations, 2);
+    const events = getState().events;
+    const tool = events.find((e) => e.kind === 'tool') as { status: string; error: string };
+    assert.equal(tool.status, 'error');
+    assert.equal(tool.error, 'Permission denied');
+    const errEvent = events.find((e) => e.kind === 'error') as { category: string };
+    assert.equal(errEvent.category, 'tool_callback_threw');
+  });
+
+  test('maxToolIterations cuts off the agent loop and sets hitIterationLimit', async () => {
+    const { cb } = makeTestState();
+    // Each turn requests the same tool, so the loop never naturally ends.
+    const client = makeMultiTurnClient([
+      toolRequestTurn('loop_tool', {}),
+      toolRequestTurn('loop_tool', {}),
+      toolRequestTurn('loop_tool', {}),
+    ]);
+    const onToolCall = async () => ({ result: 'ok', durationMs: 1 });
+
+    const result = await runOllamaChat(client as unknown as OllamaClient, cb, {
+      model: 'fake',
+      messages: baseMessages,
+      onToolCall,
+      maxToolIterations: 2,
+    });
+
+    assert.equal(result.iterations, 2);
+    assert.equal(result.hitIterationLimit, true);
+  });
+
+  test('omitting onToolCall records tool_call events but does not execute', async () => {
+    const { cb, getState } = makeTestState();
+    const client = makeMultiTurnClient([toolRequestTurn('read_file', { path: '/x' })]);
+    // No onToolCall — the bridge should record the tool call as an event
+    // but NOT execute it or loop.
+    const result = await runOllamaChat(client as unknown as OllamaClient, cb, {
+      model: 'fake',
+      messages: baseMessages,
+    });
+    assert.equal(result.iterations, 1);
+    assert.equal(result.hitIterationLimit, false);
+    const tool = getState().events.find((e) => e.kind === 'tool') as { status: string };
+    // The tool event should remain in 'running' state since nothing executed it.
+    assert.equal(tool.status, 'running');
+  });
+
+  test('final answer (no tool calls) does not loop', async () => {
+    const { cb, getState } = makeTestState();
+    const client = makeMultiTurnClient([finalAnswerTurn('Done.')]);
+    const onToolCallCalls: string[] = [];
+    const onToolCall = async (tc: { function: { name: string } }) => {
+      onToolCallCalls.push(tc.function.name);
+      return { result: 'unused', durationMs: 1 };
+    };
+
+    const result = await runOllamaChat(client as unknown as OllamaClient, cb, {
+      model: 'fake',
+      messages: baseMessages,
+      onToolCall,
+    });
+
+    assert.equal(result.iterations, 1);
+    assert.equal(onToolCallCalls.length, 0);
+    // Only one thinking + one assistant event.
+    const thinkEvents = getState().events.filter((e) => e.kind === 'thinking');
+    const assistantEvents = getState().events.filter((e) => e.kind === 'assistant');
+    assert.equal(thinkEvents.length, 1);
+    assert.equal(assistantEvents.length, 1);
   });
 });
