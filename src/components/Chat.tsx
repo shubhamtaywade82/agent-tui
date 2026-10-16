@@ -17,7 +17,7 @@ import { autoMaxChains } from '../auto-mode.js';
 import { getTaskRuntime, buildTaskPrompt, isPlanSatisfied } from '../tasks.js';
 import { TranscriptView } from './TranscriptView.js';
 import { useTranscript } from '../hooks/useTranscript.js';
-import { runOllamaChat, makeUserEvent } from '../transcript/index.js';
+import { runOllamaChat, makeUserEvent, makePlanEvent, makePlanStatusPatch } from '../transcript/index.js';
 
 export interface ChatMessage extends Message { timestamp?: number; thinking?: string; tokens?: number; skill?: string; }
 export interface PendingContinuation { type: 'task' | 'turn_limit'; taskId?: string; label: string; detail?: string; prompt: string; }
@@ -288,17 +288,20 @@ const Chat: React.FC<ChatProps> = ({
   };
 
   /**
-   * Parallel transcript path (step 5 batches 2 + 4 + 3). Uses the step-2
+   * Parallel transcript path (step 5 batches 2 + 4 + 3 + 5). Uses the step-2
    * TranscriptCallbacks contract + step-3 runOllamaChat bridge. The bridge
    * supports multi-turn tool execution (batch 4): when the model requests
    * a tool, the onToolCall callback delegates to the existing ToolRegistry,
    * the result is appended to the conversation, and the bridge loops for
    * another model turn. Batch 3 added skill + system prompt injection via
-   * the transcriptSkillRef / transcriptSystemPromptRef refs (set by the
-   * /skills and /system slash commands).
+   * the transcriptSkillRef / transcriptSystemPromptRef refs. Batch 5 adds
+   * auto-mode continuation: after each runOllamaChat completes, if there
+   * is a pending task in the runtime, the loop dispatches a plan event
+   * (in_progress), chains another runOllamaChat with the task's prompt,
+   * and patches the plan event to completed / blocked based on the result.
    *
-   * Still intentionally simpler than runAgentLoop: no auto-mode continuation
-   * (batch 5), no context-compaction ledger. Those land in step 5 batch 5.
+   * Still missing vs runAgentLoop: context-compaction ledger (the loop
+   * will eventually OOM long sessions — fix in a future batch).
    */
   const runTranscriptPrompt = async (text: string) => {
     if (!client) { show('Ollama client not ready', 'error', 2500); return; }
@@ -335,44 +338,149 @@ const Chat: React.FC<ChatProps> = ({
             ].join('').trim() || 'You are a helpful assistant.',
           }
         : null;
-      const messagesForRun: Message[] = [
+
+      // The shared onToolCall callback — reused across the initial run and
+      // any auto-mode continuation chains.
+      const onToolCall = reg ? async (tc: any) => {
+        const execStartedAt = Date.now();
+        try {
+          const results = await reg.executeToolCalls([tc]);
+          const r = results[0];
+          const result = r?.outputString || (r?.success ? 'Success' : 'Execution error');
+          return {
+            result,
+            error: r?.success ? undefined : r.error.message,
+            durationMs: Date.now() - execStartedAt,
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            result: `Tool threw: ${message}`,
+            error: message,
+            durationMs: Date.now() - execStartedAt,
+          };
+        }
+      } : undefined;
+
+      // Initial run.
+      let currentMessages: Message[] = [
         ...(sysMsg ? [sysMsg] : []),
         ...historyMsgs,
         { role: 'user' as const, content: text },
       ];
-
-      const result = await runOllamaChat(client, transcriptCb, {
+      let result = await runOllamaChat(client, transcriptCb, {
         model: selectedModel,
-        messages: messagesForRun,
+        messages: currentMessages,
         think: true,
         signal: transcriptAbortRef.current.signal,
         contextWindow: cfg.numCtx || 32768,
-        // Delegate tool execution to the existing registry.
-        onToolCall: reg ? async (tc) => {
-          const execStartedAt = Date.now();
-          try {
-            const results = await reg.executeToolCalls([tc]);
-            const r = results[0];
-            const result = r?.outputString || (r?.success ? 'Success' : 'Execution error');
-            return {
-              result,
-              error: r?.success ? undefined : r.error.message,
-              durationMs: Date.now() - execStartedAt,
-            };
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            return {
-              result: `Tool threw: ${message}`,
-              error: message,
-              durationMs: Date.now() - execStartedAt,
-            };
-          }
-        } : undefined,
+        onToolCall,
         maxToolIterations: autoMaxChains(),
       });
+
+      // Step 5 batch 5: auto-mode continuation loop. After the initial
+      // runOllamaChat completes, check for pending task continuations.
+      // If autoMode is on, chain another run (up to autoMaxChains),
+      // dispatching plan events for each task lifecycle.
+      let autoChains = 0;
+      const maxAuto = autoMaxChains();
+      while (autoMode) {
+        // Check if the plan is fully satisfied — if so, stop.
+        if (isPlanSatisfied()) {
+          show('Plan complete — all tasks finished', 'success', 3000);
+          break;
+        }
+        // resolvePendingContinuation mirrors the existing runAgentLoop
+        // logic: returns the next ready task, or a turn_limit prompt.
+        const cont = resolvePendingContinuation(!result.hitIterationLimit);
+        if (!cont) break;
+        if (autoChains >= maxAuto) {
+          show(`Auto mode stopped after ${maxAuto} continuations — confirm to proceed`, 'warning', 4000);
+          setPendingContinuation(cont);
+          break;
+        }
+        autoChains += 1;
+        show(`Auto [${autoChains}/${maxAuto}]: ${cont.label}`, 'info', 2500);
+
+        // For task continuations, dispatch a plan event + patch it as
+        // the chained turn progresses. For turn-limit continuations
+        // (no taskId), just chain another runOllamaChat without a plan event.
+        let planEventId: number | null = null;
+        if (cont.taskId) {
+          try { getTaskRuntime().start(cont.taskId); } catch {}
+          const task = getTaskRuntime().getTask(cont.taskId);
+          if (task) {
+            planEventId = transcriptCb.nextId();
+            transcriptCb.add(makePlanEvent(
+              planEventId,
+              task.id,
+              task.title,
+              task.objective,
+              task.maxAttempts,
+            ));
+            transcriptCb.patch(planEventId, makePlanStatusPatch('in_progress', {
+              attempts: task.attempts,
+            }));
+          }
+        }
+
+        // Chain another runOllamaChat with the continuation prompt.
+        currentMessages = [
+          ...(sysMsg ? [sysMsg] : []),
+          { role: 'user' as const, content: cont.prompt },
+        ];
+        try {
+          result = await runOllamaChat(client, transcriptCb, {
+            model: selectedModel,
+            messages: currentMessages,
+            think: true,
+            signal: transcriptAbortRef.current.signal,
+            contextWindow: cfg.numCtx || 32768,
+            onToolCall,
+            maxToolIterations: autoMaxChains(),
+          });
+          // Patch the plan event based on the result.
+          if (planEventId !== null) {
+            if (result.hitIterationLimit) {
+              transcriptCb.patch(planEventId, makePlanStatusPatch('blocked', {
+                attempts: autoChains,
+                failureReason: 'Hit iteration limit',
+              }));
+            } else if (cont.taskId) {
+              try {
+                getTaskRuntime().complete(cont.taskId, { note: 'Auto-completed' });
+                transcriptCb.patch(planEventId, makePlanStatusPatch('completed', {
+                  attempts: autoChains,
+                  note: 'Auto-completed',
+                }));
+              } catch (err) {
+                const reason = err instanceof Error ? err.message : String(err);
+                try { getTaskRuntime().fail(cont.taskId, reason); } catch {}
+                transcriptCb.patch(planEventId, makePlanStatusPatch('blocked', {
+                  attempts: autoChains,
+                  failureReason: reason,
+                }));
+              }
+            }
+          }
+        } catch (err) {
+          // Chained turn errored — patch the plan event as blocked.
+          const reason = err instanceof Error ? err.message : String(err);
+          if (planEventId !== null && cont.taskId) {
+            try { getTaskRuntime().fail(cont.taskId, reason); } catch {}
+            transcriptCb.patch(planEventId, makePlanStatusPatch('blocked', {
+              attempts: autoChains,
+              failureReason: reason,
+            }));
+          }
+          throw err;
+        }
+      }
+
       const iterSuffix = result.iterations > 1 ? ` · ${result.iterations} turns` : '';
       const limitSuffix = result.hitIterationLimit ? ' · hit iteration limit' : '';
-      show(`Done in ${(result.durationMs / 1000).toFixed(1)}s${iterSuffix}${limitSuffix}`, 'info', 2200);
+      const autoSuffix = autoChains > 0 ? ` · ${autoChains} auto-chains` : '';
+      show(`Done in ${(result.durationMs / 1000).toFixed(1)}s${iterSuffix}${limitSuffix}${autoSuffix}`, 'info', 2200);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       show(`Transcript error: ${message}`, 'error', 3500);
