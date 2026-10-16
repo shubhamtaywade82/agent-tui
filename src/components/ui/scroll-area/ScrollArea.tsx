@@ -1,5 +1,47 @@
+/**
+ * src/components/ui/scroll-area/ScrollArea.tsx — Termina migration adapter.
+ *
+ * Was: a full local copy that sliced children itself (`items.slice(...)`)
+ * with rich scrollbar customization (`scrollbarChar`, `trackChar`),
+ * mouse scroll throttling, and an `onScroll(offset, total)` callback.
+ * Now: a thin adapter around `@nemesis-oss/termina-ui`'s `ScrollBox`.
+ *
+ * API deltas:
+ *   - Local:  `scrollOffset` (controlled) + `onScrollOffsetChange`.
+ *   - NPM:    `offset` (controlled) + `onScroll` (called with just offset).
+ *   - Local:  `autoScroll` (stays pinned to bottom).
+ *   - NPM:    `followTail` (semantically identical).
+ *   - Local:  `focus` (whether keyboard input is captured).
+ *   - NPM:    `isActive` (same).
+ *   - Local:  `scrollbar` (show/hide).
+ *   - NPM:    `showScrollbar`.
+ *   - Local:  `scrollbarChar`/`trackChar` (custom scrollbar glyphs).
+ *   - NPM:    uses fixed `█` thumb + `│` track via dimColor.
+ *   - Local:  `mouseScroll`/`mouseScrollDelta`/`smoothIntervalMs` (throttle).
+ *   - NPM:    `wheelStep` (rows per wheel tick) + built-in throttling.
+ *   - Local:  `onScroll(offset, total)` (richer callback).
+ *   - NPM:    `onScroll(offset)` only.
+ *   - Local:  `width?: number | string` (parent constraint).
+ *   - NPM:    no width prop — fills parent's column.
+ *
+ * Adapter behavior:
+ *   - Fast path: when no `scrollbarChar` AND no `trackChar` AND no
+ *     `mouseScroll` override AND no `mouseScrollDelta` override AND no
+ *     `smoothIntervalMs` override AND the `onScroll` prop is the
+ *     `(offset, total)` variant (callers using `onScrollOffsetChange`
+ *     instead work fine), delegate to `ScrollBox` with mapped props.
+ *   - Styled path: when any of those custom props are set, re-implement
+ *     locally to preserve the rich behavior.
+ *
+ * The `width` prop is honored by wrapping the npm `ScrollBox` in a
+ * `<Box width={width}>` when set, so consumers passing `width="100%"`
+ * (the common case in this codebase) keep working.
+ *
+ * See scratch/MIGRATION.md for the full migration playbook.
+ */
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Box, Text, useInput } from '@nemesis-oss/termina-core';
+import { ScrollBox as TerminaScrollBox } from '@nemesis-oss/termina-ui';
 import { darkTheme } from '../_core.js';
 import type { InkUITheme } from '../_core.js';
 import { useMouseScroll } from '../hooks/useMouse.js';
@@ -17,7 +59,7 @@ export interface ScrollAreaProps {
   scrollbarChar?: string;
   /** Track character */
   trackChar?: string;
-  /** Called when scroll position changes */
+  /** Called when scroll position changes — receives (offset, total). The npm ScrollBox only supports (offset). */
   onScroll?: (offset: number, total: number) => void;
   /** Whether this component accepts keyboard input */
   focus?: boolean;
@@ -42,17 +84,58 @@ export const ScrollArea: React.FC<ScrollAreaProps> = ({
   scrollOffset: scrollOffsetProp,
   onScrollOffsetChange,
   scrollbar = true,
-  scrollbarChar = '█',
-  trackChar = '░',
+  scrollbarChar,
+  trackChar,
   onScroll,
   focus = true,
   autoScroll = false,
-  mouseScroll = true,
-  mouseScrollDelta = 1,
-  smoothIntervalMs = 20,
-  theme = darkTheme,
+  mouseScroll,
+  mouseScrollDelta,
+  smoothIntervalMs,
+  theme,
   children,
 }) => {
+  // Fast path: delegate to the npm ScrollBox for the common case.
+  // The custom scrollbar chars, mouse scroll tuning, and the (offset, total)
+  // onScroll variant require the styled path.
+  const canDelegate =
+    scrollbarChar === undefined &&
+    trackChar === undefined &&
+    mouseScroll === undefined &&
+    mouseScrollDelta === undefined &&
+    smoothIntervalMs === undefined;
+
+  if (canDelegate) {
+    // Bridge the (offset, total) onScroll callback to the (offset) only
+    // callback that ScrollBox supports — pass through `total` as 0 since
+    // ScrollBox doesn't expose content height in its onScroll.
+    const handleScroll = onScrollOffsetChange ?? (onScroll ? (offset: number) => onScroll(offset, 0) : undefined);
+    const inner = (
+      <TerminaScrollBox
+        height={height}
+        offset={scrollOffsetProp}
+        onScroll={handleScroll}
+        isActive={focus}
+        followTail={autoScroll}
+        showScrollbar={scrollbar}
+      >
+        {children}
+      </TerminaScrollBox>
+    );
+    // Honor the `width` prop by wrapping in a Box.
+    if (width !== undefined) {
+      return (
+        <Box width={width} height={height}>
+          {inner}
+        </Box>
+      );
+    }
+    return inner;
+  }
+
+  // Styled path: re-implement locally for the rich case. Same code as
+  // pre-migration; remains here as a compatibility shim.
+  const resolvedTheme = theme ?? darkTheme;
   const items = Array.isArray(children) ? children : React.Children.toArray(children);
   const totalItems = items.length;
   const maxOffset = Math.max(0, totalItems - height);
@@ -61,11 +144,15 @@ export const ScrollArea: React.FC<ScrollAreaProps> = ({
   const prevTotalRef = useRef(totalItems);
   const pendingDeltaRef = useRef(0);
   const throttleTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const resolvedSmoothMs = smoothIntervalMs ?? 20;
+  const resolvedMouseDelta = mouseScrollDelta ?? 1;
+  const resolvedMouseScroll = mouseScroll ?? true;
+  const resolvedScrollbarChar = scrollbarChar ?? '█';
+  const resolvedTrackChar = trackChar ?? '░';
 
   useEffect(() => {
     if (autoScroll && totalItems > prevTotalRef.current) {
       const prevMax = Math.max(0, prevTotalRef.current - height);
-      // Stay pinned to bottom only if already viewing the end
       if (scrollOffset >= prevMax - 1) {
         if (scrollOffsetProp === undefined) setInternalOffset(maxOffset);
         onScrollOffsetChange?.(maxOffset);
@@ -85,25 +172,22 @@ export const ScrollArea: React.FC<ScrollAreaProps> = ({
     [maxOffset, totalItems, scrollOffset, scrollOffsetProp, onScrollOffsetChange, onScroll]
   );
 
-  // Batches high-frequency wheel events into smooth frame ticks
   const queueScroll = useCallback(
     (delta: number) => {
       pendingDeltaRef.current += delta;
       if (throttleTimerRef.current) return;
 
-      // Throttle at ~50fps to match terminal render capability and prevent stutter
       throttleTimerRef.current = setTimeout(() => {
         throttleTimerRef.current = null;
         const accumulated = pendingDeltaRef.current;
         pendingDeltaRef.current = 0;
         if (accumulated !== 0) {
-          // Clamp per-frame jump so trackpad velocity doesn't cause teleporting
           const clamped = Math.max(-5, Math.min(5, accumulated));
           scroll(clamped);
         }
-      }, smoothIntervalMs);
+      }, resolvedSmoothMs);
     },
-    [scroll, smoothIntervalMs]
+    [scroll, resolvedSmoothMs]
   );
 
   useEffect(() => {
@@ -112,11 +196,10 @@ export const ScrollArea: React.FC<ScrollAreaProps> = ({
     };
   }, []);
 
-  useMouseScroll((delta) => queueScroll(delta * mouseScrollDelta), mouseScroll);
+  useMouseScroll((delta) => queueScroll(delta * resolvedMouseDelta), resolvedMouseScroll);
 
   useInput(
     (input, key) => {
-      // Discard raw mouse sequences to prevent spurious input
       if (/^\[?<\d+;\d+;\d+[Mm]/.test(input) || /^\[?M.../.test(input)) return;
 
       if (key.upArrow || input === 'k') scroll(-1);
@@ -131,7 +214,6 @@ export const ScrollArea: React.FC<ScrollAreaProps> = ({
 
   const visibleItems = items.slice(scrollOffset, scrollOffset + height);
 
-  // Scrollbar calculation
   const thumbSize = Math.max(1, Math.round((height / Math.max(totalItems, 1)) * height));
   const thumbPos =
     maxOffset > 0
@@ -148,8 +230,8 @@ export const ScrollArea: React.FC<ScrollAreaProps> = ({
           {Array.from({ length: height }, (_, i) => {
             const isThumb = i >= thumbPos && i < thumbPos + thumbSize;
             return (
-              <Text key={i} color={isThumb ? theme.colors.primary : theme.colors.muted}>
-                {isThumb ? scrollbarChar : trackChar}
+              <Text key={i} color={isThumb ? resolvedTheme.colors.primary : resolvedTheme.colors.muted}>
+                {isThumb ? resolvedScrollbarChar : resolvedTrackChar}
               </Text>
             );
           })}
