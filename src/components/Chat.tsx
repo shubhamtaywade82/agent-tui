@@ -147,6 +147,12 @@ const Chat: React.FC<ChatProps> = ({
   // one is visible at a time based on viewMode.
   const { state: transcriptState, cb: transcriptCb } = useTranscript();
   const transcriptAbortRef = React.useRef<AbortController | null>(null);
+  // Step 5 batch 3: refs for slash-command-set state that the next
+  // runOllamaChat call should pick up. /skills <name> stores the skill body
+  // here; /system <prompt> stores the system prompt here. They get
+  // injected into the messages array on the next runTranscriptPrompt call.
+  const transcriptSkillRef = React.useRef<string | null>(null);
+  const transcriptSystemPromptRef = React.useRef<string | null>(null);
 
   const term = useTerminalSize(); const columns = propCols ?? term.columns; const rows = propRows ?? term.rows;
   const { isFocused, setFocus } = useFocusManager({ count: 2, initialIndex: 0, nextKey: 'none', prevKey: 'none' });
@@ -282,16 +288,17 @@ const Chat: React.FC<ChatProps> = ({
   };
 
   /**
-   * Parallel transcript path (step 5 batch 2 + batch 4). Uses the step-2
+   * Parallel transcript path (step 5 batches 2 + 4 + 3). Uses the step-2
    * TranscriptCallbacks contract + step-3 runOllamaChat bridge. The bridge
-   * now supports multi-turn tool execution: when the model requests a tool,
-   * the onToolCall callback delegates to the existing ToolRegistry, the
-   * result is appended to the conversation, and the bridge loops for
-   * another model turn.
+   * supports multi-turn tool execution (batch 4): when the model requests
+   * a tool, the onToolCall callback delegates to the existing ToolRegistry,
+   * the result is appended to the conversation, and the bridge loops for
+   * another model turn. Batch 3 added skill + system prompt injection via
+   * the transcriptSkillRef / transcriptSystemPromptRef refs (set by the
+   * /skills and /system slash commands).
    *
-   * Still intentionally simpler than runAgentLoop: no skill loading, no
-   * auto-mode continuation, no context-compaction ledger. Those land in
-   * step 5 batches 3 and 5.
+   * Still intentionally simpler than runAgentLoop: no auto-mode continuation
+   * (batch 5), no context-compaction ledger. Those land in step 5 batch 5.
    */
   const runTranscriptPrompt = async (text: string) => {
     if (!client) { show('Ollama client not ready', 'error', 2500); return; }
@@ -304,12 +311,39 @@ const Chat: React.FC<ChatProps> = ({
       const reg = registry || await getActiveToolRegistry();
       if (!registry && reg) setRegistry(reg);
       const cfg = loadConfig();
+
+      // Build the message list for this run. Includes:
+      //   - The system prompt (from transcriptSystemPromptRef if set by
+      //     /system, else the legacy saved systemPrompt, else undefined).
+      //   - Recent user/assistant messages from the legacy ChatMessage[]
+      //     state (last 8) for context continuity.
+      //   - The skill body (from transcriptSkillRef if set by /skills).
+      //   - The new user message.
+      const historyMsgs = messages
+        .filter((m) => m.role === 'system' || m.role === 'user')
+        .slice(-8)
+        .map((m) => ({ role: m.role, content: m.content } as Message));
+      const systemPrompt = transcriptSystemPromptRef.current
+        ?? messages.find((m) => m.role === 'system')?.content;
+      const skillBody = transcriptSkillRef.current;
+      const sysMsg: Message | null = systemPrompt || skillBody
+        ? {
+            role: 'system',
+            content: [
+              systemPrompt ? systemPrompt : '',
+              skillBody ? `\n\n[AUTHORITATIVE SKILL]\n${skillBody}` : '',
+            ].join('').trim() || 'You are a helpful assistant.',
+          }
+        : null;
+      const messagesForRun: Message[] = [
+        ...(sysMsg ? [sysMsg] : []),
+        ...historyMsgs,
+        { role: 'user' as const, content: text },
+      ];
+
       const result = await runOllamaChat(client, transcriptCb, {
         model: selectedModel,
-        messages: [
-          ...(messages.filter((m) => m.role === 'system' || m.role === 'user').slice(-8)),
-          { role: 'user' as const, content: text },
-        ],
+        messages: messagesForRun,
         think: true,
         signal: transcriptAbortRef.current.signal,
         contextWindow: cfg.numCtx || 32768,
@@ -358,6 +392,99 @@ const Chat: React.FC<ChatProps> = ({
       addSystemCard: (t) => onSendMessage(undefined, t, undefined, { role: 'system', content: t, timestamp: Date.now() }), openModal: onOpenModal,
       runPrompt: (text) => { void runPrompt(text); },
     });
+  };
+
+  /**
+   * Step 5 batch 3: transcript-specific slash command dispatcher.
+   * Handles commands that need to operate on the transcript state instead
+   * of the legacy ChatMessage[] state. Returns true if the command was
+   * recognized and handled; false to fall through to the existing
+   * executeSlashCommand (for commands that work the same in both modes
+   * like /help, /tools, /mcp, /quit).
+   */
+  const executeTranscriptSlashCommand = (rawInput: string): boolean => {
+    if (!rawInput.startsWith('/')) return false;
+    const [cmd, ...rest] = rawInput.trim().split(/\s+/);
+    const arg = rest.join(' ');
+    switch (cmd?.toLowerCase()) {
+      case '/clear':
+        transcriptCb.clear();
+        show('Transcript cleared', 'info', 2000);
+        return true;
+      case '/compact': {
+        // Drop everything except the last 2 events. The transcript
+        // equivalent of the legacy /compact which summarized earlier turns.
+        const total = transcriptState.events.length;
+        if (total <= 3) { show('Transcript too short to compact', 'warning', 2500); return true; }
+        const keepFromIndex = total - 2;
+        transcriptCb.truncate(keepFromIndex);
+        show(`Compacted ${total - 2} events`, 'info', 2500);
+        return true;
+      }
+      case '/save': {
+        const file = arg || `transcript-${new Date().toISOString().slice(0, 10)}.md`;
+        const body = transcriptState.events.map((ev) => {
+          const ts = new Date(ev.timestamp).toISOString().slice(11, 19);
+          if (ev.kind === 'user') return `### USER [${ts}]\n\n${ev.text}`;
+          if (ev.kind === 'assistant') return `### ASSISTANT [${ts}]\n\n${ev.text}`;
+          if (ev.kind === 'thinking') return `### THINKING [${ts}]\n\n${ev.text || '(empty)'}`;
+          if (ev.kind === 'tool') return `### TOOL [${ts}] ${ev.name} (${ev.status})\n\nargs: ${JSON.stringify(ev.arguments)}\nresult: ${ev.result ?? '(none)'}`;
+          if (ev.kind === 'error') return `### ERROR [${ts}] ${ev.category}\n\n${ev.message}`;
+          if (ev.kind === 'usage') return `### USAGE [${ts}] ${ev.scope}: ${ev.tokens} tokens`;
+          return `### ${ev.kind.toUpperCase()} [${ts}]\n\n${JSON.stringify(ev, null, 2)}`;
+        }).join('\n\n---\n\n');
+        try {
+          writeFileSync(file, `# Transcript (${new Date().toLocaleString()})\n\n${body}\n`, 'utf8');
+          show(`Saved to ${file}`, 'info', 3000);
+        } catch (err) { show(`Failed to save: ${String(err)}`, 'error', 4000); }
+        return true;
+      }
+      case '/context': {
+        const events = transcriptState.events;
+        const byKind = new Map<string, number>();
+        for (const ev of events) byKind.set(ev.kind, (byKind.get(ev.kind) ?? 0) + 1);
+        const breakdown = [...byKind.entries()].map(([k, n]) => `${k}: ${n}`).join(' · ');
+        show(`Transcript: ${events.length} events (${breakdown})`, 'info', 3500);
+        return true;
+      }
+      case '/skills': {
+        if (arg) {
+          const file = findSkillFile(arg);
+          if (file) {
+            const body = readFileSync(file, 'utf8');
+            transcriptSkillRef.current = body;
+            show(`Loaded skill for next transcript run: ${arg}`, 'info', 2500);
+          } else {
+            show(`Skill ${arg} not found in any pack`, 'error', 3000);
+          }
+        } else if (onOpenModal) {
+          onOpenModal('skills');
+        } else {
+          const list = loadAvailableSkills().slice(0, 15).map((s) => `• ${s.name} [${s.pack}]`).join('\n');
+          show(`Available Skills:\n${list}`, 'info', 4000);
+        }
+        return true;
+      }
+      case '/system': {
+        if (arg === 'reset' || arg === 'clear') {
+          transcriptSystemPromptRef.current = null;
+          saveUserConfig({ systemPrompt: undefined });
+          show('System prompt reset to default', 'info', 2000);
+        } else if (arg) {
+          transcriptSystemPromptRef.current = arg;
+          saveUserConfig({ systemPrompt: arg });
+          show('System prompt set for next transcript run', 'info', 2000);
+        } else {
+          const sp = transcriptSystemPromptRef.current ?? '(default)';
+          show(`System prompt: ${sp}`, 'info', 3500);
+        }
+        return true;
+      }
+      // Commands that work the same in both modes fall through to false:
+      // /help, /tools, /mcp, /model, /tasks, /quit, /accordion, /transcript, /style
+      default:
+        return false;
+    }
   };
 
   const executeSingleTurn = async (chatHistory: ChatMessage[], allowTools = true, currentSkill?: string) => {
@@ -543,7 +670,21 @@ const Chat: React.FC<ChatProps> = ({
         if (sel) { if (sel.args && trimmed === '/') return setInput(sel.name + ' '); cmd = sel.name; }
       }
       saveEntry(cmd); setInput(''); setSelectedCmdIndex(0);
+      // Step 5 batch 3: in transcript mode, try the transcript-specific
+      // dispatcher first. If it returns false (command not recognized as
+      // transcript-specific), fall through to the existing dispatcher so
+      // commands like /help, /tools, /mcp, /quit work in both modes.
+      if (viewMode === 'transcript' && executeTranscriptSlashCommand(cmd)) return;
       return executeSlashCommand(cmd) ? undefined : (show(`Unknown command: ${cmd}. Type /help for manual`, 'error', 3000), undefined);
+    }
+    // Step 5 batch 2 fix: route non-slash input through the transcript path
+    // when in transcript viewMode. (Original batch 2 wiring only hooked
+    // runPrompt, which is invoked by slash commands like /tasks — not by
+    // normal Enter-key submit.)
+    if (viewMode === 'transcript') {
+      saveEntry(trimmed); setInput(''); setSelectedCmdIndex(0);
+      await runTranscriptPrompt(trimmed);
+      return;
     }
     runModelRef.current = await pickModelForRun(trimmed, registry?.definitions?.()?.length ?? 0);
     const match = matchBestSkill(trimmed);
