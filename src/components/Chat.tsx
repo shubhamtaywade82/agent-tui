@@ -15,6 +15,9 @@ import {
 } from '../ollama-routing.js';
 import { autoMaxChains } from '../auto-mode.js';
 import { getTaskRuntime, buildTaskPrompt, isPlanSatisfied } from '../tasks.js';
+import { TranscriptView } from './TranscriptView.js';
+import { useTranscript } from '../hooks/useTranscript.js';
+import { runOllamaChat, makeUserEvent } from '../transcript/index.js';
 
 export interface ChatMessage extends Message { timestamp?: number; thinking?: string; tokens?: number; skill?: string; }
 export interface PendingContinuation { type: 'task' | 'turn_limit'; taskId?: string; label: string; detail?: string; prompt: string; }
@@ -134,11 +137,16 @@ const Chat: React.FC<ChatProps> = ({
   const [activeTool, setActiveTool] = useState<{ name: string; args?: any } | undefined>();
   const [activeSkill, setActiveSkill] = useState<string | undefined>();
   const [streamedThinking, setStreamedThinking] = useState(''); const [streamedContent, setStreamedContent] = useState('');
-  const [viewMode, setViewMode] = useState<'stream' | 'accordion'>('stream'); const [expandThinking, setExpandThinking] = useState(false);
+  const [viewMode, setViewMode] = useState<'stream' | 'accordion' | 'transcript'>('stream'); const [expandThinking, setExpandThinking] = useState(false);
   const [registry, setRegistry] = useState<any>(null); const [scrollOffset, setScrollOffset] = useState(0);
   const [inputStyle, setInputStyle] = useState<'box' | 'line'>(() => loadUserConfig().inputStyle || 'line');
   const [pendingContinuation, setPendingContinuation] = useState<PendingContinuation | null>(null);
   const selectedModel = propModel || models[0] || 'qwen3:8b'; const { toasts, show, dismiss } = useToast();
+  // Step 5 batch 2: the transcript state + callbacks for the 'transcript' viewMode.
+  // Lives alongside the existing ChatMessage[] state — both flows can run, only
+  // one is visible at a time based on viewMode.
+  const { state: transcriptState, cb: transcriptCb } = useTranscript();
+  const transcriptAbortRef = React.useRef<AbortController | null>(null);
 
   const term = useTerminalSize(); const columns = propCols ?? term.columns; const rows = propRows ?? term.rows;
   const { isFocused, setFocus } = useFocusManager({ count: 2, initialIndex: 0, nextKey: 'none', prevKey: 'none' });
@@ -209,7 +217,7 @@ const Chat: React.FC<ChatProps> = ({
         return;
       }
     }
-    if (key.ctrl && (inp === 'a' || inp === '\x01')) return setViewMode((v) => (v === 'stream' ? 'accordion' : 'stream'));
+    if (key.ctrl && (inp === 'a' || inp === '\x01')) return setViewMode((v) => v === 'stream' ? 'accordion' : v === 'accordion' ? 'transcript' : 'stream');
     if (key.ctrl && (inp === 'b' || inp === '\x02')) return toggleStyle();
     if (inp === 't' && isChatFocused) return setExpandThinking((p) => !p);
     if ((key.escape || key.tab) && isChatFocused) setFocus(0);
@@ -259,6 +267,12 @@ const Chat: React.FC<ChatProps> = ({
 
   const runPrompt = async (text: string) => {
     if (phase !== 'idle') { show('Agent is busy; try again once it finishes', 'warning', 2500); return; }
+    // Transcript view mode routes through the new contract (step 5 batch 2).
+    // The existing 'stream' / 'accordion' modes keep using runAgentLoop.
+    if (viewMode === 'transcript') {
+      await runTranscriptPrompt(text);
+      return;
+    }
     runModelRef.current = await pickModelForRun(text, registry?.definitions?.()?.length ?? 0);
     const match = matchBestSkill(text);
     if (match) { setActiveSkill(match.name); show(`Matched skill: ${match.name}`, 'info', 2000); }
@@ -267,8 +281,45 @@ const Chat: React.FC<ChatProps> = ({
     await runAgentLoop([...messages, { role: 'user', content: text, timestamp: Date.now() }], match?.name);
   };
 
+  /**
+   * Parallel transcript path (step 5 batch 2). Uses the step-2 TranscriptCallbacks
+   * contract + step-3 runOllamaChat bridge. Intentionally simpler than
+   * runAgentLoop: no tool execution, no skill loading, no auto-mode
+   * continuation. Those land in step 5 batches 3-5. The user sees real
+   * Ollama streaming through the new contract end-to-end.
+   */
+  const runTranscriptPrompt = async (text: string) => {
+    if (!client) { show('Ollama client not ready', 'error', 2500); return; }
+    setPhase('thinking');
+    transcriptAbortRef.current = new AbortController();
+    // Mint the user event + dispatch the runOllamaChat bridge.
+    transcriptCb.add(makeUserEvent(transcriptCb.nextId(), text));
+    const startedAt = Date.now();
+    try {
+      const result = await runOllamaChat(client, transcriptCb, {
+        model: selectedModel,
+        messages: [
+          ...(messages.filter((m) => m.role === 'system' || m.role === 'user').slice(-8)),
+          { role: 'user' as const, content: text },
+        ],
+        think: true,
+        signal: transcriptAbortRef.current.signal,
+        contextWindow: loadConfig().numCtx || 32768,
+      });
+      show(`Done in ${(result.durationMs / 1000).toFixed(1)}s`, 'info', 1800);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      show(`Transcript error: ${message}`, 'error', 3500);
+    } finally {
+      transcriptAbortRef.current = null;
+      setPhase('idle');
+      void startedAt;
+    }
+  };
+
   const executeSlashCommand = (cmd: string): boolean => {
-    if (cmd === '/accordion') return (setViewMode((v) => (v === 'stream' ? 'accordion' : 'stream')), true);
+    if (cmd === '/accordion') return (setViewMode((v) => v === 'stream' ? 'accordion' : 'stream'), true);
+    if (cmd === '/transcript') return (setViewMode('transcript'), true);
     if (cmd.startsWith('/style')) { const a = cmd.split(/\s+/)[1]; toggleStyle(a === 'box' || a === 'line' ? a : undefined); return true; }
     return dispatchSlashCommand(cmd, {
       messages, model: selectedModel, setModel: onSelectModel, models, showToast: show, registry,
@@ -523,11 +574,13 @@ const Chat: React.FC<ChatProps> = ({
               <Text color="gray">Model: <Text color="cyan" bold>{selectedModel}</Text> • <Text color="green">● MCP Active</Text></Text>
               <Text color="gray"><Text color="yellow">❯ </Text>Type prompt to reason & tools • <Text color="cyan">/model</Text> switch • <Text color="cyan">/skills</Text> load</Text>
               {autoMode && <Text color="green">Auto mode — continues through plan steps without Y/N prompts</Text>}
-              <Text color="gray" dimColor>[Tab Autocomplete • Ctrl+O Model • Ctrl+T View • Ctrl+A Accordion]</Text>
+              <Text color="gray" dimColor>[Tab Autocomplete • Ctrl+O Model • Ctrl+T View • Ctrl+A: Stream/Accordion/Transcript]</Text>
             </Box>
           </Box>
         ) : viewMode === 'accordion' ? (
           <ChatAccordion messages={messages} height={chatHeight} width={columns - 4} focus={isActive && isChatFocused} theme={theme} />
+        ) : viewMode === 'transcript' ? (
+          <TranscriptView events={transcriptState.events} height={chatHeight} isActive={isActive && isChatFocused} width={columns} />
         ) : (
           <ScrollArea height={chatHeight} width="100%" scrollOffset={scrollOffset} onScrollOffsetChange={setScrollOffset} focus={isActive && isChatFocused} autoScroll={true} theme={theme}>{messageRows}</ScrollArea>
         )}
@@ -581,6 +634,7 @@ const Chat: React.FC<ChatProps> = ({
         <Box flexDirection="row" gap={1}>
           {viewMode === 'stream' && scrollOffset > 0 && <Text color="yellow">▲ Above (PgUp)</Text>}{viewMode === 'stream' && scrollOffset < maxScrollOffset && <Text color="yellow">▼ Below (PgDn)</Text>}
           {viewMode === 'accordion' && <Text color="cyan">[Accordion]</Text>}
+          {viewMode === 'transcript' && <Text color="green">[Transcript · {transcriptState.events.length} events{phase !== 'idle' ? ' · streaming' : ''}]</Text>}
         </Box>
       </Box>
     </Box>
