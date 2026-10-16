@@ -1,5 +1,29 @@
+/**
+ * src/components/ui/progress-bar/ProgressBar.tsx — Termina migration adapter.
+ *
+ * Was: a full local copy with `value`/`label`/`showPercent`/`width`/`theme`.
+ * Now: a thin adapter around `@nemesis-oss/termina-ui`'s ProgressBar.
+ *
+ * API deltas:
+ *   - Local:  `value` is a percent in [0, 100]; supports `label`, `showPercent`,
+ *     `width`, and `theme` for color.
+ *   - NPM:    `value` is a percent in [0, 100]; auto-fills parent width; no
+ *     label, no percent suffix, no theme color override.
+ *
+ * Adapter behavior:
+ *   - Fast path: when no `label`, no `showPercent`, no `width`, no `theme`
+ *     are specified, delegate directly to the npm ProgressBar.
+ *   - Styled path: when any of those props are present, re-implement locally
+ *     to preserve the rich rendering (label on the left, percent suffix on
+ *     the right, fixed bar width, theme colors). This path stays until
+ *     consumers drop the rich props or the npm package gains equivalent
+ *     features (e.g. label/percent slots in the theme).
+ *
+ * See scratch/MIGRATION.md for the full migration playbook.
+ */
 import React from 'react';
 import { Box, Text, useWindowSize } from '@nemesis-oss/termina-core';
+import { ProgressBar as TerminaProgressBar } from '@nemesis-oss/termina-ui';
 import { darkTheme } from '../_core.js';
 import type { InkUITheme } from '../_core.js';
 
@@ -24,8 +48,16 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
   label,
   showPercent = true,
   width,
-  theme = darkTheme,
+  theme,
 }) => {
+  // Fast path: delegate to the npm ProgressBar for the simple case.
+  if (label === undefined && showPercent === true && width === undefined && theme === undefined) {
+    return <TerminaProgressBar value={value} />;
+  }
+
+  // Styled path: re-implement locally for the rich case. Same code as
+  // pre-migration; remains here as a compatibility shim.
+  const resolvedTheme = theme ?? darkTheme;
   const { columns: termWidth } = useWindowSize();
 
   // Clamp value to [0, 100]
@@ -48,10 +80,10 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
   return (
     <Box>
       {label ? <Text>{label} </Text> : null}
-      <Text color={theme.colors.primary}>{filledStr}</Text>
-      <Text color={theme.colors.muted}>{emptyStr}</Text>
+      <Text color={resolvedTheme.colors.primary}>{filledStr}</Text>
+      <Text color={resolvedTheme.colors.muted}>{emptyStr}</Text>
       {showPercent ? (
-        <Text color={theme.colors.muted}>{percentSuffix}</Text>
+        <Text color={resolvedTheme.colors.muted}>{percentSuffix}</Text>
       ) : null}
     </Box>
   );
