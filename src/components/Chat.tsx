@@ -282,11 +282,16 @@ const Chat: React.FC<ChatProps> = ({
   };
 
   /**
-   * Parallel transcript path (step 5 batch 2). Uses the step-2 TranscriptCallbacks
-   * contract + step-3 runOllamaChat bridge. Intentionally simpler than
-   * runAgentLoop: no tool execution, no skill loading, no auto-mode
-   * continuation. Those land in step 5 batches 3-5. The user sees real
-   * Ollama streaming through the new contract end-to-end.
+   * Parallel transcript path (step 5 batch 2 + batch 4). Uses the step-2
+   * TranscriptCallbacks contract + step-3 runOllamaChat bridge. The bridge
+   * now supports multi-turn tool execution: when the model requests a tool,
+   * the onToolCall callback delegates to the existing ToolRegistry, the
+   * result is appended to the conversation, and the bridge loops for
+   * another model turn.
+   *
+   * Still intentionally simpler than runAgentLoop: no skill loading, no
+   * auto-mode continuation, no context-compaction ledger. Those land in
+   * step 5 batches 3 and 5.
    */
   const runTranscriptPrompt = async (text: string) => {
     if (!client) { show('Ollama client not ready', 'error', 2500); return; }
@@ -294,8 +299,11 @@ const Chat: React.FC<ChatProps> = ({
     transcriptAbortRef.current = new AbortController();
     // Mint the user event + dispatch the runOllamaChat bridge.
     transcriptCb.add(makeUserEvent(transcriptCb.nextId(), text));
-    const startedAt = Date.now();
     try {
+      // Resolve the tool registry lazily — same one runAgentLoop uses.
+      const reg = registry || await getActiveToolRegistry();
+      if (!registry && reg) setRegistry(reg);
+      const cfg = loadConfig();
       const result = await runOllamaChat(client, transcriptCb, {
         model: selectedModel,
         messages: [
@@ -304,16 +312,39 @@ const Chat: React.FC<ChatProps> = ({
         ],
         think: true,
         signal: transcriptAbortRef.current.signal,
-        contextWindow: loadConfig().numCtx || 32768,
+        contextWindow: cfg.numCtx || 32768,
+        // Delegate tool execution to the existing registry.
+        onToolCall: reg ? async (tc) => {
+          const execStartedAt = Date.now();
+          try {
+            const results = await reg.executeToolCalls([tc]);
+            const r = results[0];
+            const result = r?.outputString || (r?.success ? 'Success' : 'Execution error');
+            return {
+              result,
+              error: r?.success ? undefined : r.error.message,
+              durationMs: Date.now() - execStartedAt,
+            };
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return {
+              result: `Tool threw: ${message}`,
+              error: message,
+              durationMs: Date.now() - execStartedAt,
+            };
+          }
+        } : undefined,
+        maxToolIterations: autoMaxChains(),
       });
-      show(`Done in ${(result.durationMs / 1000).toFixed(1)}s`, 'info', 1800);
+      const iterSuffix = result.iterations > 1 ? ` · ${result.iterations} turns` : '';
+      const limitSuffix = result.hitIterationLimit ? ' · hit iteration limit' : '';
+      show(`Done in ${(result.durationMs / 1000).toFixed(1)}s${iterSuffix}${limitSuffix}`, 'info', 2200);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       show(`Transcript error: ${message}`, 'error', 3500);
     } finally {
       transcriptAbortRef.current = null;
       setPhase('idle');
-      void startedAt;
     }
   };
 
