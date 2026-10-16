@@ -1,5 +1,33 @@
+/**
+ * src/components/ui/gauge/Gauge.tsx — Termina migration adapter.
+ *
+ * Was: a full local copy with `value`/`min`/`max`/`label`/`unit`/`variant`
+ * ('arc'/'bar'/'ring')/`colorStops`/`width`/`showValue`/`theme`.
+ * Now: a thin adapter around `@nemesis-oss/termina-ui`'s Gauge.
+ *
+ * API deltas:
+ *   - Local:  `value` is a raw number in [min, max]; percent is computed.
+ *   - NPM:    `value` is already a percent in [0, 100].
+ *   - Local:  `variant` switches between 'bar' / 'arc' / 'ring' rendering.
+ *   - NPM:    only the 'bar' variant exists.
+ *   - Local:  `colorStops` switches color by threshold (green/yellow/red).
+ *   - NPM:    color comes from `useComponentTheme('Gauge').config({value})`.
+ *   - Local:  `unit` suffixes the displayed value (e.g. '50%').
+ *   - NPM:    always shows 'N%' (no unit override).
+ *
+ * Adapter behavior:
+ *   - Fast path: when `variant === 'bar'` (default) AND no `colorStops` AND
+ *     `unit === '%'` (default), delegate to the npm Gauge (computing percent
+ *     from value/min/max).
+ *   - Styled path: for 'arc'/'ring' variants or custom colorStops/unit,
+ *     re-implement locally (same code as before migration). This path is
+ *     kept until consumers drop the rich props.
+ *
+ * See scratch/MIGRATION.md for the full migration playbook.
+ */
 import React from 'react';
 import { Box, Text } from '@nemesis-oss/termina-core';
+import { Gauge as TerminaGauge } from '@nemesis-oss/termina-ui';
 import { darkTheme } from '../_core.js';
 import type { InkUITheme } from '../_core.js';
 
@@ -28,6 +56,16 @@ export const Gauge: React.FC<GaugeProps> = ({
   showValue = true,
   theme = darkTheme,
 }) => {
+  // Fast path: delegate to the npm Gauge for the simple bar case.
+  if (variant === 'bar' && !colorStops && unit === '%') {
+    const pct = Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
+    return <TerminaGauge value={pct} label={label} width={width} showValue={showValue} />;
+  }
+
+  // Styled path: re-implement locally for arc/ring variants and custom
+  // colorStops. This is the same code that existed pre-migration; it
+  // remains here as a compatibility shim until consumers drop the rich
+  // props (or until the npm package gains equivalent features).
   const pct = Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
 
   const defaultStops: [number, string][] = [
@@ -42,18 +80,6 @@ export const Gauge: React.FC<GaugeProps> = ({
   }
 
   const displayValue = `${Math.round(value)}${unit}`;
-
-  if (variant === 'bar') {
-    const filled = Math.round((pct / 100) * width);
-    const bar = '█'.repeat(filled) + '░'.repeat(width - filled);
-    return (
-      <Box flexDirection="row" gap={1}>
-        {label && <Text color={theme.colors.muted}>{label}</Text>}
-        <Text color={color}>{bar}</Text>
-        {showValue && <Text color={color}>{displayValue}</Text>}
-      </Box>
-    );
-  }
 
   if (variant === 'ring') {
     const ringWidth = Math.floor(width / 2);
