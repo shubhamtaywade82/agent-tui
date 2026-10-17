@@ -943,7 +943,13 @@ const Chat: React.FC<ChatProps> = ({
         ) : viewMode === 'accordion' ? (
           <ChatAccordion messages={messages} height={chatHeight} width={columns - 4} focus={isActive && isChatFocused} theme={theme} />
         ) : viewMode === 'transcript' ? (
-          <TranscriptView events={transcriptState.events} height={chatHeight} isActive={isActive && isChatFocused} width={columns} />
+          <TranscriptView
+            events={transcriptState.events}
+            height={chatHeight}
+            isActive={isActive && isChatFocused}
+            width={columns}
+            phase={phase === 'thinking' ? 'reason' : phase === 'executing-tools' ? 'act' : phase === 'responding' ? 'respond' : 'idle'}
+          />
         ) : (
           <ScrollArea height={chatHeight} width="100%" scrollOffset={scrollOffset} onScrollOffsetChange={setScrollOffset} focus={isActive && isChatFocused} autoScroll={true} theme={theme}>{messageRows}</ScrollArea>
         )}
