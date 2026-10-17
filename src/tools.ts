@@ -8,6 +8,7 @@ import { StdioTransport, StreamableHttpTransport, McpClient } from '@nemesis-oss
 import { TASK_SLASH_COMMANDS, handleTasksCommand, taskTools } from './tasks.js';
 import { envList, loadConfig, isMcpEnabled } from './config.js';
 import { runShellTool, runCodeTool } from './toolbox/code.js';
+import { renderUiTool, handleGenUiCommand } from './toolbox/genui.js';
 
 export interface McpServerConfig {
   id: string; name: string; command?: string; args?: string[]; url?: string;
@@ -206,7 +207,7 @@ export async function getActiveToolRegistry(): Promise<ToolRegistry> {
   if (registryPromise) return registryPromise;
   registryPromise = (async () => {
     const registry = new ToolRegistry({
-      tools: [calculator, listSkillsTool, readSkillTool, runShellTool, runCodeTool, ...taskTools],
+      tools: [calculator, listSkillsTool, readSkillTool, runShellTool, runCodeTool, renderUiTool, ...taskTools],
       timeoutMs: 60_000,
       maxConcurrency: 4,
       maxOutputChars: 4000,
@@ -259,6 +260,7 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
   { name: '/compact', desc: 'Summarize past conversation to save context' },
   { name: '/save', args: '[file.md]', desc: 'Export chat transcript to disk' },
   { name: '/system', args: '[prompt]', desc: 'View or set system prompt' },
+  { name: '/genui', args: '[template]', desc: 'Generate or preview a Termina GenUI component' },
   { name: '/quit', desc: 'Exit the TUI harness gracefully' },
   ...TASK_SLASH_COMMANDS,
 ];
@@ -363,6 +365,7 @@ export function dispatchSlashCommand(rawInput: string, ctx: CommandContext): boo
     case '/help':
       ctx.addSystemCard(`Commands:\n${SLASH_COMMANDS.map((c) => `${c.name} ${c.args || ''} — ${c.desc}`).join('\n')}\n\nKeybindings: Tab: Complete/Scroll • Esc: Cancel • Ctrl+O: Model • Ctrl+T: View`);
       return true;
+    case '/genui': return handleGenUiCommand(arg, ctx);
     case '/quit': case '/exit': closeMcpServers().finally(() => process.exit(0)); return true;
     default: return false;
   }
@@ -424,3 +427,5 @@ export async function executeMcpCalls(
   }
   return out;
 }
+
+export { renderUiTool } from './toolbox/genui.js';

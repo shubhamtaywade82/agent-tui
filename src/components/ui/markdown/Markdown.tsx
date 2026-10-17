@@ -3,8 +3,26 @@ import { Box, Text } from '@nemesis-oss/termina-core';
 import { renderTableLines } from '../table/index.js';
 import { borderStyles, darkTheme } from '../_core.js';
 import type { InkUITheme } from '../_core.js';
+import { createDefaultRegistry, createLanguageAdapter, GenUIRenderer } from '@nemesis-oss/termina-genui';
 import { tokenizeLine, resolveLanguage } from '../code-block/index.js';
 import type { Language } from '../code-block/index.js';
+
+const genUIRegistry = createDefaultRegistry();
+const genUIAdapter = createLanguageAdapter(genUIRegistry);
+
+function renderGenUI(codeLines: string[], key: string): React.ReactElement | null {
+  try {
+    const parsed = genUIAdapter.parse(codeLines.join('\n'));
+    if (!parsed.root) return null;
+    return (
+      <Box key={key} borderStyle="round" borderColor="cyan" paddingX={1} marginY={1}>
+        <GenUIRenderer node={parsed.root} registry={genUIRegistry} />
+      </Box>
+    );
+  } catch {
+    return null;
+  }
+}
 
 export interface MarkdownProps {
   content: string;
@@ -121,39 +139,30 @@ function renderCodeBlockLines(
 
   const lines: React.ReactElement[] = [
     <Text key="code-top" color={theme.colors.border}>{`${b.topLeft}${title}${topFill}${b.topRight}`}</Text>,
-  ];
-
-  codeLines.forEach((cl, ci) => {
-    const num = String(ci + 1).padStart(numWidth, ' ');
-    lines.push(
+    ...codeLines.map((cl, ci) => (
       <Box key={`code-${ci}`} flexDirection="row">
         <Text color={theme.colors.border}>{`${b.left} `}</Text>
-        <Text color={theme.colors.muted}>{num} │ </Text>
+        <Text color={theme.colors.muted}>{String(ci + 1).padStart(numWidth, ' ')} │ </Text>
         {renderHighlightedCode(cl, language, innerWidth, theme)}
         <Text color={theme.colors.border}>{` ${b.right}`}</Text>
       </Box>
-    );
-  });
-
-  lines.push(
-    <Text key="code-bot" color={theme.colors.border}>{`${b.bottomLeft}${botFill}${b.bottomRight}`}</Text>
-  );
-
+    )),
+    <Text key="code-bot" color={theme.colors.border}>{`${b.bottomLeft}${botFill}${b.bottomRight}`}</Text>,
+  ];
   return lines;
 }
 
-function parseCodeBlock(
-  lines: string[],
-  startIdx: number,
-  theme: InkUITheme,
-  maxWidth: number,
-): BlockResult {
+function parseCodeBlock(lines: string[], startIdx: number, theme: InkUITheme, maxWidth: number): BlockResult {
   const lang = lines[startIdx]!.replace(/^`+/, '').trim();
   const codeLines: string[] = [];
   let i = startIdx + 1;
   while (i < lines.length && !lines[i]!.startsWith('```')) {
     codeLines.push(lines[i]!);
     i++;
+  }
+  if (lang === 'openui-lang' || lang === 'genui') {
+    const genui = renderGenUI(codeLines, `genui-${startIdx}`);
+    if (genui) return { elements: [genui], nextIdx: i < lines.length ? i + 1 : i };
   }
   const elements = renderCodeBlockLines(codeLines, lang, theme, maxWidth);
   return { elements, nextIdx: i < lines.length ? i + 1 : i };
