@@ -1,26 +1,17 @@
 /**
  * HTTP API server mode — exposes the agent as a REST + SSE endpoint so other
  * applications, scripts, or frontends can drive the agent over HTTP.
- *
- *   GET  /health              → provider/tool/MCP status
- *   GET  /models              → list available models
- *   GET  /tools               → list available tools
- *   GET  /sessions            → list saved sessions
- *   GET  /sessions/:id        → fetch a session
- *   POST /chat                → one-shot chat (JSON request → JSON response)
- *   POST /chat/stream         → SSE streaming chat (token-by-token)
- *   POST /embed               → embed text(s) into vectors
- *
- * Uses only the Node.js built-in http module — no extra framework dependency.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { runAgent, shutdownAgent, type AgentRunOptions } from './agent.js';
+import { runAgent, shutdownAgent } from './agent.js';
 import { getProviderAsync } from './providers.js';
 import { getToolRegistry } from './toolbox/index.js';
 import { listSessions, loadSession } from './session.js';
 import { loadConfig } from './config.js';
 import { initLogger, log } from './logger.js';
 import { randomUUID } from 'node:crypto';
+
+// --- helpers ---------------------------------------------------------------
 
 interface ChatRequest {
   prompt: string;
@@ -62,14 +53,16 @@ function sse(res: ServerResponse, event: string, data: unknown): void {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
-async function handleChat(req: IncomingMessage, res: ServerResponse, stream: boolean): Promise<void> {
+// --- handlers -------------------------------------------------------------
+
+async function handleChat(req: IncomingMessage, res: ServerResponse, stream = false): Promise<void> {
   const body = await readBody(req);
   let payload: ChatRequest;
   try { payload = JSON.parse(body); } catch { sendJson(res, 400, { error: 'invalid JSON body' }); return; }
   if (!payload.prompt) { sendJson(res, 400, { error: 'missing "prompt" field' }); return; }
 
   const cfg = loadConfig();
-  const opts: AgentRunOptions = {
+  const opts: Parameters<typeof runAgent>[0] extends ChatRequest ? AgentRunOptions : never = {
     provider: payload.provider, model: payload.model,
     maxIterations: payload.maxIterations, noTools: payload.noTools,
     noThinking: payload.noThinking, sessionId: payload.sessionId,
@@ -78,123 +71,122 @@ async function handleChat(req: IncomingMessage, res: ServerResponse, stream: boo
   if (stream) {
     sendSseHeaders(res);
     const runId = randomUUID();
-    sse(res, 'start', { runId, model: payload.model ?? cfg.provider[cfg.provider.active].defaultModel });
-    try {
-      const result = await runAgent(payload.prompt, payload.history as any ?? [], {
-        ...opts,
-        onThinking: (d) => sse(res, 'thinking', { delta: d }),
-        onToken: (d) => sse(res, 'token', { delta: d }),
-        onToolCall: (name, args) => sse(res, 'tool_call', { name, args }),
-        onToolResult: (name, output, success) => sse(res, 'tool_result', { name, output, success }),
-        onPhase: (phase) => sse(res, 'phase', { phase }),
-      });
-      sse(res, 'done', {
-        content: result.content, toolCalls: result.toolCalls.map((tc) => tc.function.name),
-        iterations: result.iterations, metrics: result.metrics, sessionId: result.sessionId,
-      });
-    } catch (e: any) {
-      sse(res, 'error', { message: e.message });
-    } finally {
-      res.end();
-    }
-  } else {
+    sse(res, 'start', { runId, model: payload.model ?? cfg.providers[0].active.defaultModel });
     try {
       const result = await runAgent(payload.prompt, payload.history as any ?? [], opts);
-      sendJson(res, 200, {
-        content: result.content,
-        thinking: result.thinking,
-        toolCalls: result.toolCalls.map((tc) => tc.function.name),
-        iterations: result.iterations,
-        metrics: result.metrics,
-        sessionId: result.sessionId,
-      });
-    } catch (e: any) {
-      sendJson(res, 500, { error: e.message });
+      sse(res, 'done', { result });
+    } catch (err: any) {
+      sse(res, 'error', { error: err.message, stack: err.stack });
     }
+  } else {
+    sendJson(res, 200, { result: await runAgent(payload.prompt, payload.history as any ?? [], opts) });
   }
 }
 
-/** Start the HTTP API server on the given port. Returns the server instance. */
-export async function startServer(port = 8787): Promise<void> {
-  initLogger();
-  const cfg = loadConfig();
-  log.info('Server starting', { port, provider: cfg.provider.active });
-
-  // Pre-warm provider and tool registry
-  await getProviderAsync(cfg).catch((e) => log.warn('Provider init failed', { error: e.message }));
-  await getToolRegistry(cfg).catch((e) => log.warn('Tool registry init failed', { error: e.message }));
-
-  const server = createServer(async (req, res) => {
-    res.setHeader('access-control-allow-origin', '*');
-    res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
-    res.setHeader('access-control-allow-headers', 'content-type');
-    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
-
-    const url = new URL(req.url ?? '/', `http://localhost:${port}`);
-    const path = url.pathname;
-
-    try {
-      if (path === '/health' && req.method === 'GET') {
-        const provider = await getProviderAsync(cfg).catch(() => null);
-        const reg = await getToolRegistry(cfg).catch(() => null);
-        sendJson(res, 200, {
-          status: 'ok',
-          provider: provider?.name ?? 'unavailable',
-          model: cfg.provider[cfg.provider.active].defaultModel,
-          tools: reg?.definitions().length ?? 0,
-          uptime: process.uptime(),
-        });
-      } else if (path === '/models' && req.method === 'GET') {
-        const provider = await getProviderAsync(cfg);
-        const models = await provider.listModels();
-        sendJson(res, 200, { provider: provider.name, models });
-      } else if (path === '/tools' && req.method === 'GET') {
-        const reg = await getToolRegistry(cfg);
-        const defs = reg.definitions();
-        sendJson(res, 200, { count: defs.length, tools: defs });
-      } else if (path === '/sessions' && req.method === 'GET') {
-        sendJson(res, 200, { sessions: listSessions() });
-      } else if (path.startsWith('/sessions/') && req.method === 'GET') {
-        const id = path.slice('/sessions/'.length);
-        const s = loadSession(id);
-        if (!s) sendJson(res, 404, { error: 'session not found' });
-        else sendJson(res, 200, s);
-      } else if (path === '/chat' && req.method === 'POST') {
-        await handleChat(req, res, false);
-      } else if (path === '/chat/stream' && req.method === 'POST') {
-        await handleChat(req, res, true);
-      } else if (path === '/embed' && req.method === 'POST') {
-        const body = await readBody(req);
-        const { input, model } = JSON.parse(body);
-        const provider = await getProviderAsync(cfg);
-        const vecs = await provider.embed(model ?? 'nomic-embed-text', input);
-        sendJson(res, 200, { embeddings: vecs, model: model ?? 'nomic-embed-text' });
-      } else {
-        sendJson(res, 404, { error: 'not found', path });
-      }
-    } catch (e: any) {
-      log.error('Request failed', { path, error: e.message });
-      sendJson(res, 500, { error: e.message });
-    }
-  });
-
-  server.listen(port, () => {
-    log.info('HTTP API server listening', { port });
-    process.stderr.write(`\n\x1b[36m⚡ Agentic TUI API server\x1b[0m listening on http://localhost:${port}\n`);
-    process.stderr.write(`   Endpoints: /health /models /tools /sessions /chat /chat/stream /embed\n\n`);
-  });
-
-  const shutdown = () => {
-    log.info('Server shutting down');
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 3000).unref();
-  };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+async function handleEmbed(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await readBody(req);
+  try {
+    const vectors = await runAgent(`Embed text: ${body}`, [], {
+      onToken: (d) => sse(res, 'token', { delta: d }),
+    });
+    sendJson(res, 200, { vectors });
+  } catch (err: any) {
+    sendJson(res, 500, { error: err.message });
+  }
 }
 
-// Direct invocation
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const port = Number(process.argv[2] ?? 8787);
-  startServer(port).catch((e) => { console.error(e); process.exit(1); });
+async function handleSession(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const id = url.pathname.split('/sessions/')[1] ?? '';
+  const session = await loadSession(id);
+  if (!session) { sendJson(res, 404, { error: 'session not found' }); return; }
+  sendJson(res, 200, { id: session.id, data: session.model, tools: session.tools });
 }
+
+async function handleHealth(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const cfg = await loadConfig();
+  const result = await getProviderAsync(cfg);
+  sendJson(res, 200, { provider: result.provider, models: result.models, active: result.provider[result.provider.active].defaultModel });
+}
+
+async function handleTools(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const cfg = await loadConfig();
+  const result = await getToolRegistry(cfg);
+  sendJson(res, 200, { count: result.count, tools: result.tools });
+}
+
+async function handleSessions(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const cfg = await loadConfig();
+  const sessions = await listSessions(cfg);
+  sendJson(res, 200, { sessions });
+}
+
+async function handleMetrics(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const cfg = await loadConfig();
+  const active = cfg.providers[0].active;
+  sendJson(res, 200, { models: active.defaultModel, openInterest: await openInterest(cfg) });
+}
+
+// --- main ---------------------------------------------------------------
+
+const PORT = parseInt(process.env.SERVER_PORT || '8080', 10);
+const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const path = url.pathname;
+
+  if (req.method === 'GET' && path === '/health') {
+    handleHealth(req, res);
+  } else if (req.method === 'GET' && path === '/models') {
+    const cfg = await loadConfig();
+    const models = cfg.providers[0].models;
+    sendJson(res, 200, { count: models.length, models });
+  } else if (req.method === 'GET' && path === '/tools') {
+    const cfg = await loadConfig();
+    const result = await getToolRegistry(cfg);
+    sendJson(res, 200, { count: result.count, tools: result.tools });
+  } else if (req.method === 'GET' && path.startsWith('/sessions')) {
+    const id = path.split('/sessions/')[1] ?? '';
+    const session = await loadSession(id);
+    if (!session) { sendJson(res, 404, { error: 'session not found' }); return; }
+    sendJson(res, 200, { id: session.id, data: session.model, tools: session.tools });
+  } else if (req.method === 'GET' && path === '/sessions') {
+    const cfg = await loadConfig();
+    const sessions = await listSessions(cfg);
+    sendJson(res, 200, { sessions });
+  } else if (req.method === 'GET' && path === '/metrics') {
+    const cfg = await loadConfig();
+    const active = cfg.providers[0].active;
+    sendJson(res, 200, { models: active.defaultModel, openInterest: await openInterest(cfg) });
+  } else if (req.method === 'POST' && path === '/chat') {
+    handleChat(req, res, false);
+  } else if (req.method === 'POST' && path === '/chat/stream') {
+    handleChat(req, res, true);
+  } else if (req.method === 'POST' && path === '/embed') {
+    handleEmbed(req, res);
+  } else {
+    sendJson(res, 404, { error: `not found: ${path}` });
+  }
+});
+
+server.listen(PORT, () => {
+  log('server', `listening on :${PORT}`);
+  log('server', `endpoints: health, models, tools, sessions, chat, embed, metrics`);
+});
+
+// --- graceful shutdown --------------------------------------------------
+
+let shuttingDown = false;
+
+async function gracefulShutdown(): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log('server', 'received shutdown signal');
+  server.close(() => {
+    log('server', 'server closed');
+  });
+}
+
+process.on('SIGINT', async () => gracefulShutdown().then(() => process.exit(0)));
+process.on('SIGTERM', async () => gracefulShutdown().then(() => process.exit(0)));
+
+export { gracefulShutdown };
