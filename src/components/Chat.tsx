@@ -153,6 +153,12 @@ const Chat: React.FC<ChatProps> = ({
   // injected into the messages array on the next runTranscriptPrompt call.
   const transcriptSkillRef = React.useRef<string | null>(null);
   const transcriptSystemPromptRef = React.useRef<string | null>(null);
+  // Step 5 batch 5.5: a dedicated ToolCallLedger for the transcript path.
+  // Separate from loopLedgerRef (used by runAgentLoop) so the two paths
+  // don't interfere. The ledger persists across turns within a session
+  // so a re-read in turn 5 is caught even if turn 4 already read the file.
+  // Reset when /clear is dispatched in transcript mode.
+  const transcriptLedgerRef = React.useRef<ToolCallLedger | null>(null);
 
   const term = useTerminalSize(); const columns = propCols ?? term.columns; const rows = propRows ?? term.rows;
   const { isFocused, setFocus } = useFocusManager({ count: 2, initialIndex: 0, nextKey: 'none', prevKey: 'none' });
@@ -340,13 +346,31 @@ const Chat: React.FC<ChatProps> = ({
         : null;
 
       // The shared onToolCall callback — reused across the initial run and
-      // any auto-mode continuation chains.
+      // any auto-mode continuation chains. Integrates the ToolCallLedger
+      // (step 5 batch 5.5) so repeated identical tool calls get short-
+      // circuited: the model sees a "[Loop guard] Blocked..." message
+      // instead of the real result, breaking out of re-read loops that
+      // happen when context compaction hides prior results.
+      const ledger = transcriptLedgerRef.current ?? (transcriptLedgerRef.current = new ToolCallLedger());
       const onToolCall = reg ? async (tc: any) => {
+        const name = tc?.function?.name ?? '<unknown>';
+        const args = tc?.function?.arguments ?? {};
+        // Step 5 batch 5.5: ask the ledger if this call should be short-circuited.
+        const blocked = ledger.beforeExecute(name, args);
+        if (blocked) {
+          return {
+            result: blocked,
+            durationMs: 0,
+            status: 'blocked' as const,
+          };
+        }
         const execStartedAt = Date.now();
         try {
           const results = await reg.executeToolCalls([tc]);
           const r = results[0];
           const result = r?.outputString || (r?.success ? 'Success' : 'Execution error');
+          // Record the call so future duplicate calls get blocked.
+          ledger.afterExecute(name, args, r?.outputString ?? result);
           return {
             result,
             error: r?.success ? undefined : r.error.message,
@@ -354,6 +378,9 @@ const Chat: React.FC<ChatProps> = ({
           };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
+          // Still record the failed attempt — the ledger counts attempts,
+          // not just successes.
+          ledger.afterExecute(name, args, `Error: ${message}`);
           return {
             result: `Tool threw: ${message}`,
             error: message,
@@ -517,6 +544,13 @@ const Chat: React.FC<ChatProps> = ({
     switch (cmd?.toLowerCase()) {
       case '/clear':
         transcriptCb.clear();
+        // Reset the loop-guard ledger so a fresh session starts with no
+        // counts — without this, re-running the same prompt after /clear
+        // would immediately hit the duplicate-call guard.
+        transcriptLedgerRef.current = null;
+        // Also reset skill + system-prompt refs so /clear truly starts fresh.
+        transcriptSkillRef.current = null;
+        transcriptSystemPromptRef.current = null;
         show('Transcript cleared', 'info', 2000);
         return true;
       case '/compact': {

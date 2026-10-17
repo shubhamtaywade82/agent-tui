@@ -180,14 +180,27 @@ export function makePlanStatusPatch(
   return { status, ...extra };
 }
 
-/** Patch helper for a completed tool call. */
+/**
+ * Patch helper for a completed tool call.
+ *
+ * Status resolution:
+ *   - If `statusOverride` is provided, use it directly (e.g. `'blocked'`
+ *     when the ToolCallLedger short-circuits a duplicate call).
+ *   - Otherwise: `error` is set → `'error'`, else → `'success'`.
+ */
 export function makeToolResultPatch(
   result: string,
   durationMs: number,
   error?: string,
+  statusOverride?: 'success' | 'error' | 'blocked',
 ): Readonly<Record<string, unknown>> {
+  const status = statusOverride
+    ? (statusOverride as ToolStatus)
+    : error
+      ? ('error' as ToolStatus)
+      : ('success' as ToolStatus);
   return {
-    status: error ? ('error' as ToolStatus) : ('success' as ToolStatus),
+    status,
     result,
     durationMs,
     ...(error ? { error } : {}),

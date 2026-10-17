@@ -68,6 +68,14 @@ export interface ToolExecutionOutcome {
   readonly error?: string;
   /** Wall-clock duration in ms. */
   readonly durationMs: number;
+  /**
+   * Optional status override. Default behavior: if `error` is set the
+   * status is `'error'`, otherwise `'success'`. Set to `'blocked'`
+   * when the engine short-circuits execution (e.g. the ToolCallLedger
+   * detected a repeated identical call) — the tool event will render
+   * with the `⊘` icon and a different color in TranscriptView.
+   */
+  readonly status?: 'success' | 'error' | 'blocked';
 }
 
 /**
@@ -89,6 +97,16 @@ export interface ToolExecutionOutcome {
  *       durationMs: Date.now() - startedAt,
  *     };
  *   };
+ *   ```
+ *
+ * To short-circuit a call (e.g. via a ToolCallLedger that detects
+ * duplicate calls and returns a cached "blocked" message), return:
+ *
+ *   ```ts
+ *   const blocked = ledger.beforeExecute(name, args);
+ *   if (blocked) {
+ *     return { result: blocked, status: 'blocked', durationMs: 0 };
+ *   }
  *   ```
  */
 export type OnToolCall = (toolCall: ToolCall) => Promise<ToolExecutionOutcome>;
@@ -206,10 +224,13 @@ export async function runOllamaChat(
       const execStartedAt = Date.now();
       try {
         const outcome = await opts.onToolCall(tc);
-        // Patch the tool event with the result + duration.
+        // Patch the tool event with the result + duration + status.
+        // `outcome.status` lets the engine signal 'blocked' (e.g. the
+        // ToolCallLedger short-circuited a duplicate call) — the tool
+        // event then renders with the ⊘ icon in TranscriptView.
         cb.patch(
           toolEventId,
-          makeToolResultPatch(outcome.result, outcome.durationMs, outcome.error),
+          makeToolResultPatch(outcome.result, outcome.durationMs, outcome.error, outcome.status),
         );
         toolResultMessages.push({
           role: 'tool',
