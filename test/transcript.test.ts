@@ -19,6 +19,7 @@ import {
   makeErrorEvent,
   makePlanEvent,
   makePlanStatusPatch,
+  makeSystemEvent,
   makeThinkingEvent,
   makeToolEvent,
   makeToolResultPatch,
@@ -304,5 +305,25 @@ describe('transcript callbacks — engine contract', () => {
     const ev = state.events[0] as { category: string; message: string };
     assert.equal(ev.category, 'ollama_unreachable');
     assert.equal(ev.message, 'Failed to connect to localhost:11434');
+  });
+
+  test('system event surfaces UI-level messages (compaction, skill_loaded, model_switch)', () => {
+    let state: TranscriptState = { ...initialTranscriptState };
+    const dispatch = makeFakeDispatch(() => state);
+    const cb = createTranscriptCallbacks(dispatch, () => state);
+
+    cb.add(makeSystemEvent(cb.nextId(), 'compacted', '5 events dropped: user → thinking → assistant'));
+    cb.add(makeSystemEvent(cb.nextId(), 'skill_loaded', 'Loaded skill: rails-architect'));
+    cb.add(makeSystemEvent(cb.nextId(), 'model_switch', 'Switched to qwen3:8b'));
+
+    assert.equal(state.events.length, 3);
+    const evs = [...state.events] as { kind: string; category: string; message: string }[];
+    assert.equal(evs[0]?.kind, 'system');
+    assert.equal(evs[0]?.category, 'compacted');
+    assert.ok(evs[0]?.message.includes('5 events dropped'));
+    assert.equal(evs[1]?.category, 'skill_loaded');
+    assert.ok(evs[1]?.message.includes('rails-architect'));
+    assert.equal(evs[2]?.category, 'model_switch');
+    assert.ok(evs[2]?.message.includes('qwen3:8b'));
   });
 });

@@ -194,6 +194,18 @@ export function renderEvent(ev: TranscriptEvent): React.ReactElement {
         </Text>
       );
 
+    case 'system':
+      return (
+        <Box flexDirection="row">
+          <Text color="gray" bold>
+            ◈{' '}
+          </Text>
+          <Text dimColor italic>
+            [{ev.category}] {ev.message}
+          </Text>
+        </Box>
+      );
+
     default: {
       // Exhaustiveness check — if a new event kind is added to
       // `types.ts` without a case here, TypeScript flags this line.

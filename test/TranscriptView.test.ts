@@ -341,10 +341,48 @@ describe('TranscriptView.renderEvent — exhaustiveness', () => {
       makeErrorEvent(8, 'c', 'm'),
       { kind: 'elicitation', id: 9, toolName: 't', arguments: {}, prompt: 'p', timestamp: Date.now() },
       makeUsageEvent(10, 'total', 1, 100),
+      { kind: 'system' as const, id: 11, category: 'compacted', message: '5 events dropped', timestamp: Date.now() },
     ];
     for (const ev of samples) {
       const el = renderEvent(ev);
       assert.ok(el, `renderEvent(${ev.kind}) returned a falsy element`);
     }
+  });
+});
+
+describe('TranscriptView.renderEvent — system events', () => {
+  test('renders the ◈ marker, category, and message', () => {
+    const ev: TranscriptEvent = {
+      kind: 'system' as const,
+      id: 1,
+      category: 'compacted',
+      message: '5 events dropped: user: Fix the auth test; thinking; assistant: I patched',
+      timestamp: Date.now(),
+    };
+    const snap = snapshot(ev);
+    assert.ok(hasText(snap, '◈'));
+    assert.ok(hasText(snap, 'compacted'));
+    assert.ok(hasText(snap, '5 events dropped'));
+  });
+
+  test('renders different categories (skill_loaded, model_switch)', () => {
+    const ev1: TranscriptEvent = {
+      kind: 'system' as const,
+      id: 1,
+      category: 'skill_loaded',
+      message: 'Loaded skill: rails-architect',
+      timestamp: Date.now(),
+    };
+    const ev2: TranscriptEvent = {
+      kind: 'system' as const,
+      id: 2,
+      category: 'model_switch',
+      message: 'Switched to qwen3:8b',
+      timestamp: Date.now(),
+    };
+    assert.ok(hasText(snapshot(ev1), 'skill_loaded'));
+    assert.ok(hasText(snapshot(ev1), 'rails-architect'));
+    assert.ok(hasText(snapshot(ev2), 'model_switch'));
+    assert.ok(hasText(snapshot(ev2), 'qwen3:8b'));
   });
 });
