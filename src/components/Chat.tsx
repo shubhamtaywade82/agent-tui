@@ -17,7 +17,7 @@ import { autoMaxChains } from '../auto-mode.js';
 import { getTaskRuntime, buildTaskPrompt, isPlanSatisfied } from '../tasks.js';
 import { TranscriptView } from './TranscriptView.js';
 import { useTranscript } from '../hooks/useTranscript.js';
-import { runOllamaChat, makeUserEvent, makePlanEvent, makePlanStatusPatch } from '../transcript/index.js';
+import { runOllamaChat, makeUserEvent, makePlanEvent, makePlanStatusPatch, makeSystemEvent } from '../transcript/index.js';
 
 export interface ChatMessage extends Message { timestamp?: number; thinking?: string; tokens?: number; skill?: string; }
 export interface PendingContinuation { type: 'task' | 'turn_limit'; taskId?: string; label: string; detail?: string; prompt: string; }
@@ -554,13 +554,55 @@ const Chat: React.FC<ChatProps> = ({
         show('Transcript cleared', 'info', 2000);
         return true;
       case '/compact': {
-        // Drop everything except the last 2 events. The transcript
-        // equivalent of the legacy /compact which summarized earlier turns.
+        // Compaction affects BOTH the UI transcript (cb.truncate) AND
+        // the model's context (setMessages). The legacy /compact does
+        // the same: it inserts a "[Compacted context: N turns]" system
+        // message at the front of the model's messages and drops the
+        // older messages. Without the setMessages call, the model
+        // would still see all the old context (the transcript events
+        // are UI-only — they don't feed back into the model's context).
         const total = transcriptState.events.length;
         if (total <= 3) { show('Transcript too short to compact', 'warning', 2500); return true; }
         const keepFromIndex = total - 2;
+        const droppedCount = total - 2;
+        // Summarize the dropped events for the system message (both UI + model).
+        const dropped = transcriptState.events.slice(0, keepFromIndex);
+        const droppedSummary = dropped
+          .map((ev) => {
+            if (ev.kind === 'user') return `user: ${ev.text.slice(0, 40)}`;
+            if (ev.kind === 'assistant') return `assistant: ${ev.text.slice(0, 40)}`;
+            if (ev.kind === 'thinking') return ev.text ? `thinking: ${ev.text.slice(0, 30)}` : 'thinking';
+            if (ev.kind === 'tool') return `tool(${ev.name}): ${ev.status}`;
+            if (ev.kind === 'plan') return `plan[${ev.taskId}]: ${ev.status}`;
+            if (ev.kind === 'error') return `error(${ev.category})`;
+            if (ev.kind === 'usage') return `usage(${ev.scope}: ${ev.tokens})`;
+            if (ev.kind === 'system') return `system(${ev.category})`;
+            return ev.kind;
+          })
+          .join('; ')
+          .slice(0, 200);
+        // 1. Truncate the transcript UI events.
         transcriptCb.truncate(keepFromIndex);
-        show(`Compacted ${total - 2} events`, 'info', 2500);
+        // 2. Emit a system event so the user sees what was compacted.
+        transcriptCb.add(makeSystemEvent(
+          transcriptCb.nextId(),
+          'compacted',
+          `${droppedCount} events dropped: ${droppedSummary}`,
+        ));
+        // 3. Mutate the model's messages state to compact its context.
+        //    This mirrors the legacy /compact: insert a system message
+        //    summarizing the compaction, then keep only the last 2 messages.
+        if (setMessages) {
+          setMessages((prev) => {
+            if (prev.length <= 3) return prev;
+            const olderMsgCount = prev.length - 2;
+            return [
+              { role: 'system' as const, content: `[Compacted context: ${olderMsgCount} earlier turns summarized]`, timestamp: Date.now() },
+              ...prev.slice(-2),
+            ];
+          });
+        }
+        show(`Compacted ${droppedCount} events`, 'info', 2500);
         return true;
       }
       case '/save': {
@@ -573,7 +615,14 @@ const Chat: React.FC<ChatProps> = ({
           if (ev.kind === 'tool') return `### TOOL [${ts}] ${ev.name} (${ev.status})\n\nargs: ${JSON.stringify(ev.arguments)}\nresult: ${ev.result ?? '(none)'}`;
           if (ev.kind === 'error') return `### ERROR [${ts}] ${ev.category}\n\n${ev.message}`;
           if (ev.kind === 'usage') return `### USAGE [${ts}] ${ev.scope}: ${ev.tokens} tokens`;
-          return `### ${ev.kind.toUpperCase()} [${ts}]\n\n${JSON.stringify(ev, null, 2)}`;
+          if (ev.kind === 'system') return `### SYSTEM [${ts}] ${ev.category}\n\n${ev.message}`;
+          if (ev.kind === 'plan') return `### PLAN [${ts}] ${ev.taskId} (${ev.status})\n\n${ev.title}: ${ev.objective}`;
+          if (ev.kind === 'file_op') return `### FILE_OP [${ts}] ${ev.op} ${ev.path}${ev.toPath ? ` -> ${ev.toPath}` : ''}`;
+          if (ev.kind === 'mcp') return `### MCP [${ts}] ${ev.server} (${ev.status})${ev.toolName ? ` · ${ev.toolName}` : ''}`;
+          if (ev.kind === 'elicitation') return `### ELICITATION [${ts}] ${ev.toolName} -> ${ev.choice ?? '(pending)'}`;
+          // Exhaustiveness — if a new event kind is added in types.ts,
+          // this line becomes unreachable and TS flags it.
+          return `### UNKNOWN [${ts}]\n\n${JSON.stringify(ev, null, 2)}`;
         }).join('\n\n---\n\n');
         try {
           writeFileSync(file, `# Transcript (${new Date().toLocaleString()})\n\n${body}\n`, 'utf8');

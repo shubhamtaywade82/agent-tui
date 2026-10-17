@@ -158,6 +158,11 @@ export function makeUsageEvent(id: number, scope: UsageScope, tokens: number, co
   return { kind: 'usage', id, scope, tokens, contextWindow, timestamp: Date.now() };
 }
 
+/** Factory for a system event — UI-level system messages (compaction, skill loaded, model switch). */
+export function makeSystemEvent(id: number, category: string, message: string): TranscriptEvent {
+  return { kind: 'system', id, category, message, timestamp: Date.now() };
+}
+
 export function makeElicitationEvent(
   id: number,
   toolName: string,

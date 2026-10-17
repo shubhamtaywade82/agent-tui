@@ -185,6 +185,16 @@ export interface UsageEvent {
   readonly timestamp: number;
 }
 
+export interface SystemEvent {
+  readonly kind: 'system';
+  readonly id: number;
+  /** Short category (e.g. 'compacted', 'skill_loaded', 'model_switch', 'context_reset'). */
+  readonly category: string;
+  /** The system message text shown to the user. */
+  readonly message: string;
+  readonly timestamp: number;
+}
+
 /* ------------------------------------------------------------------ *
  * The discriminated union
  * ------------------------------------------------------------------ */
@@ -199,7 +209,8 @@ export type TranscriptEvent =
   | McpEvent
   | ErrorEvent
   | ElicitationEvent
-  | UsageEvent;
+  | UsageEvent
+  | SystemEvent;
 
 /** Event kinds that accept `append` (streaming text). */
 export type StreamingKind = 'thinking' | 'assistant';
