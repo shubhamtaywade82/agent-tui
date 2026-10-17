@@ -644,3 +644,137 @@ describe('ollama-bridge — multi-turn tool execution', () => {
     assert.equal(assistantEvents.length, 1);
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * Tool loop guard integration (step 5 batch 5.5)
+ *
+ * The bridge stays generic — it doesn't know about the ToolCallLedger.
+ * The engine's onToolCall callback decides whether to short-circuit a
+ * call (e.g. via a ledger) and signals 'blocked' back via the outcome
+ * status field. The bridge patches the tool event with that status,
+ * which the TranscriptView renders with the ⊘ icon.
+ * ------------------------------------------------------------------ */
+
+describe('ollama-bridge — blocked status from onToolCall', () => {
+  function makeMultiTurnClient(turns: readonly FakeStreamOptions[]): Pick<OllamaClient, 'chatStream'> {
+    let call = 0;
+    return {
+      chatStream: async () => {
+        const opts = turns[Math.min(call, turns.length - 1)]!;
+        call++;
+        return makeFakeStream(opts) as never;
+      },
+    };
+  }
+
+  function toolRequestTurn(toolName: string, args: Record<string, unknown>, toolCallId = 'tc-1') {
+    return {
+      events: [
+        { type: 'token' as const, data: { delta: `Let me call ${toolName}.` } },
+        {
+          type: 'tool_call' as const,
+          data: {
+            toolCall: {
+              id: toolCallId,
+              function: { name: toolName, arguments: args },
+            },
+          },
+        },
+        {
+          type: 'done' as const,
+          data: {
+            result: {
+              message: {
+                role: 'assistant' as const,
+                content: `Let me call ${toolName}.`,
+                tool_calls: [
+                  { id: toolCallId, function: { name: toolName, arguments: args } },
+                ],
+              },
+              model: 'fake',
+              done: true,
+              usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+            } satisfies ChatStreamResult,
+          },
+        },
+      ],
+    } satisfies FakeStreamOptions;
+  }
+
+  function finalAnswerTurn(answer: string) {
+    return {
+      events: [
+        { type: 'token' as const, data: { delta: answer } },
+        {
+          type: 'done' as const,
+          data: {
+            result: {
+              message: { role: 'assistant' as const, content: answer },
+              model: 'fake',
+              done: true,
+              usage: { promptTokens: 20, completionTokens: 10, totalTokens: 30 },
+            } satisfies ChatStreamResult,
+          },
+        },
+      ],
+    } satisfies FakeStreamOptions;
+  }
+
+  test('onToolCall returning status="blocked" patches the tool event as blocked', async () => {
+    const { cb, getState } = makeTestState();
+    const client = makeMultiTurnClient([
+      toolRequestTurn('read_file', { path: '/etc/hosts' }, 'tc-1'),
+      finalAnswerTurn('I will not re-read; using cached result.'),
+    ]);
+
+    // Engine callback that simulates a ToolCallLedger short-circuit:
+    // always returns 'blocked' with the cached message as the result.
+    const onToolCall = async () => {
+      return {
+        result: '[Loop guard] Blocked duplicate tool call (3× already): read_file(/etc/hosts). Context pressure often causes re-read loops — use a different action.\nLast result (abbreviated):\n127.0.0.1 localhost',
+        durationMs: 0,
+        status: 'blocked' as const,
+      };
+    };
+
+    const result = await runOllamaChat(client as unknown as OllamaClient, cb, {
+      model: 'fake',
+      messages: baseMessages,
+      onToolCall,
+    });
+
+    assert.equal(result.iterations, 2);
+    const tool = getState().events.find((e) => e.kind === 'tool') as {
+      status: string;
+      result: string;
+      durationMs: number;
+    };
+    assert.equal(tool.status, 'blocked', 'expected tool status to be "blocked"');
+    assert.equal(tool.durationMs, 0);
+    assert.ok(tool.result.includes('[Loop guard]'), 'expected result to contain the loop-guard message');
+  });
+
+  test('onToolCall returning status="success" (default) still works as before', async () => {
+    const { cb, getState } = makeTestState();
+    const client = makeMultiTurnClient([
+      toolRequestTurn('read_file', { path: '/x' }, 'tc-1'),
+      finalAnswerTurn('Done.'),
+    ]);
+
+    const onToolCall = async () => ({
+      result: 'file contents',
+      durationMs: 5,
+      // No status field — defaults to 'success'
+    });
+
+    const result = await runOllamaChat(client as unknown as OllamaClient, cb, {
+      model: 'fake',
+      messages: baseMessages,
+      onToolCall,
+    });
+
+    assert.equal(result.iterations, 2);
+    const tool = getState().events.find((e) => e.kind === 'tool') as { status: string };
+    assert.equal(tool.status, 'success');
+  });
+});
