@@ -124,9 +124,18 @@ const App: React.FC = () => {
       <Box flexDirection="row" gap={2} alignItems="center">
         <StatusIndicator status={isConnected ? 'online' : 'offline'} label={isConnected ? 'Online' : 'Offline'} theme={myTheme} />
         <Badge variant="success">MCP Active</Badge>
-        <Badge variant="info">{`📚 ${loadAvailableSkills().length} Skills`}</Badge>
+        <Box onClick={() => setActiveModal((prev) => (prev === 'skills' ? null : 'skills'))}>
+          <Badge variant="info">{`📚 ${loadAvailableSkills().length} Skills`}</Badge>
+        </Box>
         {autoMode && <Badge variant="warning">AUTO</Badge>}
-        <Box flexDirection="row" gap={1} alignItems="center">
+        <Box
+          flexDirection="row"
+          gap={1}
+          alignItems="center"
+          onClick={() => {
+            if (models.length > 0) setActiveModal((prev) => (prev === 'model' ? null : 'model'));
+          }}
+        >
           <Text bold color={activeModal === 'model' ? (myTheme.colors.focus ?? 'green') : 'cyan'}>
             Model: <Text color="white">{selectedModel || 'none'}</Text>
           </Text>
@@ -134,7 +143,13 @@ const App: React.FC = () => {
         </Box>
       </Box>
       {columns >= 90 && (
-        <Box flexDirection="row" alignItems="center">
+        <Box
+          flexDirection="row"
+          alignItems="center"
+          onClick={() => {
+            if (activeModal) setActiveModal(null);
+          }}
+        >
           <Text color="gray" dimColor>{activeModal ? '[Esc Close Modal]' : '[Ctrl+O Model • Ctrl+T View]'}</Text>
         </Box>
       )}
@@ -183,7 +198,9 @@ const App: React.FC = () => {
                     focus={true} theme={myTheme} maxVisible={6}
                   />
                 </Box>
-                <Box marginTop={1}><Text color="gray" dimColor>[↑/↓ Navigate • Enter Select • Esc Close]</Text></Box>
+                <Box marginTop={1} onClick={() => setActiveModal(null)}>
+                  <Text color="gray" dimColor>[↑/↓ Navigate • Enter Select • Esc Close]</Text>
+                </Box>
               </Box>
             )}
 
@@ -213,7 +230,9 @@ const App: React.FC = () => {
                     focus={true} theme={myTheme} maxVisible={6}
                   />
                 </Box>
-                <Box marginTop={1}><Text color="gray" dimColor>[↑/↓ Navigate • Enter Load Skill • Esc Close]</Text></Box>
+                <Box marginTop={1} onClick={() => setActiveModal(null)}>
+                  <Text color="gray" dimColor>[↑/↓ Navigate • Enter Load Skill • Esc Close]</Text>
+                </Box>
               </Box>
             )}
           </Box>

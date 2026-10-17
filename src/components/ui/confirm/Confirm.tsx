@@ -57,6 +57,12 @@ export const Confirm: React.FC<ConfirmProps> = ({
     <Box gap={1}>
       <Text color={theme.colors.primary}>?</Text>
       <Text>{message}</Text>
+      <Box onClick={() => { setAnswered(true); onConfirm(); }}>
+        <Text color={theme.colors.success} bold>[Y]</Text>
+      </Box>
+      <Box onClick={() => { setAnswered(false); onCancel?.(); }}>
+        <Text color={theme.colors.error} bold>[N]</Text>
+      </Box>
       <Text dimColor>{hint}</Text>
       <Text color={theme.colors.primary}>█</Text>
     </Box>

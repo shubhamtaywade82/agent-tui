@@ -39,6 +39,7 @@ interface DialogShellProps {
   isFocused: boolean;
   borderStyle: BorderStyle;
   theme: InkUITheme;
+  onAction?: (action: DialogAction) => void;
 }
 
 const DialogShell: React.FC<DialogShellProps> = ({
@@ -49,6 +50,7 @@ const DialogShell: React.FC<DialogShellProps> = ({
   isFocused,
   borderStyle,
   theme,
+  onAction,
 }) => {
   const b = borderStyles[borderStyle];
   const bc = theme.colors.border;
@@ -119,14 +121,15 @@ const DialogShell: React.FC<DialogShellProps> = ({
           {actions.map((action, i) => {
             const isActive = i === activeIndex && isFocused;
             return (
-              <Text
-                key={action.value}
-                color={isActive ? theme.colors.focus : theme.colors.muted}
-                bold={isActive}
-                inverse={isActive}
-              >
-                {` ${action.label} `}
-              </Text>
+              <Box key={action.value} onClick={() => onAction?.(action)}>
+                <Text
+                  color={isActive ? theme.colors.focus : theme.colors.muted}
+                  bold={isActive}
+                  inverse={isActive}
+                >
+                  {` ${action.label} `}
+                </Text>
+              </Box>
             );
           })}
         </Box>
@@ -201,6 +204,7 @@ const FocusedDialog: React.FC<FocusedDialogProps> = ({
       isFocused
       borderStyle={borderStyle}
       theme={theme}
+      onAction={onAction}
     />
   );
 };
@@ -247,6 +251,7 @@ export const Dialog: React.FC<DialogProps> = ({
       isFocused={false}
       borderStyle={borderStyle}
       theme={theme}
+      onAction={onAction}
     />
   );
 };

@@ -110,6 +110,15 @@ export const ScrollArea: React.FC<ScrollAreaProps> = ({
     // callback that ScrollBox supports — pass through `total` as 0 since
     // ScrollBox doesn't expose content height in its onScroll.
     const handleScroll = onScrollOffsetChange ?? (onScroll ? (offset: number) => onScroll(offset, 0) : undefined);
+    const handleOuterWheel = (event: any) => {
+      if (focus) return;
+      const step = 3;
+      if (event?.button === 'wheelUp') {
+        handleScroll?.(Math.max(0, (scrollOffsetProp ?? 0) - step));
+      } else if (event?.button === 'wheelDown') {
+        handleScroll?.((scrollOffsetProp ?? 0) + step);
+      }
+    };
     const inner = (
       <TerminaScrollBox
         height={height}
@@ -122,15 +131,11 @@ export const ScrollArea: React.FC<ScrollAreaProps> = ({
         {children}
       </TerminaScrollBox>
     );
-    // Honor the `width` prop by wrapping in a Box.
-    if (width !== undefined) {
-      return (
-        <Box width={width} height={height}>
-          {inner}
-        </Box>
-      );
-    }
-    return inner;
+    return (
+      <Box width={width ?? '100%'} height={height} onWheel={handleOuterWheel}>
+        {inner}
+      </Box>
+    );
   }
 
   // Styled path: re-implement locally for the rich case. Same code as
@@ -221,7 +226,15 @@ export const ScrollArea: React.FC<ScrollAreaProps> = ({
       : 0;
 
   return (
-    <Box flexDirection="row" height={height} width={width ?? '100%'}>
+    <Box
+      flexDirection="row"
+      height={height}
+      width={width ?? '100%'}
+      onWheel={(e: any) => {
+        if (e?.button === 'wheelUp') scroll(-resolvedMouseDelta * 3);
+        else if (e?.button === 'wheelDown') scroll(resolvedMouseDelta * 3);
+      }}
+    >
       <Box flexDirection="column" flexGrow={1}>
         {visibleItems}
       </Box>

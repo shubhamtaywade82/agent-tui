@@ -30,6 +30,8 @@ interface ListDisplayProps<T> {
   isFocused: boolean;
   theme: InkUITheme;
   maxVisible?: number;
+  onSelect?: (item: SelectItem<T>) => void;
+  onMove?: (dir: 1 | -1) => void;
 }
 
 function ListDisplay<T>({
@@ -38,6 +40,8 @@ function ListDisplay<T>({
   isFocused,
   theme,
   maxVisible = 6,
+  onSelect,
+  onMove,
 }: ListDisplayProps<T>) {
   const needsScroll = items.length > maxVisible;
   let start = 0;
@@ -48,7 +52,13 @@ function ListDisplay<T>({
   const slice = needsScroll ? items.slice(start, start + maxVisible) : items;
 
   return (
-    <Box flexDirection="column">
+    <Box
+      flexDirection="column"
+      onWheel={(e: any) => {
+        if (e?.button === 'wheelUp') onMove?.(-1);
+        else if (e?.button === 'wheelDown') onMove?.(1);
+      }}
+    >
       {start > 0 ? (
         <Text color={theme.colors.muted} dimColor>  ▲ {start} more above</Text>
       ) : null}
@@ -69,7 +79,12 @@ function ListDisplay<T>({
         const indicator = isActive && isFocused ? '❯ ' : '  ';
 
         return (
-          <Box key={String(item.value)}>
+          <Box
+            key={String(item.value)}
+            onClick={() => {
+              if (!isDisabled && onSelect) onSelect(item);
+            }}
+          >
             <Text color={isActive && isFocused ? theme.colors.focus : theme.colors.muted}>
               {indicator}
             </Text>
@@ -129,7 +144,17 @@ function FocusedSelect<T>({ items, onSelect, theme, maxVisible }: FocusedSelectP
     }
   });
 
-  return <ListDisplay items={items} activeIndex={index} isFocused theme={theme} maxVisible={maxVisible} />;
+  return (
+    <ListDisplay
+      items={items}
+      activeIndex={index}
+      isFocused
+      theme={theme}
+      maxVisible={maxVisible}
+      onSelect={onSelect}
+      onMove={move}
+    />
+  );
 }
 
 // ─── public component ─────────────────────────────────────────────────────────
@@ -156,6 +181,7 @@ export function Select<T = string>({
       isFocused={false}
       theme={theme}
       maxVisible={maxVisible}
+      onSelect={onSelect}
     />
   );
 }

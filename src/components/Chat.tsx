@@ -929,7 +929,7 @@ const Chat: React.FC<ChatProps> = ({
 
   return (
     <Box flexDirection="column" width={columns}>
-      <Box paddingX={1} width={columns}>
+      <Box paddingX={1} width={columns} onClick={() => setFocus(1)}>
         {messages.length === 0 ? (
           <Box height={chatHeight} width="100%" flexDirection="column" alignItems="center" justifyContent="center">
             <Box borderStyle="round" borderColor="cyan" paddingX={2} flexDirection="column" alignItems="center" width={Math.min(74, columns - 4)}>
@@ -958,7 +958,16 @@ const Chat: React.FC<ChatProps> = ({
             <Text color="gray" dimColor>↑/↓ Nav • Tab Select • Enter Run • Esc Close ({selectedCmdIndex + 1}/{activeMenu.length})</Text>
           </Box>
           {visibleCommands.map((c) => (
-            <Box key={c.name} flexDirection="row" gap={1}>
+            <Box
+              key={c.name}
+              flexDirection="row"
+              gap={1}
+              onClick={() => {
+                setInput(c.name.includes(' ') || !c.args ? c.name : c.name + ' ');
+                setSelectedCmdIndex(0);
+                setFocus(0);
+              }}
+            >
               <Text bold color={c === activeMenu[selectedCmdIndex] ? 'cyan' : 'yellow'} inverse={c === activeMenu[selectedCmdIndex]}>{c === activeMenu[selectedCmdIndex] ? '❯ ' : '  '}{c.name}</Text>
               {c.args && <Text color={c === activeMenu[selectedCmdIndex] ? 'white' : 'gray'}>{c.args}</Text>}
               <Text color="gray" dimColor={c !== activeMenu[selectedCmdIndex]}>— {c.desc}</Text>
@@ -976,16 +985,32 @@ const Chat: React.FC<ChatProps> = ({
           </Box>
           {pendingContinuation.detail && <Text color="gray" dimColor>{pendingContinuation.detail}</Text>}
           <Box flexDirection="row" gap={2} marginTop={1}>
-            <Text color="green" bold>[Y] Continue with task</Text>
-            <Text color="red" bold>[N / Enter / Esc] Pause</Text>
+            <Box
+              onClick={() => {
+                const cont = pendingContinuation;
+                setPendingContinuation(null);
+                show(`Continuing: ${cont.label}`, 'info', 2000);
+                void handleContinuation(cont);
+              }}
+            >
+              <Text color="green" bold>[Y] Continue with task</Text>
+            </Box>
+            <Box
+              onClick={() => {
+                setPendingContinuation(null);
+                show('Plan paused', 'info', 2000);
+              }}
+            >
+              <Text color="red" bold>[N / Enter / Esc] Pause</Text>
+            </Box>
           </Box>
         </Box>
       )}
 
       {inputStyle === 'box' ? (
-        <Box borderStyle="round" borderColor={isInputFocused ? (theme?.colors?.focus ?? 'cyan') : (theme?.colors?.border ?? 'gray')} paddingX={1} width={columns}>{textInputNode}</Box>
+        <Box borderStyle="round" borderColor={isInputFocused ? (theme?.colors?.focus ?? 'cyan') : (theme?.colors?.border ?? 'gray')} paddingX={1} width={columns} onClick={() => setFocus(0)}>{textInputNode}</Box>
       ) : (
-        <Box flexDirection="column" width={columns}>
+        <Box flexDirection="column" width={columns} onClick={() => setFocus(0)}>
           <Divider width={columns} theme={theme} color={isInputFocused ? (theme?.colors?.focus ?? 'cyan') : undefined} />
           <Box paddingX={1} width={columns}>{textInputNode}</Box>
           <Divider width={columns} theme={theme} color={isInputFocused ? (theme?.colors?.focus ?? 'cyan') : undefined} />
@@ -993,11 +1018,22 @@ const Chat: React.FC<ChatProps> = ({
       )}
 
       <Box paddingX={1} width={columns} flexDirection="row" justifyContent="space-between">
-        <Text color="gray" dimColor>{isChatFocused ? '↑/↓ Scroll • Esc/Tab Type' : `PgUp/PgDn Scroll • Tab/→ Complete • Ctrl+→ Word • ↑/↓ History • Ctrl+B Style [${inputStyle}]`}</Text>
+        <Box onClick={() => setFocus(isChatFocused ? 0 : 1)}>
+          <Text color="gray" dimColor>{isChatFocused ? '↑/↓ Scroll • Esc/Tab Type' : `PgUp/PgDn Scroll • Tab/→ Complete • Ctrl+→ Word • ↑/↓ History • Ctrl+B Style [${inputStyle}]`}</Text>
+        </Box>
         <Box flexDirection="row" gap={1}>
-          {viewMode === 'stream' && scrollOffset > 0 && <Text color="yellow">▲ Above (PgUp)</Text>}{viewMode === 'stream' && scrollOffset < maxScrollOffset && <Text color="yellow">▼ Below (PgDn)</Text>}
-          {viewMode === 'accordion' && <Text color="cyan">[Accordion]</Text>}
-          {viewMode === 'transcript' && <Text color="green">[Transcript · {transcriptState.events.length} events{phase !== 'idle' ? ' · streaming' : ''}]</Text>}
+          {viewMode === 'stream' && scrollOffset > 0 && (
+            <Box onClick={() => setScrollOffset((p) => Math.max(0, p - Math.floor(chatHeight / 2)))}>
+              <Text color="yellow">▲ Above (PgUp)</Text>
+            </Box>
+          )}
+          {viewMode === 'stream' && scrollOffset < maxScrollOffset && (
+            <Box onClick={() => setScrollOffset((p) => Math.min(maxScrollOffset, p + Math.floor(chatHeight / 2)))}>
+              <Text color="yellow">▼ Below (PgDn)</Text>
+            </Box>
+          )}
+          {viewMode === 'accordion' && <Box onClick={() => setViewMode('transcript')}><Text color="cyan">[Accordion]</Text></Box>}
+          {viewMode === 'transcript' && <Box onClick={() => setViewMode('stream')}><Text color="green">[Transcript · {transcriptState.events.length} events{phase !== 'idle' ? ' · streaming' : ''}]</Text></Box>}
         </Box>
       </Box>
     </Box>

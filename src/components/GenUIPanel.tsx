@@ -97,12 +97,16 @@ export const GenUIPanel: React.FC<GenUIPanelProps> = ({ width, height, isActive 
         <Box flexDirection="row" gap={2}>
           <Text bold color="cyan">🎨 Termina GenUI</Text>
           {SCENARIOS.map((s, i) => (
-            <Text key={s.id} bold={i === activeIdx} color={i === activeIdx ? 'green' : 'gray'}>
-              [{i + 1}] {s.title}
-            </Text>
+            <Box key={s.id} onClick={() => setActiveIdx(i)}>
+              <Text bold={i === activeIdx} color={i === activeIdx ? 'green' : 'gray'}>
+                [{i + 1}] {s.title}
+              </Text>
+            </Box>
           ))}
         </Box>
-        <Text color="gray" dimColor>[Tab/1-3 Switch • V Toggle Code]</Text>
+        <Box onClick={() => setShowCode((p) => !p)}>
+          <Text color="gray" dimColor>[Tab/1-3 Switch • V Toggle Code]</Text>
+        </Box>
       </Box>
 
       {/* Main content body */}
