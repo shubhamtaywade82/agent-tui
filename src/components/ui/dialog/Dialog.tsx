@@ -39,6 +39,7 @@ interface DialogShellProps {
   isFocused: boolean;
   borderStyle: BorderStyle;
   theme: InkUITheme;
+  /** Click handler for action buttons (mouse support). */
   onAction?: (action: DialogAction) => void;
 }
 
@@ -121,7 +122,7 @@ const DialogShell: React.FC<DialogShellProps> = ({
           {actions.map((action, i) => {
             const isActive = i === activeIndex && isFocused;
             return (
-              <Box key={action.value} onClick={() => onAction?.(action)}>
+              <Box key={action.value} onClick={onAction ? () => onAction(action) : undefined}>
                 <Text
                   color={isActive ? theme.colors.focus : theme.colors.muted}
                   bold={isActive}
