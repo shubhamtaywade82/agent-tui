@@ -30,6 +30,8 @@ interface ListDisplayProps<T> {
   isFocused: boolean;
   theme: InkUITheme;
   maxVisible?: number;
+  /** Click handler for item rows (mouse support). */
+  onItemPick?: (item: SelectItem<T>, index: number) => void;
 }
 
 function ListDisplay<T>({
@@ -38,6 +40,7 @@ function ListDisplay<T>({
   isFocused,
   theme,
   maxVisible = 6,
+  onItemPick,
 }: ListDisplayProps<T>) {
   const needsScroll = items.length > maxVisible;
   let start = 0;
@@ -69,7 +72,10 @@ function ListDisplay<T>({
         const indicator = isActive && isFocused ? '❯ ' : '  ';
 
         return (
-          <Box key={String(item.value)}>
+          <Box
+            key={String(item.value)}
+            onClick={isDisabled || !onItemPick ? undefined : () => onItemPick(item, itemIndex)}
+          >
             <Text color={isActive && isFocused ? theme.colors.focus : theme.colors.muted}>
               {indicator}
             </Text>
@@ -105,6 +111,10 @@ function FocusedSelect<T>({ items, onSelect, theme, maxVisible }: FocusedSelectP
   const firstEnabled = items.findIndex((it) => !it.disabled);
   const [index, setIndex] = useState(Math.max(0, firstEnabled));
 
+  const pick = (item: SelectItem<T>) => {
+    if (item && !item.disabled) onSelect(item);
+  };
+
   const move = (dir: 1 | -1) => {
     setIndex((prev) => {
       let next = prev + dir;
@@ -129,7 +139,7 @@ function FocusedSelect<T>({ items, onSelect, theme, maxVisible }: FocusedSelectP
     }
   });
 
-  return <ListDisplay items={items} activeIndex={index} isFocused theme={theme} maxVisible={maxVisible} />;
+  return <ListDisplay items={items} activeIndex={index} isFocused theme={theme} maxVisible={maxVisible} onItemPick={pick} />;
 }
 
 // ─── public component ─────────────────────────────────────────────────────────

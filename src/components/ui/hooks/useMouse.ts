@@ -1,10 +1,38 @@
-import { useEffect, useRef } from 'react';
-import { useStdin, useStdout } from '@nemesis-oss/termina-core';
-
-declare const process: any;
+/**
+ * src/components/ui/hooks/useMouse.ts — mouse events via termina-core.
+ *
+ * The framework (@nemesis-oss/termina-core, an Ink 8 fork) parses SGR mouse
+ * reports out of stdin before useInput ever sees them and re-publishes them on
+ * an internal event emitter. Its `useMouse` hook subscribes to that emitter.
+ * This file is a thin compatibility wrapper around it, keeping the legacy
+ * local API (`useMouseScroll`, delta-based) used by older call sites.
+ *
+ * Legacy notes (kept for history):
+ *   - The previous implementation attached a raw `stdin.on('data')` listener
+ *     and wrote DEC private modes by hand. Mixing a push-mode 'data' listener
+ *     with the framework's pull-mode `stdin.read()` loop is fragile, and the
+ *     hand-written enable sequence duplicated the framework's own tracking
+ *     management. Both are gone now.
+ *   - termina-core 0.1.0 ships a corrupted `mouseTrackingEnable` constant
+ *     (three bare ESC bytes, upstream bug). App-level compensation lives in
+ *     `src/components/ui/mouse/mouseTrackingShim.tsx`.
+ *
+ * Rich click handling should prefer `Box` props directly (`onClick`,
+ * `onMouseDown`, `onMouseUp`, `onWheel`) — the framework hit-tests them
+ * against the real Yoga layout, including clipped scroll containers.
+ */
+import { useMouse as useFrameworkMouse } from '@nemesis-oss/termina-core';
+import type { MouseEvent as FrameworkMouseEvent } from '@nemesis-oss/termina-core';
 
 export type MouseButton = 'left' | 'middle' | 'right' | 'wheel-up' | 'wheel-down' | 'none';
 export type MouseAction = 'down' | 'up' | 'drag' | 'wheel';
+
+export interface BoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 export interface MouseEvent {
   type: MouseAction;
@@ -16,11 +44,21 @@ export interface MouseEvent {
   ctrl: boolean;
 }
 
-export interface BoundingBox {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
+/** Adapt the framework's parsed report to the legacy local shape. */
+function adaptEvent(ev: FrameworkMouseEvent): MouseEvent {
+  const type: MouseAction =
+    ev.action === 'press' ? 'down'
+    : ev.action === 'release' ? 'up'
+    : ev.action === 'drag' ? 'drag'
+    : ev.action === 'wheel' ? 'wheel'
+    : 'down';
+  const button: MouseButton =
+    ev.button === 'wheelUp' ? 'wheel-up'
+    : ev.button === 'wheelDown' ? 'wheel-down'
+    : ev.button === 'left' || ev.button === 'middle' || ev.button === 'right'
+      ? ev.button
+      : 'none';
+  return { type, button, x: ev.x, y: ev.y, shift: ev.shift, meta: ev.meta, ctrl: ev.ctrl };
 }
 
 export interface UseMouseOptions {
@@ -33,105 +71,30 @@ export interface UseMouseOptions {
   onEvent?: (e: MouseEvent) => void;
 }
 
-// DEC private modes: 1000 = click, 1002 = drag/cell motion, 1006 = SGR extended coordinates
-const ENABLE_MOUSE = '\x1b[?1000h\x1b[?1002h\x1b[?1006h';
-const DISABLE_MOUSE = '\x1b[?1000l\x1b[?1002l\x1b[?1006l';
-
-export function isPointInside(x: number, y: number, box: BoundingBox): boolean {
-  return x >= box.x && x < box.x + box.width && y >= box.y && y < box.y + box.height;
-}
-
-function resolveButtonAndAction(baseCode: number, isRelease: boolean): { button: MouseButton; type: MouseAction } {
-  if (baseCode === 64) return { button: 'wheel-up', type: 'wheel' };
-  if (baseCode === 65) return { button: 'wheel-down', type: 'wheel' };
-
-  if ((baseCode & 32) !== 0) {
-    const btn = baseCode - 32;
-    const button: MouseButton = btn === 0 ? 'left' : btn === 1 ? 'middle' : btn === 2 ? 'right' : 'none';
-    return { button, type: 'drag' };
-  }
-
-  const button: MouseButton = baseCode === 0 ? 'left' : baseCode === 1 ? 'middle' : baseCode === 2 ? 'right' : 'none';
-  return { button, type: isRelease ? 'up' : 'down' };
-}
-
-export function parseSgrMouseEvent(chunk: string): MouseEvent[] {
-  const events: MouseEvent[] = [];
-  // Regex created per-call to avoid shared lastIndex state across invocations
-  const sgrRegex = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = sgrRegex.exec(chunk)) !== null) {
-    const code = parseInt(match[1]!, 10);
-    const x = parseInt(match[2]!, 10);
-    const y = parseInt(match[3]!, 10);
-    const isRelease = match[4] === 'm';
-
-    const shift = (code & 4) !== 0;
-    const meta = (code & 8) !== 0;
-    const ctrl = (code & 16) !== 0;
-
-    // Mask modifier bits (4 = shift, 8 = meta, 16 = ctrl)
-    const baseCode = code & ~28;
-    const { button, type } = resolveButtonAndAction(baseCode, isRelease);
-
-    events.push({ type, button, x, y, shift, meta, ctrl });
-  }
-
-  return events;
-}
-
-function dispatchMouseEvent(event: MouseEvent, options: UseMouseOptions): void {
-  options.onEvent?.(event);
-
-  if (event.type === 'down') options.onMouseDown?.(event);
-  else if (event.type === 'up') options.onMouseUp?.(event);
-  else if (event.type === 'drag') options.onMouseDrag?.(event);
-  else if (event.type === 'wheel') {
-    if (event.button === 'wheel-up') options.onWheelUp?.(event);
-    else if (event.button === 'wheel-down') options.onWheelDown?.(event);
-  }
-}
-
 export function useMouse(options: UseMouseOptions = {}): void {
   const { active = true } = options;
-  const { stdin, setRawMode } = useStdin();
-  const { stdout } = useStdout();
-
-  // Ref keeps the latest callbacks without re-running the effect on every render.
-  // Without this, the data listener would call the first render's stale closures
-  // (which captured maxOffset=0 / scrollOffset=0) and scroll would be broken.
-  const optionsRef = useRef<UseMouseOptions>(options);
+  // Ref keeps the latest callbacks without re-subscribing on every render.
+  const optionsRef = useRef(options);
   optionsRef.current = options;
 
-  useEffect(() => {
-    if (!active || !stdout || !stdin) return;
-
-    setRawMode?.(true);
-    stdout.write(ENABLE_MOUSE);
-
-    const onData = (data: unknown) => {
-      const chunk = typeof data === 'string' ? data : String(data);
-      const events = parseSgrMouseEvent(chunk);
-      // Always read from ref so we use the latest callbacks, not a stale closure
-      events.forEach((ev) => dispatchMouseEvent(ev, optionsRef.current));
-    };
-
-    stdin.on('data', onData);
-
-    const restoreTerminal = () => {
-      try { stdout.write(DISABLE_MOUSE); } catch { /* ignore stream-closed errors */ }
-    };
-
-    process.once('exit', restoreTerminal);
-
-    return () => {
-      stdin.off('data', onData);
-      process.removeListener('exit', restoreTerminal);
-      restoreTerminal();
-    };
-  }, [active, stdin, stdout, setRawMode]);
+  useFrameworkMouse(
+    (ev) => {
+      const event = adaptEvent(ev);
+      const o = optionsRef.current;
+      o.onEvent?.(event);
+      if (event.type === 'down') o.onMouseDown?.(event);
+      else if (event.type === 'up') o.onMouseUp?.(event);
+      else if (event.type === 'drag') o.onMouseDrag?.(event);
+      else if (event.type === 'wheel') {
+        if (event.button === 'wheel-up') o.onWheelUp?.(event);
+        else if (event.button === 'wheel-down') o.onWheelDown?.(event);
+      }
+    },
+    { isActive: active },
+  );
 }
+
+import { useRef } from 'react';
 
 /** Convenience wrapper: fires onScroll(-1) for wheel-up, (+1) for wheel-down. */
 export function useMouseScroll(onScroll: (delta: number, e: MouseEvent) => void, active = true): void {
@@ -142,3 +105,10 @@ export function useMouseScroll(onScroll: (delta: number, e: MouseEvent) => void,
   });
 }
 
+/**
+ * Legacy hit-test helper retained for callers that predate the framework's
+ * layout-based hit testing. Prefer `Box onClick` for new code.
+ */
+export function isPointInside(x: number, y: number, box: BoundingBox): boolean {
+  return x >= box.x && x < box.x + box.width && y >= box.y && y < box.y + box.height;
+}

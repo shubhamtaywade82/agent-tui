@@ -141,6 +141,13 @@ const Chat: React.FC<ChatProps> = ({
   const [registry, setRegistry] = useState<any>(null); const [scrollOffset, setScrollOffset] = useState(0);
   const [inputStyle, setInputStyle] = useState<'box' | 'line'>(() => loadUserConfig().inputStyle || 'line');
   const [pendingContinuation, setPendingContinuation] = useState<PendingContinuation | null>(null);
+  // Mouse/keyboard per-turn view state. Keyed by turn index — the messages
+  // array is append-only within a run, so indices stay stable.
+  const [collapsedTurns, setCollapsedTurns] = useState<Set<number>>(() => new Set());
+  const [expandedThinkingTurns, setExpandedThinkingTurns] = useState<Set<number>>(() => new Set());
+  const [expandedToolCallKeys, setExpandedToolCallKeys] = useState<Set<string>>(() => new Set());
+  // Live scroll telemetry from ScrollArea — powers the footer jump pills.
+  const [scrollInfo, setScrollInfo] = useState<{ offset: number; total: number }>({ offset: 0, total: 0 });
   const selectedModel = propModel || models[0] || 'qwen3:8b'; const { toasts, show, dismiss } = useToast();
   // Step 5 batch 2: the transcript state + callbacks for the 'transcript' viewMode.
   // Lives alongside the existing ChatMessage[] state — both flows can run, only
@@ -173,10 +180,27 @@ const Chat: React.FC<ChatProps> = ({
   const loopLedgerRef = React.useRef<ToolCallLedger | null>(null);
   const runModelRef = React.useRef<string | undefined>(undefined);
   const routingStateRef = React.useRef<ReturnType<typeof createOllamaRunRoutingState> | null>(null);
+  // Token batching: stream deltas land here and flush to React state on a
+  // ~40ms cadence. Without this, every token triggers a full conversation
+  // re-render (messageRows rebuild + Yoga relayout), which is the main
+  // source of the jittery, unprofessional streaming feel.
+  const streamBufRef = React.useRef({ thinking: '', content: '' });
+  const streamFlushTimerRef = React.useRef<NodeJS.Timeout | null>(null);
+  // Per-turn element cache: completed turns render identical elements across
+  // stream flushes, so only the active turn rebuilds per flush.
+  const turnCacheRef = React.useRef(new Map<ChatMessage, { key: string; rows: React.ReactElement[] }>());
 
   const promptPool = useMemo(() => Array.from(new Set([...history.filter((h) => !h.startsWith('/')), ...DEFAULT_PROMPTS])), [history]);
   const activeMenu = useMemo(() => dismissedInput === input ? [] : getMenuOptions(input, models, ghostText, promptPool), [input, models, ghostText, promptPool, dismissedInput]);
-  const menuOverhead = activeMenu.length > 0 ? 7 : 0; const chatHeight = Math.max(3, rows - 7 - menuOverhead - (toasts.length > 0 ? 2 : 0));
+  const menuOverhead = activeMenu.length > 0 ? 7 : 0;
+  const toastOverhead = toasts.length > 0 ? 2 : 0;
+  // Plan-continuation panel: outer rounded border (2 rows) + label row +
+  // optional detail row + margin row + bordered button row (3 rows).
+  // Subtracting it from the chat viewport is what keeps the total frame
+  // exactly `rows` tall — the old build overflowed here, which pushed the
+  // whole UI down line by line.
+  const contOverhead = pendingContinuation ? (pendingContinuation.detail ? 8 : 7) : 0;
+  const chatHeight = Math.max(3, rows - 7 - menuOverhead - toastOverhead - contOverhead);
 
   useEffect(() => {
     setSelectedCmdIndex(0); abortRef.current?.abort();
@@ -211,21 +235,52 @@ const Chat: React.FC<ChatProps> = ({
     setInputStyle(next); saveUserConfig({ inputStyle: next }); show(`Input style: ${next}`, 'info', 1500);
   };
 
+  const toggleTurnCollapse = (mi: number) =>
+    setCollapsedTurns((prev) => { const n = new Set(prev); if (n.has(mi)) n.delete(mi); else n.add(mi); return n; });
+  const toggleTurnThinking = (mi: number) =>
+    setExpandedThinkingTurns((prev) => { const n = new Set(prev); if (n.has(mi)) n.delete(mi); else n.add(mi); return n; });
+  const toggleToolCallExpanded = (key: string) =>
+    setExpandedToolCallKeys((prev) => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
+
+  const flushStreamBuffer = () => {
+    if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
+    const buf = streamBufRef.current;
+    if (!buf.thinking && !buf.content) return;
+    if (buf.thinking) setStreamedThinking((p) => p + buf.thinking);
+    if (buf.content) { setPhase('responding'); setStreamedContent((p) => p + buf.content); }
+    streamBufRef.current = { thinking: '', content: '' };
+  };
+  const bufferStreamDelta = (kind: 'thinking' | 'content', d: string) => {
+    streamBufRef.current[kind] += d;
+    if (!streamFlushTimerRef.current) {
+      streamFlushTimerRef.current = setTimeout(() => { streamFlushTimerRef.current = null; flushStreamBuffer(); }, 40);
+    }
+  };
+
+  const acceptContinuation = () => {
+    if (!pendingContinuation) return;
+    const cont = pendingContinuation;
+    setPendingContinuation(null);
+    show(`Continuing: ${cont.label}`, 'info', 2000);
+    void handleContinuation(cont);
+  };
+  const pauseContinuation = () => {
+    if (!pendingContinuation) return;
+    setPendingContinuation(null);
+    show('Plan paused', 'info', 2000);
+  };
+
   useInput((inp, key) => {
     if (!isActive || isSelectingModel) return;
     if (pendingContinuation) {
       if (inp === 'y' || inp === 'Y') {
-        const cont = pendingContinuation;
-        setPendingContinuation(null);
-        show(`Continuing: ${cont.label}`, 'info', 2000);
-        void handleContinuation(cont);
+        acceptContinuation();
         return;
       }
       // Bare Enter must never chain another loop — pause instead, unless a
       // typed message is waiting (TextInput submits that one separately).
       if (inp === 'n' || inp === 'N' || key.escape || (key.return && !input.trim())) {
-        setPendingContinuation(null);
-        show('Plan paused', 'info', 2000);
+        pauseContinuation();
         return;
       }
     }
@@ -246,8 +301,12 @@ const Chat: React.FC<ChatProps> = ({
   };
 
   const resetStream = (p: typeof phase = 'idle') => {
+    // Discard anything still buffered — committed content already reached the
+    // transcript via onSendMessage by the time resetStream runs.
+    if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
+    streamBufRef.current = { thinking: '', content: '' };
     setPhase(p); setStreamedThinking(''); setStreamedContent(''); setActiveTool(undefined);
-    if (p === 'idle') setActiveSkill(undefined);
+    if (p === 'idle') { setActiveSkill(undefined); setCollapsedTurns(new Set()); setExpandedThinkingTurns(new Set()); setExpandedToolCallKeys(new Set()); }
   };
 
   const pickModelForRun = async (prompt: string, toolCount = 0): Promise<string> => {
@@ -697,7 +756,8 @@ const Chat: React.FC<ChatProps> = ({
       model: activeModel, messages: prepareMessages(chatHistory, currentSkill, tokenBudget, ledger?.compactionNote()),
       think: 'high', tools, options: { temperature: 0.7, num_ctx: cfg.numCtx }, timeoutMs: 120000, signal: ac.signal,
     });
-    const { thinking, content } = await consumeStream(stream, (d) => setStreamedThinking((p) => p + d), (d) => { setPhase('responding'); setStreamedContent((p) => p + d); });
+    const { thinking, content } = await consumeStream(stream, (d) => bufferStreamDelta('thinking', d), (d) => bufferStreamDelta('content', d));
+    flushStreamBuffer();
     const final = await stream.finalResult;
     let toolCalls = final.message?.tool_calls; let rawContent = final.message?.content || content;
     if ((!toolCalls || !toolCalls.length) && rawContent) {
@@ -891,18 +951,61 @@ const Chat: React.FC<ChatProps> = ({
     if (sel) { setInput(sel.name.includes(' ') || !sel.args ? sel.name : sel.name + ' '); setSelectedCmdIndex(0); return true; }
     return input === '' ? (setFocus(1), true) : false;
   };
+  // Mouse equivalent of Tab+Enter on a suggestion row: slash commands with
+  // arguments fill the input for completion, everything else runs at once.
+  const runMenuCommand = (c: { name: string; args?: string }) => {
+    if (c.name.startsWith('/') && c.args) {
+      setInput(c.name.includes(' ') ? c.name : `${c.name} `);
+      setSelectedCmdIndex(0); setFocus(0);
+      return;
+    }
+    setInput(''); setSelectedCmdIndex(0);
+    void handleSendMessage(c.name);
+  };
 
   const maxWidth = Math.max(20, columns - 8);
   const messageRows = useMemo(() => {
-    const opts = { theme, maxWidth, expandThinking }; const rows = messages.flatMap((msg, mi) => renderSingleTurn(msg, mi, opts));
+    const rows: React.ReactElement[] = [];
+    const cache = turnCacheRef.current;
+    // Prune entries for messages that left the transcript (/clear, compaction).
+    if (cache.size > messages.length + 64) {
+      const alive = new Set(messages);
+      for (const k of cache.keys()) if (!alive.has(k)) cache.delete(k);
+    }
+    messages.forEach((msg, mi) => {
+      const clickableToolCalls = !collapsedTurns.has(mi) && (msg.tool_calls?.length ?? 0) > 0;
+      // Cache key: layout inputs + this turn's view flags + tool-call
+      // expansion bits. Completed turns keep the same message object
+      // identity across stream flushes, so they hit the cache and only the
+      // active turn rebuilds per 40ms flush.
+      const toolBits = (msg.tool_calls ?? []).map((_: any, tci: number) => (expandedToolCallKeys.has(`${mi}:${tci}`) ? 1 : 0)).join('');
+      const key = `${maxWidth}|${expandThinking || expandedThinkingTurns.has(mi) ? 1 : 0}|${collapsedTurns.has(mi) ? 1 : 0}|${toolBits}`;
+      const cached = cache.get(msg);
+      if (cached && cached.key === key) { rows.push(...cached.rows); return; }
+      const built = renderSingleTurn(msg, mi, {
+        theme,
+        maxWidth,
+        expandThinking: expandThinking || expandedThinkingTurns.has(mi),
+        collapsed: collapsedTurns.has(mi),
+        onToggleCollapse: () => toggleTurnCollapse(mi),
+        onToggleThinking: () => toggleTurnThinking(mi),
+        onToggleToolCall: clickableToolCalls ? (tci: number) => toggleToolCallExpanded(`${mi}:${tci}`) : undefined,
+        isToolCallExpanded: clickableToolCalls ? (tci: number) => expandedToolCallKeys.has(`${mi}:${tci}`) : undefined,
+      });
+      if (cache.size > 512) cache.clear();
+      cache.set(msg, { key, rows: built });
+      rows.push(...built);
+    });
     if (phase !== 'idle') {
       if (messages.length > 0) rows.push(<Box key="st-gap"><Text>{' '}</Text></Box>);
-      rows.push(...renderStreamingRows({ phase, model: selectedModel, thinking: streamedThinking, content: streamedContent, activeTool, activeSkill }, opts));
+      rows.push(...renderStreamingRows({ phase, model: selectedModel, thinking: streamedThinking, content: streamedContent, activeTool, activeSkill }, { theme, maxWidth, expandThinking }));
     }
     return rows;
-  }, [messages, phase, streamedThinking, streamedContent, selectedModel, theme, maxWidth, expandThinking, activeTool, activeSkill]);
+  }, [messages, phase, streamedThinking, streamedContent, selectedModel, theme, maxWidth, expandThinking, activeTool, activeSkill, collapsedTurns, expandedThinkingTurns, expandedToolCallKeys]);
 
-  const maxScrollOffset = Math.max(0, messageRows.length - chatHeight);
+  const totalRows = scrollInfo.total || messageRows.length;
+  const maxScrollOffset = Math.max(0, totalRows - chatHeight);
+  const rowsBelow = Math.max(0, totalRows - chatHeight - Math.min(scrollInfo.offset, maxScrollOffset));
   const menuStart = Math.min(Math.max(0, selectedCmdIndex - 1), Math.max(0, activeMenu.length - 4));
   const visibleCommands = activeMenu.slice(menuStart, menuStart + 4);
 
@@ -945,7 +1048,16 @@ const Chat: React.FC<ChatProps> = ({
         ) : viewMode === 'transcript' ? (
           <TranscriptView events={transcriptState.events} height={chatHeight} isActive={isActive && isChatFocused} width={columns} />
         ) : (
-          <ScrollArea height={chatHeight} width="100%" scrollOffset={scrollOffset} onScrollOffsetChange={setScrollOffset} focus={isActive && isChatFocused} autoScroll={true} theme={theme}>{messageRows}</ScrollArea>
+          <Box width="100%" onClick={() => { if (!isChatFocused) setFocus(1); }}>
+            <ScrollArea
+              height={chatHeight} width="100%" scrollOffset={scrollOffset}
+              onScrollOffsetChange={setScrollOffset}
+              onScroll={(o, t) => setScrollInfo({ offset: o, total: t })}
+              focus={isActive && isChatFocused} autoScroll={true} theme={theme}
+            >
+              {messageRows}
+            </ScrollArea>
+          </Box>
         )}
       </Box>
 
@@ -955,10 +1067,10 @@ const Chat: React.FC<ChatProps> = ({
         <Box borderStyle="round" borderColor="cyan" paddingX={1} flexDirection="column" width={columns} height={7}>
           <Box flexDirection="row" justifyContent="space-between">
             <Text bold color="cyan">⚡ Suggestions & Commands</Text>
-            <Text color="gray" dimColor>↑/↓ Nav • Tab Select • Enter Run • Esc Close ({selectedCmdIndex + 1}/{activeMenu.length})</Text>
+            <Text color="gray" dimColor>↑/↓ Nav • Tab Select • Enter Run • Click runs ({selectedCmdIndex + 1}/{activeMenu.length})</Text>
           </Box>
           {visibleCommands.map((c) => (
-            <Box key={c.name} flexDirection="row" gap={1}>
+            <Box key={c.name} flexDirection="row" gap={1} onClick={() => runMenuCommand(c)}>
               <Text bold color={c === activeMenu[selectedCmdIndex] ? 'cyan' : 'yellow'} inverse={c === activeMenu[selectedCmdIndex]}>{c === activeMenu[selectedCmdIndex] ? '❯ ' : '  '}{c.name}</Text>
               {c.args && <Text color={c === activeMenu[selectedCmdIndex] ? 'white' : 'gray'}>{c.args}</Text>}
               <Text color="gray" dimColor={c !== activeMenu[selectedCmdIndex]}>— {c.desc}</Text>
@@ -975,17 +1087,22 @@ const Chat: React.FC<ChatProps> = ({
             <Text bold color="white">{pendingContinuation.label}</Text>
           </Box>
           {pendingContinuation.detail && <Text color="gray" dimColor>{pendingContinuation.detail}</Text>}
-          <Box flexDirection="row" gap={2} marginTop={1}>
-            <Text color="green" bold>[Y] Continue with task</Text>
-            <Text color="red" bold>[N / Enter / Esc] Pause</Text>
+          <Box flexDirection="row" gap={2} marginTop={1} alignItems="center">
+            <Box onClick={acceptContinuation} borderStyle="round" borderColor="green" paddingX={1}>
+              <Text color="green" bold>▶ Continue with task</Text>
+            </Box>
+            <Box onClick={pauseContinuation} borderStyle="round" borderColor="red" paddingX={1}>
+              <Text color="red" bold>⏸ Pause</Text>
+            </Box>
+            <Text color="gray" dimColor>or press Y / N</Text>
           </Box>
         </Box>
       )}
 
       {inputStyle === 'box' ? (
-        <Box borderStyle="round" borderColor={isInputFocused ? (theme?.colors?.focus ?? 'cyan') : (theme?.colors?.border ?? 'gray')} paddingX={1} width={columns}>{textInputNode}</Box>
+        <Box onClick={() => { if (!isInputFocused) setFocus(0); }} borderStyle="round" borderColor={isInputFocused ? (theme?.colors?.focus ?? 'cyan') : (theme?.colors?.border ?? 'gray')} paddingX={1} width={columns}>{textInputNode}</Box>
       ) : (
-        <Box flexDirection="column" width={columns}>
+        <Box flexDirection="column" width={columns} onClick={() => { if (!isInputFocused) setFocus(0); }}>
           <Divider width={columns} theme={theme} color={isInputFocused ? (theme?.colors?.focus ?? 'cyan') : undefined} />
           <Box paddingX={1} width={columns}>{textInputNode}</Box>
           <Divider width={columns} theme={theme} color={isInputFocused ? (theme?.colors?.focus ?? 'cyan') : undefined} />
@@ -993,9 +1110,17 @@ const Chat: React.FC<ChatProps> = ({
       )}
 
       <Box paddingX={1} width={columns} flexDirection="row" justifyContent="space-between">
-        <Text color="gray" dimColor>{isChatFocused ? '↑/↓ Scroll • Esc/Tab Type' : `PgUp/PgDn Scroll • Tab/→ Complete • Ctrl+→ Word • ↑/↓ History • Ctrl+B Style [${inputStyle}]`}</Text>
+        <Text color="gray" dimColor>{isChatFocused ? '↑/↓ Scroll • Wheel works anywhere • Esc/Tab Type' : `PgUp/PgDn Scroll • Tab/→ Complete • Ctrl+→ Word • ↑/↓ History • Ctrl+B Style [${inputStyle}]`}</Text>
         <Box flexDirection="row" gap={1}>
-          {viewMode === 'stream' && scrollOffset > 0 && <Text color="yellow">▲ Above (PgUp)</Text>}{viewMode === 'stream' && scrollOffset < maxScrollOffset && <Text color="yellow">▼ Below (PgDn)</Text>}
+          {viewMode === 'stream' && scrollInfo.offset > 0 && (
+            <Box onClick={() => setScrollOffset(0)}><Text color="yellow">▲ Top</Text></Box>
+          )}
+          {viewMode === 'stream' && rowsBelow > 0 && (
+            <Box onClick={() => setScrollOffset(maxScrollOffset)}><Text color="green" bold>▼ {rowsBelow} below — Jump to latest</Text></Box>
+          )}
+          {viewMode === 'stream' && rowsBelow === 0 && scrollInfo.offset > 0 && maxScrollOffset > 0 && (
+            <Box onClick={() => setScrollOffset(maxScrollOffset)}><Text color="yellow">▼ Bottom</Text></Box>
+          )}
           {viewMode === 'accordion' && <Text color="cyan">[Accordion]</Text>}
           {viewMode === 'transcript' && <Text color="green">[Transcript · {transcriptState.events.length} events{phase !== 'idle' ? ' · streaming' : ''}]</Text>}
         </Box>

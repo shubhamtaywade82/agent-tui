@@ -10,7 +10,7 @@ export type { TerminalSize } from './useTerminalSize.js';
 export { useAsync } from './useAsync.js';
 export type { UseAsyncResult, UseAsyncOptions } from './useAsync.js';
 
-export { useMouse, useMouseScroll, isPointInside, parseSgrMouseEvent } from './useMouse.js';
+export { useMouse, useMouseScroll, isPointInside } from './useMouse.js';
 export type { MouseEvent, MouseButton, MouseAction, BoundingBox, UseMouseOptions } from './useMouse.js';
 
 export { useAlternateScreen } from './useAlternateScreen.js';
