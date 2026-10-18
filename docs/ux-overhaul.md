@@ -12,23 +12,12 @@ All existing keyboard shortcuts keep working; the mouse is additive.
 
 ## Root causes found
 
-### 1. Mouse was dead on arrival (upstream bug)
-`@nemesis-oss/termina-core@0.1.0` ships a corrupted constant:
+### 1. Mouse tracking was never activated
+termina-core gates the enable sequence on its own hook registry: `App.tsx` writes `mouseTrackingEnable` only while at least one framework `useMouse` listener is mounted (refcounted via `mouseTrackingCountRef`). agent-tui mounted **zero** framework mouse hooks - its `useMouse.ts` wrapper read raw `stdin` `data` events directly, which (a) meant the enable sequence was never written, and (b) conflicted with the framework's `stdin.read()` pull loop, so even correctly-encoded reports were never parsed.
 
-```js
-// node_modules/@nemesis-oss/termina-core/build/mouse.js
-export const mouseTrackingEnable = '\u{1B}\u{1B}\u{1B}';              // ← corrupted
-export const mouseTrackingDisable = '\u{1B}[?1006l\u{1B}[?1002l\u{1B}[?1000l]'; // correct
-```
+**Fix:** `src/components/ui/mouse/mouseTrackingShim.tsx` force-writes the DECSET `?1000h ?1002h ?1006h` sequence at app mount and restores the terminal on exit; `useMouse.ts` was rewritten over the framework's parsed-event API.
 
-The enable sequence should be `\x1b[?1000h\x1b[?1002h\x1b[?1006h` (click /
-drag / SGR-coordinate reporting). Three bare ESC bytes enable nothing, so the
-framework's `MouseRouter` (already mounted via `render(..., {mouse: true})`)
-never received a single report — and no component used `Box onClick / onWheel`
-anyway. **Fix:** `src/components/ui/mouse/mouseTrackingShim.tsx` writes the
-correct sequence at app mount. Once tracking works, the framework's
-hit-tested mouse dispatch (real Yoga layout hit testing, including clipped
-scroll containers) lights up for free.
+> Correction: an earlier draft of this document blamed a corrupted `mouseTrackingEnable` constant in `@nemesis-oss/termina-core`. Byte-level verification of the installed package and the published npm artifacts shows the constants were always correct (enable = `ESC[?1000h ESC[?1002h ESC[?1006h`); the real cause is the hook-gated activation described above. termina-core now carries a byte-exact contract test for these constants (termina#23).
 
 ### 2. Per-token full re-render (streaming jank)
 `Chat.tsx` rebuilt the *entire* `messageRows` array (every row of every turn)
@@ -64,7 +53,7 @@ window (fast flicks were discarded) and moved 1 row per tick by default.
 
 | File | Change |
 |---|---|
-| `src/components/ui/mouse/mouseTrackingShim.tsx` | **New.** Writes the correct mouse-enable escape sequence; compensates the upstream bug. Delete when termina-core fixes the constant. |
+| `src/components/ui/mouse/mouseTrackingShim.tsx` | **New.** Writes the DECSET enable sequence at mount, independent of termina-core's refcounted hook gating. Likely droppable now that useMouse mounts framework hooks. |
 | `src/components/ui/hooks/useMouse.ts` | Rewritten as a thin wrapper over the framework's `useMouse` (parsed events, no raw `stdin.on('data')` listener — the push/pull mix with the framework's `stdin.read()` loop was fragile). Legacy API (`useMouseScroll`, `isPointInside`, types) preserved. |
 | `src/components/ui/scroll-area/ScrollArea.tsx` | **Full rebuild.** Renders children inside a `contentOffsetY`-shifted viewport (`overflow: hidden`) — scrolling no longer re-slices or re-creates children. Wheel = 3 rows/tick (configurable `wheelStep`), flicks accumulate unclamped, user scrolls **ease** over ~90ms (ease-out quad), tail-follow **snaps** so streaming never lags. Tail release/re-engage tracking + `onScroll(offset, total)` telemetry. Wheel works regardless of keyboard focus (hit-tested on the viewport). `Infinity` offset = jump to bottom (legacy Chat convention). |
 | `src/components/Chat.tsx` | Token batching; per-turn row cache; clickable everything (below); `contOverhead` height fix; scroll telemetry state powering the footer pills; click-to-focus on chat + input areas. |
