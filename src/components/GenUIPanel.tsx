@@ -1,13 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import { Box, Text, useInput } from '@nemesis-oss/termina-core';
 import {
-  createDefaultRegistry,
-  createLanguageAdapter,
   createGenUIRuntime,
-  createActionDispatcher,
   GenUIRenderer,
 } from '@nemesis-oss/termina-genui';
-import { z } from 'zod';
+import {
+  genUiRegistry,
+  genUiAdapter,
+  createUniversalActionDispatcher,
+} from '../toolbox/genui.js';
 
 interface GenUIPanelProps {
   width: number;
@@ -19,36 +20,36 @@ interface GenUIPanelProps {
 const SCENARIOS = [
   {
     id: 'dashboard',
-    title: 'System Dashboard',
+    title: 'Observatory Dashboard',
     code: [
-      'root = Container("column", 1, "round", [header, status, bar, tbl])',
-      'header = Text("⚡ AGENT SYSTEM MONITOR", "cyan", true, false)',
-      'status = StatusMessage("All background workers and vector stores online", "success")',
-      'bar = ProgressBar(88, "Cluster Memory Utilization")',
-      'tbl = Table(["Component", "Status", "Latency"], [{"Component": "Ollama Local", "Status": "Ready", "Latency": "12ms"}, {"Component": "MCP Servers (8)", "Status": "Active", "Latency": "4ms"}, {"Component": "Supervisor Runtime", "Status": "Healthy", "Latency": "1ms"}])',
+      'root = Container("column", 1, "round", [header, status, gauge, spark, tok])',
+      'header = Text("⚡ AGENT SYSTEM OBSERVATORY", "cyan", true, false)',
+      'status = StatusMessage("All model routers and MCP tool workers active", "success")',
+      'gauge = Gauge(82, "Context Window Utilization", 24)',
+      'spark = Sparkline([14, 22, 35, 48, 62, 58, 70, 82])',
+      'tok = TokenCounter(6560, 8192, "tokens")',
     ].join('\n'),
   },
   {
     id: 'form',
-    title: 'Interactive Form',
+    title: 'Cluster Config',
     code: [
-      'root = Container("column", 1, "round", [title, info, cluster, region, btn])',
+      'root = Container("column", 1, "round", [title, info, cluster, region, confirm])',
       'title = Text("Target Service Configuration", "yellow", true, false)',
       'info = Alert("Environment Setup", "Select runtime cluster and region below", "info")',
       'cluster = Select("cluster", "Target Cluster", ["production-k8s", "staging-cluster", "dev-sandbox"])',
       'region = Select("region", "Cloud Region", ["us-east-1", "eu-central-1", "ap-south-1"])',
-      'btn = Button("Apply Configuration", "applyConfig")',
+      'confirm = Confirm("Apply Deployment", "deployApp", "cancelDeploy")',
     ].join('\n'),
   },
   {
-    id: 'pipeline',
-    title: 'Reasoning Pipeline',
+    id: 'diff',
+    title: 'Patch Review',
     code: [
-      'root = Container("column", 1, "round", [header, alert, load, bar])',
-      'header = Text("Agent Reasoning Pipeline", "green", true, false)',
-      'alert = Alert("Active Task Execution", "Step 3/5: Running code sandbox test suite", "info")',
-      'load = LoadingBar("Compiling AST tree...")',
-      'bar = ProgressBar(60, "Execution Progress")',
+      'root = Container("column", 1, "round", [header, diff, confirm])',
+      'header = Text("Tool Output Patch Review", "magenta", true, false)',
+      'diff = DiffView("--- a/config.json\\n+++ b/config.json\\n@@ -1,3 +1,3 @@\\n-  \\"mode\\": \\"sandbox\\"\\n+  \\"mode\\": \\"production\\"")',
+      'confirm = Confirm("Approve Patch", "approvePatch", "rejectPatch")',
     ].join('\n'),
   },
 ];
@@ -58,27 +59,15 @@ export const GenUIPanel: React.FC<GenUIPanelProps> = ({ width, height, isActive 
   const [showCode, setShowCode] = useState(false);
   const [actionLog, setActionLog] = useState('');
 
-  const registry = useMemo(() => createDefaultRegistry(), []);
-  const adapter = useMemo(() => createLanguageAdapter(registry), [registry]);
   const runtime = useMemo(() => createGenUIRuntime(), []);
-
   const dispatcher = useMemo(() => {
-    return createActionDispatcher([
-      {
-        name: 'applyConfig',
-        schema: z.any() as any,
-        handler: () => {
-          const vals = runtime.getValues();
-          const target = vals['cluster'] || 'production-k8s';
-          const reg = vals['region'] || 'us-east-1';
-          setActionLog(`Applied configuration to ${target} (${reg})`);
-        },
-      },
-    ]);
-  }, [runtime]);
+    return createUniversalActionDispatcher((act, vals) => {
+      setActionLog(`${act} -> ${JSON.stringify(vals)}`);
+    });
+  }, []);
 
   const current = SCENARIOS[activeIdx] ?? SCENARIOS[0]!;
-  const parsed = useMemo(() => adapter.parse(current.code), [adapter, current.code]);
+  const parsed = useMemo(() => genUiAdapter.parse(current.code), [current.code]);
 
   useInput((input, key) => {
     if (!isActive) return;
@@ -123,7 +112,7 @@ export const GenUIPanel: React.FC<GenUIPanelProps> = ({ width, height, isActive 
             {parsed.root ? (
               <GenUIRenderer
                 node={parsed.root}
-                registry={registry}
+                registry={genUiRegistry}
                 runtime={runtime}
                 actionDispatcher={dispatcher}
               />

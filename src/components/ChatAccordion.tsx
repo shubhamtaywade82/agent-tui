@@ -12,6 +12,7 @@ export interface TurnOptions {
   theme?: any;
   maxWidth: number;
   expandThinking?: boolean;
+  onAction?: (action: string, values: Record<string, unknown>) => void;
 }
 
 export interface StreamState {
@@ -77,7 +78,7 @@ function renderMessageContent(msg: ChatMessage, idx: number, opts: TurnOptions):
   if (msg.role === 'user' && !content) return [];
   const nodes = msg.role === 'user'
     ? content.split('\n').flatMap((l, li) => wrapTextLine(l, opts.maxWidth).map((wl, wli) => <Text key={`${li}-${wli}`}>{wl || ' '}</Text>))
-    : parseMarkdownBlocks(msg.content, opts.theme, opts.maxWidth);
+    : parseMarkdownBlocks(msg.content, opts.theme, opts.maxWidth, opts.onAction);
   return nodes.map((n, bi) => <Box key={`c-${idx}-${bi}`} paddingLeft={2}>{n}</Box>);
 }
 
@@ -183,23 +184,17 @@ export function renderStreamingRows(s: StreamState, opts: TurnOptions): React.Re
   return [];
 }
 
-function renderTurnDetails(msg: ChatMessage, theme: any, innerWidth: number): React.ReactElement[] {
+function renderTurnDetails(
+  msg: ChatMessage, theme: any, innerWidth: number, onAction?: (action: string, values: Record<string, unknown>) => void,
+): React.ReactElement[] {
   const elements: React.ReactElement[] = [];
   if (msg.thinking) {
-    elements.push(
-      <Box key="th" marginBottom={1}>
-        <Thinking tokenCount={Math.ceil(msg.thinking.length / 4)} defaultExpanded={true} focus={false} theme={theme}>{msg.thinking}</Thinking>
-      </Box>
-    );
+    elements.push(<Box key="th" marginBottom={1}><Thinking tokenCount={Math.ceil(msg.thinking.length / 4)} defaultExpanded={true} focus={false} theme={theme}>{msg.thinking}</Thinking></Box>);
   }
   msg.tool_calls?.forEach((tc: any, tci: number) => {
-    elements.push(
-      <Box key={`tc-${tci}`} marginBottom={1}>
-        <ToolCall name={tc.function?.name || 'tool'} args={tc.function?.arguments} status="success" defaultExpanded={true} interactive={false} theme={theme} />
-      </Box>
-    );
+    elements.push(<Box key={`tc-${tci}`} marginBottom={1}><ToolCall name={tc.function?.name || 'tool'} args={tc.function?.arguments} status="success" defaultExpanded={true} interactive={false} theme={theme} /></Box>);
   });
-  elements.push(...parseMarkdownBlocks(msg.content, theme, innerWidth - 2));
+  elements.push(...parseMarkdownBlocks(msg.content, theme, innerWidth - 2, onAction));
   return elements;
 }
 
@@ -232,6 +227,7 @@ interface AccordionItemProps {
   theme: any;
   innerWidth: number;
   contentHeight: number;
+  onAction?: (action: string, values: Record<string, unknown>) => void;
 }
 
 function renderAccordionItem(p: AccordionItemProps): React.ReactElement {
@@ -252,7 +248,7 @@ function renderAccordionItem(p: AccordionItemProps): React.ReactElement {
       {p.isOpen && (
         <Box flexDirection="column" paddingLeft={2} maxHeight={p.contentHeight}>
           <ScrollArea height={Math.max(2, p.contentHeight - 1)} width="100%" focus={false} theme={p.theme} scrollbar={true}>
-            {renderTurnDetails(p.msg, p.theme, p.innerWidth)}
+            {renderTurnDetails(p.msg, p.theme, p.innerWidth, p.onAction)}
           </ScrollArea>
         </Box>
       )}
@@ -260,7 +256,9 @@ function renderAccordionItem(p: AccordionItemProps): React.ReactElement {
   );
 }
 
-export const ChatAccordion: React.FC<ChatAccordionProps> = ({ messages, height, width, focus = true, theme }) => {
+export const ChatAccordion: React.FC<ChatAccordionProps & { onAction?: (action: string, values: Record<string, unknown>) => void }> = ({
+  messages, height, width, focus = true, theme, onAction,
+}) => {
   const [selectedIndex, setSelectedIndex] = useState(() => Math.max(0, messages.length - 1));
   const [openKey, setOpenKey] = useState<number | null>(() => Math.max(0, messages.length - 1));
 
@@ -291,7 +289,7 @@ export const ChatAccordion: React.FC<ChatAccordionProps> = ({ messages, height, 
       </Box>
       {visibleMessages.map((msg, relIdx) => renderAccordionItem({
         msg, absIdx: startIdx + relIdx, isSelected: (startIdx + relIdx) === selectedIndex,
-        isOpen: (startIdx + relIdx) === openKey, theme, innerWidth, contentHeight,
+        isOpen: (startIdx + relIdx) === openKey, theme, innerWidth, contentHeight, onAction,
       }))}
     </Box>
   );

@@ -63,3 +63,36 @@ test('parseMarkdownBlocks falls back to standard code block when openui-lang has
   const blocks = parseMarkdownBlocks(markdownWithInvalid);
   assert.ok(blocks.length >= 2);
 });
+
+test('renderUiTool validates extended Termina components (Gauge, Sparkline, DiffView, TokenCounter, Divider, Confirm)', async () => {
+  const extendedCode = [
+    'root = Container("column", 1, "round", [g, s, d, tok, c])',
+    'g = Gauge(75, "CPU Load")',
+    's = Sparkline([10, 20, 30, 45, 60])',
+    'd = Divider("System Status")',
+    'tok = TokenCounter(1200, 4096, "tokens")',
+    'c = Confirm("Deploy to Cluster", "deployApp", "cancelDeploy")',
+  ].join('\n');
+
+  const result = await renderUiTool.execute({ code: extendedCode }, {} as never);
+  assert.match(result, /^```openui-lang\nroot = Container/);
+});
+
+test('createUniversalActionDispatcher routes actions and payloads to handler', async () => {
+  const { createUniversalActionDispatcher } = await import('../src/toolbox/genui.js');
+  let dispatchedName = '';
+  let dispatchedPayload: Record<string, unknown> = {};
+
+  const dispatcher = createUniversalActionDispatcher((name, payload) => {
+    dispatchedName = name;
+    dispatchedPayload = payload;
+  });
+
+  assert.ok(dispatcher);
+  assert.equal(dispatcher.has('anyAction'), true);
+  await dispatcher.dispatch('deployCluster', { env: 'production', region: 'us-east-1' });
+
+  assert.equal(dispatchedName, 'deployCluster');
+  assert.equal(dispatchedPayload['env'], 'production');
+  assert.equal(dispatchedPayload['region'], 'us-east-1');
+});
