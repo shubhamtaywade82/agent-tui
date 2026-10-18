@@ -12,6 +12,14 @@ export interface TurnOptions {
   theme?: any;
   maxWidth: number;
   expandThinking?: boolean;
+  /** Render the turn as header + summary hint only (click-to-collapse). */
+  collapsed?: boolean;
+  /** Mouse/keyboard handlers — attached to the 1-row clickable chrome of a turn. */
+  onToggleCollapse?: () => void;
+  onToggleThinking?: () => void;
+  onToggleToolCall?: (callIndex: number) => void;
+  /** Controlled per-call expansion (only meaningful with onToggleToolCall). */
+  isToolCallExpanded?: (callIndex: number) => boolean;
 }
 
 export interface StreamState {
@@ -84,18 +92,57 @@ function renderMessageContent(msg: ChatMessage, idx: number, opts: TurnOptions):
 export function renderSingleTurn(msg: ChatMessage, mi: number, opts: TurnOptions): React.ReactElement[] {
   const items: React.ReactElement[] = [];
   if (mi > 0) items.push(<Box key={`gap-${mi}`}><Text>{' '}</Text></Box>);
+  const collapsed = opts.collapsed === true;
+  const headerAction = opts.onToggleCollapse;
   if (msg.role === 'user') {
     const time = msg.timestamp ? formatTime(msg.timestamp) : '';
     const firstLine = msg.content.split('\n', 1)[0] ?? '';
     items.push(
-      <Box key={`h-${mi}`} flexDirection="row" width={opts.maxWidth + 2} alignItems="center">
-        <Text bold color="cyan">❯</Text>
+      <Box
+        key={`h-${mi}`}
+        flexDirection="row"
+        width={opts.maxWidth + 2}
+        alignItems="center"
+        onClick={headerAction}
+      >
+        <Text bold color="cyan">{collapsed ? '▸' : '❯'}</Text>
         <Box flexGrow={1}><Text wrap="wrap">{` ${firstLine}`}</Text></Box>
         {time && <Text color="gray" dimColor>{` · ${time}`}</Text>}
       </Box>
     );
   } else {
-    items.push(renderMessageHeader(msg, mi, true, msg.role === 'assistant' ? opts.maxWidth + 2 : undefined));
+    // Clickable chrome: fold caret + role header, one row.
+    const conf = msg.role === 'tool' ? { icon: '⚙', label: 'Tool Output', color: 'yellow' }
+      : msg.role === 'system' ? { icon: '◈', label: 'System', color: 'gray' }
+      : { icon: '✦', label: undefined, color: 'green' };
+    const time = msg.timestamp ? formatTime(msg.timestamp) : '';
+    const headWidth = msg.role === 'assistant' ? opts.maxWidth + 2 : undefined;
+    items.push(
+      <Box
+        key={`h-${mi}`}
+        flexDirection="row"
+        width={headWidth}
+        justifyContent={headWidth && !conf.label ? 'space-between' : undefined}
+        alignItems="center"
+        onClick={headerAction}
+      >
+        <Box flexDirection="row" gap={1} alignItems="center">
+          <Text bold color={conf.color}>{collapsed ? '▸' : conf.icon}</Text>
+          {conf.label && <Text bold color={conf.color === 'gray' ? 'gray' : 'white'}>{conf.label}</Text>}
+        </Box>
+        {msg.role === 'assistant' && !collapsed && <Text color="gray" dimColor>{time ? `· ${time}` : ''}</Text>}
+      </Box>
+    );
+  }
+
+  if (collapsed) {
+    const tokens = msg.tokens ?? Math.ceil(msg.content.length / 4);
+    items.push(
+      <Box key={`cl-${mi}`} paddingLeft={2} onClick={opts.onToggleCollapse}>
+        <Text color="gray" dimColor>⋯ collapsed · {tokens} tok · click to expand</Text>
+      </Box>
+    );
+    return items;
   }
 
   if (msg.role === 'assistant' && msg.skill) {
@@ -110,7 +157,13 @@ export function renderSingleTurn(msg: ChatMessage, mi: number, opts: TurnOptions
     const tok = Math.ceil(msg.thinking.length / 4);
     items.push(
       <Box key={`t-${mi}`} paddingLeft={2}>
-        <Thinking tokenCount={tok} defaultExpanded={opts.expandThinking} focus={false} theme={opts.theme}>
+        <Thinking
+          tokenCount={tok}
+          expanded={opts.expandThinking}
+          onToggle={opts.onToggleThinking}
+          focus={false}
+          theme={opts.theme}
+        >
           {msg.thinking}
         </Thinking>
       </Box>
@@ -118,9 +171,19 @@ export function renderSingleTurn(msg: ChatMessage, mi: number, opts: TurnOptions
   }
 
   msg.tool_calls?.forEach((tc: any, tci: number) => {
+    const clickable = Boolean(opts.onToggleToolCall) && !collapsed;
     items.push(
       <Box key={`tc-${mi}-${tci}`} paddingLeft={2}>
-        <ToolCall name={tc.function?.name || 'tool'} args={tc.function?.arguments} status="success" interactive={false} compact={true} theme={opts.theme} />
+        <ToolCall
+          name={tc.function?.name || 'tool'}
+          args={tc.function?.arguments}
+          status="success"
+          expanded={clickable && opts.isToolCallExpanded ? opts.isToolCallExpanded(tci) : undefined}
+          interactive={false}
+          compact={!clickable}
+          onClick={clickable && opts.onToggleToolCall ? () => opts.onToggleToolCall!(tci) : undefined}
+          theme={opts.theme}
+        />
       </Box>
     );
   });
@@ -232,6 +295,8 @@ interface AccordionItemProps {
   theme: any;
   innerWidth: number;
   contentHeight: number;
+  onToggle?: () => void;
+  onSelect?: () => void;
 }
 
 function renderAccordionItem(p: AccordionItemProps): React.ReactElement {
@@ -243,7 +308,13 @@ function renderAccordionItem(p: AccordionItemProps): React.ReactElement {
 
   return (
     <Box key={`turn-${p.absIdx}`} flexDirection="column">
-      <Box flexDirection="row" gap={1} alignItems="center" backgroundColor={p.isSelected ? (p.theme?.colors?.selection ?? 'blue') : undefined}>
+      <Box
+        flexDirection="row"
+        gap={1}
+        alignItems="center"
+        backgroundColor={p.isSelected ? (p.theme?.colors?.selection ?? 'blue') : undefined}
+        onClick={() => { p.onSelect?.(); p.onToggle?.(); }}
+      >
         <Text bold color={p.isSelected ? 'cyan' : 'gray'}>{p.isOpen ? '▾' : '▸'}</Text>
         {renderMessageHeader(p.msg, p.absIdx, false)}
         <Text bold={p.isSelected} color={p.isSelected ? 'white' : 'gray'}>{preview}{rawPreview.length > 45 ? '…' : ''}</Text>
@@ -287,11 +358,13 @@ export const ChatAccordion: React.FC<ChatAccordionProps> = ({ messages, height, 
     <Box flexDirection="column" height={height} width={width}>
       <Box flexDirection="row" justifyContent="space-between">
         <Text bold color={theme?.colors?.primary ?? 'cyan'}>▾ Accordion Navigator [{selectedIndex + 1}/{messages.length}]</Text>
-        <Text color="gray" dimColor>↑/↓ or j/k: Select • Enter/Space: Fold • Ctrl+A: Stream</Text>
+        <Text color="gray" dimColor>↑/↓ or j/k: Select • Enter/Space/Click: Fold • Ctrl+A: Stream</Text>
       </Box>
       {visibleMessages.map((msg, relIdx) => renderAccordionItem({
         msg, absIdx: startIdx + relIdx, isSelected: (startIdx + relIdx) === selectedIndex,
         isOpen: (startIdx + relIdx) === openKey, theme, innerWidth, contentHeight,
+        onSelect: () => setSelectedIndex(startIdx + relIdx),
+        onToggle: () => setOpenKey((p) => (p === startIdx + relIdx ? null : startIdx + relIdx)),
       }))}
     </Box>
   );

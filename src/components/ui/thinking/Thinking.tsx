@@ -14,6 +14,10 @@ export interface ThinkingProps {
   tokenCount?: number;
   /** Whether the thought text is initially visible */
   defaultExpanded?: boolean;
+  /** Controlled expansion — overrides internal state when provided. */
+  expanded?: boolean;
+  /** Called when the header is clicked (mouse) or toggled via Enter/Space. */
+  onToggle?: () => void;
   /** Whether keyboard toggling is active */
   focus?: boolean;
   theme?: InkUITheme;
@@ -57,17 +61,25 @@ export const Thinking: React.FC<ThinkingProps> = ({
   durationSeconds,
   tokenCount,
   defaultExpanded = false,
+  expanded,
+  onToggle,
   focus = true,
   theme = darkTheme,
 }) => {
   const { isRawModeSupported } = useStdin();
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  const [internalExpanded, setInternalExpanded] = useState(defaultExpanded);
+  const isExpanded = expanded ?? internalExpanded;
   const elapsed = useElapsedTime(isStreaming, durationSeconds);
   const spinner = useSpinnerFrame(isStreaming);
 
+  const toggle = () => {
+    if (expanded === undefined) setInternalExpanded((prev) => !prev);
+    onToggle?.();
+  };
+
   useInput((input, key) => {
     if (!focus || !isRawModeSupported) return;
-    if (key.return || input === ' ') setIsExpanded((prev) => !prev);
+    if (key.return || input === ' ') toggle();
   });
 
   const icon = isStreaming ? spinner : '✔';
@@ -76,13 +88,13 @@ export const Thinking: React.FC<ThinkingProps> = ({
 
   return (
     <Box flexDirection="column">
-      <Box gap={1}>
+      <Box gap={1} onClick={onToggle}>
         <Text color={iconColor}>{icon}</Text>
         <Text color={theme.colors.primary} bold>
           {isStreaming ? 'Thinking' : 'Thought'}
         </Text>
         <Text color={theme.colors.muted}>{`for ${elapsed.toFixed(1)}s ${formatTokens(tokenCount)}`}</Text>
-        <Text color={theme.colors.muted} dimColor>{`· [Enter to ${actionHint}]`}</Text>
+        <Text color={theme.colors.muted} dimColor>{`· [click or Enter to ${actionHint}]`}</Text>
       </Box>
       {isExpanded ? (
         <Box

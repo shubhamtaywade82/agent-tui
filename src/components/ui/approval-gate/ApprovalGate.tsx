@@ -33,7 +33,7 @@ function RiskBadge({ level, theme }: { level: ApprovalRiskLevel; theme: InkUIThe
   return <Text color={color} bold>[{label}]</Text>;
 }
 
-function ActionFooter({ state, selectedScope, theme }: { state: ApprovalState; selectedScope?: ApprovalScope; theme: InkUITheme }) {
+function ActionFooter({ state, selectedScope, theme, onApprove, onDeny }: { state: ApprovalState; selectedScope?: ApprovalScope; theme: InkUITheme; onApprove?: (scope: ApprovalScope) => void; onDeny?: () => void }) {
   if (state === 'approved') {
     return <Text color={theme.colors.success} bold>✔ Approved ({selectedScope ?? 'once'})</Text>;
   }
@@ -42,9 +42,15 @@ function ActionFooter({ state, selectedScope, theme }: { state: ApprovalState; s
   }
   return (
     <Box gap={2}>
-      <Text color={theme.colors.success} bold>[y] Approve once</Text>
-      <Text color={theme.colors.info} bold>[a] Always allow</Text>
-      <Text color={theme.colors.error} bold>[n] Deny</Text>
+      <Box onClick={onApprove ? () => onApprove('once') : undefined}>
+        <Text color={theme.colors.success} bold>[y] Approve once</Text>
+      </Box>
+      <Box onClick={onApprove ? () => onApprove('always') : undefined}>
+        <Text color={theme.colors.info} bold>[a] Always allow</Text>
+      </Box>
+      <Box onClick={onDeny}>
+        <Text color={theme.colors.error} bold>[n] Deny</Text>
+      </Box>
     </Box>
   );
 }
@@ -86,7 +92,19 @@ export function ApprovalGate({
       <Box borderStyle="round" borderColor={getRiskColor(riskLevel, theme)} paddingX={1}>
         <Text color={theme.colors.text}>{commandOrDiff}</Text>
       </Box>
-      <ActionFooter state={state} selectedScope={scope} theme={theme} />
+      <ActionFooter
+        state={state}
+        selectedScope={scope}
+        theme={theme}
+        onApprove={(s) => {
+          if (state !== 'pending') return;
+          setState('approved'); setScope(s); onApprove?.(s);
+        }}
+        onDeny={() => {
+          if (state !== 'pending') return;
+          setState('denied'); onDeny?.('User rejected execution');
+        }}
+      />
     </Box>
   );
 }

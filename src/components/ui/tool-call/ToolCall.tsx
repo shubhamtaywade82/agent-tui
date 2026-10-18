@@ -13,8 +13,12 @@ export interface ToolCallProps {
   status?: ToolCallStatus;
   durationMs?: number;
   defaultExpanded?: boolean;
+  /** Controlled expansion — overrides internal state when provided. */
+  expanded?: boolean;
   interactive?: boolean;
   compact?: boolean;
+  /** Click handler for the header row (mouse support in the conversation view). */
+  onClick?: () => void;
   theme?: InkUITheme;
 }
 
@@ -85,16 +89,19 @@ export function ToolCall({
   status = 'pending',
   durationMs,
   defaultExpanded = false,
+  expanded: expandedProp,
   interactive = true,
   compact = false,
+  onClick,
   theme = darkTheme,
 }: ToolCallProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
+  const [internalExpanded, setInternalExpanded] = useState(defaultExpanded);
+  const expanded = expandedProp ?? internalExpanded;
   const frame = useSpinnerFrame(status);
 
   useInput((input, key) => {
     if (!interactive) return;
-    if (key.return || input === ' ') setExpanded((e) => !e);
+    if (key.return || input === ' ') setInternalExpanded((e) => !e);
   });
 
   const durationText = formatDuration(durationMs);
@@ -104,12 +111,12 @@ export function ToolCall({
 
   return (
     <Box flexDirection="column">
-      <Box flexDirection="row" gap={1}>
+      <Box flexDirection="row" gap={1} onClick={onClick}>
         <StatusIcon status={status} frame={frame} theme={theme} />
         <Text bold color={theme.colors.text}>{name}</Text>
         {preview && !expanded ? <Text color={theme.colors.muted}>({preview})</Text> : null}
         {durationText ? <Text color={theme.colors.muted}>{durationText}</Text> : null}
-        {interactive && !compact ? (
+        {(interactive || onClick) && !compact ? (
           <Text color={theme.colors.muted}>[{expanded ? 'collapse' : 'inspect'}]</Text>
         ) : null}
       </Box>

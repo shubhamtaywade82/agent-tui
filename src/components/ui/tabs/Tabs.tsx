@@ -69,7 +69,7 @@ export const Tabs: React.FC<TabsProps> = ({
 
         if (variant === 'underline') {
           return (
-            <Box key={tab.key} flexDirection="column">
+            <Box key={tab.key} flexDirection="column" onClick={isDisabled ? undefined : () => onChange(tab.key)}>
               <Text
                 bold={isActive}
                 color={isDisabled ? theme.colors.muted : isActive ? theme.colors.primary : theme.colors.muted}
@@ -89,6 +89,7 @@ export const Tabs: React.FC<TabsProps> = ({
               borderStyle="single"
               borderColor={isActive ? (theme.colors.focus ?? 'cyan') : (theme.colors.border ?? 'gray')}
               paddingX={1}
+              onClick={isDisabled ? undefined : () => onChange(tab.key)}
             >
               <Text
                 bold={isActive}
@@ -103,14 +104,15 @@ export const Tabs: React.FC<TabsProps> = ({
 
         // pills
         return (
-          <Text
-            key={tab.key}
-            bold={isActive}
-            color={isDisabled ? theme.colors.muted : isActive ? theme.colors.primary : theme.colors.muted}
-            dimColor={isDisabled}
-          >
-            {isActive ? `[${label}]` : ` ${label} `}
-          </Text>
+          <Box key={tab.key} onClick={isDisabled ? undefined : () => onChange(tab.key)}>
+            <Text
+              bold={isActive}
+              color={isDisabled ? theme.colors.muted : isActive ? theme.colors.primary : theme.colors.muted}
+              dimColor={isDisabled}
+            >
+              {isActive ? `[${label}]` : ` ${label} `}
+            </Text>
+          </Box>
         );
       })}
     </Box>

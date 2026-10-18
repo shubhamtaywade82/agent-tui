@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Box, Text, useInput, useWindowSize } from '@nemesis-oss/termina-core';
 import { ThemeProvider, defaultTheme } from '@nemesis-oss/termina-ui';
 import { StatusIndicator } from './components/ui/status-indicator/index.js';
@@ -8,6 +8,7 @@ import { Tabs } from './components/ui/tabs/index.js';
 import type { Tab } from './components/ui/tabs/index.js';
 import { Divider } from './components/ui/divider/index.js';
 import { Dialog } from './components/ui/dialog/index.js';
+import { useMouseTrackingShim } from './components/ui/mouse/index.js';
 import Chat, { type ChatMessage } from './components/Chat.js';
 import StatusBar from './components/StatusBar.js';
 import { useOllama } from './hooks/useOllama.js';
@@ -25,6 +26,12 @@ const TABS: Tab[] = [
 
 const App: React.FC = () => {
   const autoMode = isAutoMode();
+  // Upstream termina-core 0.1.0 ships a corrupted mouseTrackingEnable escape
+  // sequence — without this shim the framework's hit-tested Box onClick /
+  // onWheel handlers never receive any reports. See ui/mouse/mouseTrackingShim.
+  useMouseTrackingShim();
+  // Sync FS scan — must not run per render frame (it did before).
+  const availableSkills = useMemo(() => loadAvailableSkills(), []);
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     const saved = loadUserConfig();
     return saved.systemPrompt ? [{ role: 'system', content: saved.systemPrompt, timestamp: Date.now() }] : [];
@@ -120,9 +127,9 @@ const App: React.FC = () => {
       <Box flexDirection="row" gap={2} alignItems="center">
         <StatusIndicator status={isConnected ? 'online' : 'offline'} label={isConnected ? 'Online' : 'Offline'} theme={myTheme} />
         <Badge variant="success">MCP Active</Badge>
-        <Badge variant="info">{`📚 ${loadAvailableSkills().length} Skills`}</Badge>
+        <Badge variant="info">{`📚 ${availableSkills.length} Skills`}</Badge>
         {autoMode && <Badge variant="warning">AUTO</Badge>}
-        <Box flexDirection="row" gap={1} alignItems="center">
+        <Box flexDirection="row" gap={1} alignItems="center" onClick={() => { if (models.length > 0) setActiveModal('model'); }}>
           <Text bold color={activeModal === 'model' ? (myTheme.colors.focus ?? 'green') : 'cyan'}>
             Model: <Text color="white">{selectedModel || 'none'}</Text>
           </Text>
@@ -198,7 +205,7 @@ const App: React.FC = () => {
                 <Text color="gray" dimColor>Select a skill to load into session instructions:</Text>
                 <Box marginTop={1}>
                   <Select
-                    items={loadAvailableSkills().map((s) => ({ label: `${s.name} [${s.pack}/${s.family}] - ${s.triggers.slice(0, 28) || 'standard'}`, value: s.name }))}
+                    items={availableSkills.map((s) => ({ label: `${s.name} [${s.pack}/${s.family}] - ${s.triggers.slice(0, 28) || 'standard'}`, value: s.name }))}
                     onSelect={(item) => {
                       const file = findSkillFile(item.value);
                       if (file) {
