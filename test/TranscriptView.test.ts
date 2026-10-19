@@ -62,7 +62,14 @@ function walk(node: React.ReactNode, acc: NodeSnapshot[] = []): NodeSnapshot[] {
   }
   if (typeof node === 'object' && 'type' in node) {
     const el = node as React.ReactElement;
-    const tag = typeof el.type === 'string' ? el.type : (el.type as { name?: string }).name ?? 'Component';
+    // forwardRef/memo objects have .displayName but not .name; function
+    // components have .name. Check both — but don't CALL function components
+    // because some (like Text from termina-core) use hooks internally and
+    // can't be called outside a React render context.
+    const typeObj = el.type as { name?: string; displayName?: string };
+    const tag = typeof el.type === 'string'
+      ? el.type
+      : typeObj.name ?? typeObj.displayName ?? 'Component';
     const children = (el.props as { children?: React.ReactNode }).children;
     const text = typeof children === 'string' ? children : '';
     const isSpinner = tag === 'Spinner';
