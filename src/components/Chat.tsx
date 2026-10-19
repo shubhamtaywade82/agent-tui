@@ -5,6 +5,7 @@ import { OllamaClient, Message } from '@nemesis-oss/ollama-sdk'; import { ToastS
 import { useFocusManager, useTerminalSize } from './ui/hooks/index.js';
 import { getActiveToolRegistry, consumeStream, dispatchSlashCommand, SLASH_COMMANDS, executeMcpCalls, loadAvailableSkills, loadUserConfig, saveUserConfig, matchBestSkill, findSkillFile } from '../tools.js';
 import { ChatAccordion, renderSingleTurn, renderStreamingRows, parseTextToolCalls } from './ChatAccordion.js';
+import { GENUI_SYSTEM_INSTRUCTIONS } from '../toolbox/genui.js';
 import { budgetMessages, resolveMessageTokenBudget } from '../utils/context.js';
 import { ToolCallLedger } from '../utils/tool-loop-guard.js';
 import { loadConfig } from '../config.js';
@@ -39,7 +40,7 @@ const loadHistory = (): string[] => {
   try { return filterValidHistory(readFileSync(HIST, 'utf-8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return l; } })); } catch { return []; }
 };
 
-const DEFAULT_SYSTEM_PROMPT = `You are an expert AI assistant. Workspace: ${process.cwd()}. Use run_shell to execute commands (e.g. rails new, bundle, npm, git). Use filesystem tools to inspect or edit files. For multi-step tasks, create a plan with create_task (with id, title, objective), execute the steps, and call complete_task when done. Do not stall or narrate future steps; execute tools directly.`;
+const DEFAULT_SYSTEM_PROMPT = `You are an expert AI assistant. Workspace: ${process.cwd()}. Use run_shell to execute commands (e.g. rails new, bundle, npm, git). Use filesystem tools to inspect or edit files. For multi-step tasks, create a plan with create_task (with id, title, objective), execute the steps, and call complete_task when done. Do not stall or narrate future steps; execute tools directly.\n${GENUI_SYSTEM_INSTRUCTIONS}`;
 const prepareMessages = (h: ChatMessage[], skillName?: string, budget = 9000, compactionHint?: string | null): ChatMessage[] => {
   let prompt = DEFAULT_SYSTEM_PROMPT;
   if (skillName) {
@@ -987,6 +988,9 @@ const Chat: React.FC<ChatProps> = ({
         maxWidth,
         expandThinking: expandThinking || expandedThinkingTurns.has(mi),
         collapsed: collapsedTurns.has(mi),
+        onAction: (act: string, vals: Record<string, unknown>) => {
+          void handleSendMessage(`[UI Action] ${act}: ${JSON.stringify(vals)}`);
+        },
         onToggleCollapse: () => toggleTurnCollapse(mi),
         onToggleThinking: () => toggleTurnThinking(mi),
         onToggleToolCall: clickableToolCalls ? (tci: number) => toggleToolCallExpanded(`${mi}:${tci}`) : undefined,
@@ -1032,7 +1036,7 @@ const Chat: React.FC<ChatProps> = ({
 
   return (
     <Box flexDirection="column" width={columns}>
-      <Box paddingX={1} width={columns}>
+      <Box paddingX={1} width={columns} onClick={() => setFocus(1)}>
         {messages.length === 0 ? (
           <Box height={chatHeight} width="100%" flexDirection="column" alignItems="center" justifyContent="center">
             <Box borderStyle="round" borderColor="cyan" paddingX={2} flexDirection="column" alignItems="center" width={Math.min(74, columns - 4)}>
@@ -1044,9 +1048,24 @@ const Chat: React.FC<ChatProps> = ({
             </Box>
           </Box>
         ) : viewMode === 'accordion' ? (
-          <ChatAccordion messages={messages} height={chatHeight} width={columns - 4} focus={isActive && isChatFocused} theme={theme} />
+          <ChatAccordion
+            messages={messages}
+            height={chatHeight}
+            width={columns - 4}
+            focus={isActive && isChatFocused}
+            theme={theme}
+            onAction={(act, vals) => {
+              void handleSendMessage(`[UI Action] ${act}: ${JSON.stringify(vals)}`);
+            }}
+          />
         ) : viewMode === 'transcript' ? (
-          <TranscriptView events={transcriptState.events} height={chatHeight} isActive={isActive && isChatFocused} width={columns} />
+          <TranscriptView
+            events={transcriptState.events}
+            height={chatHeight}
+            isActive={isActive && isChatFocused}
+            width={columns}
+            phase={phase === 'thinking' ? 'reason' : phase === 'executing-tools' ? 'act' : phase === 'responding' ? 'respond' : 'idle'}
+          />
         ) : (
           <Box width="100%" onClick={() => { if (!isChatFocused) setFocus(1); }}>
             <ScrollArea
@@ -1110,7 +1129,9 @@ const Chat: React.FC<ChatProps> = ({
       )}
 
       <Box paddingX={1} width={columns} flexDirection="row" justifyContent="space-between">
-        <Text color="gray" dimColor>{isChatFocused ? '↑/↓ Scroll • Wheel works anywhere • Esc/Tab Type' : `PgUp/PgDn Scroll • Tab/→ Complete • Ctrl+→ Word • ↑/↓ History • Ctrl+B Style [${inputStyle}]`}</Text>
+        <Box onClick={() => setFocus(isChatFocused ? 0 : 1)}>
+          <Text color="gray" dimColor>{isChatFocused ? '↑/↓ Scroll • Wheel works anywhere • Esc/Tab Type' : `PgUp/PgDn Scroll • Tab/→ Complete • Ctrl+→ Word • ↑/↓ History • Ctrl+B Style [${inputStyle}]`}</Text>
+        </Box>
         <Box flexDirection="row" gap={1}>
           {viewMode === 'stream' && scrollInfo.offset > 0 && (
             <Box onClick={() => setScrollOffset(0)}><Text color="yellow">▲ Top</Text></Box>
@@ -1121,8 +1142,8 @@ const Chat: React.FC<ChatProps> = ({
           {viewMode === 'stream' && rowsBelow === 0 && scrollInfo.offset > 0 && maxScrollOffset > 0 && (
             <Box onClick={() => setScrollOffset(maxScrollOffset)}><Text color="yellow">▼ Bottom</Text></Box>
           )}
-          {viewMode === 'accordion' && <Text color="cyan">[Accordion]</Text>}
-          {viewMode === 'transcript' && <Text color="green">[Transcript · {transcriptState.events.length} events{phase !== 'idle' ? ' · streaming' : ''}]</Text>}
+          {viewMode === 'accordion' && <Box onClick={() => setViewMode('transcript')}><Text color="cyan">[Accordion]</Text></Box>}
+          {viewMode === 'transcript' && <Box onClick={() => setViewMode('stream')}><Text color="green">[Transcript · {transcriptState.events.length} events{phase !== 'idle' ? ' · streaming' : ''}]</Text></Box>}
         </Box>
       </Box>
     </Box>

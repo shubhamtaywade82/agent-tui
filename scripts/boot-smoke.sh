@@ -6,7 +6,7 @@
 #   \x1b[?1000h/1002h/1006h mouse tracking enabled (clicks/wheel)
 #   header text             the frame actually painted
 set -u
-cd /home/z/my-project/agent-tui
+cd "$(dirname "$0")/.."
 
 OUT=/tmp/agent-tui-boot.log
 # OLLAMA_HOST points at a dead port so listModels fails fast (connection

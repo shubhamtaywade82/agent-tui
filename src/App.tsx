@@ -11,6 +11,7 @@ import { Dialog } from './components/ui/dialog/index.js';
 import { useMouseTrackingShim } from './components/ui/mouse/index.js';
 import Chat, { type ChatMessage } from './components/Chat.js';
 import StatusBar from './components/StatusBar.js';
+import GenUIPanel from './components/GenUIPanel.js';
 import { useOllama } from './hooks/useOllama.js';
 import { myTheme } from './theme.js';
 import { readFileSync } from 'node:fs';
@@ -22,6 +23,7 @@ export type ModalType = 'model' | 'clear' | 'skills' | null;
 const TABS: Tab[] = [
   { key: 'chat', label: '💬 Chat' },
   { key: 'system', label: '📊 System' },
+  { key: 'genui', label: '🎨 GenUI' },
 ];
 
 const App: React.FC = () => {
@@ -62,14 +64,16 @@ const App: React.FC = () => {
     if (activeModal && key.escape) { setActiveModal(null); return; }
     if ((key.ctrl && input === 't') || input === '\x14') {
       setActiveModal(null);
-      setActiveTab((prev) => (prev === 'chat' ? 'system' : 'chat'));
+      setActiveTab((prev) => (prev === 'chat' ? 'system' : prev === 'system' ? 'genui' : 'chat'));
       return;
     }
     if ((key.ctrl && input === 'o') || input === '\x0f' || input === '\x1bOR') {
       if (models.length > 0) setActiveModal((p) => (p === 'model' ? null : 'model'));
     }
-    if (activeTab === 'system' && !activeModal) {
+    if ((activeTab === 'system' || activeTab === 'genui') && !activeModal) {
       if (input === '1' || input === 'c' || key.escape || key.leftArrow) setActiveTab('chat');
+      else if (input === '2' || input === 's') setActiveTab('system');
+      else if (input === '3' || input === 'g') setActiveTab('genui');
       else if (input === 'm' || input === 'o') setActiveModal('model');
     }
   });
@@ -127,9 +131,18 @@ const App: React.FC = () => {
       <Box flexDirection="row" gap={2} alignItems="center">
         <StatusIndicator status={isConnected ? 'online' : 'offline'} label={isConnected ? 'Online' : 'Offline'} theme={myTheme} />
         <Badge variant="success">MCP Active</Badge>
-        <Badge variant="info">{`📚 ${availableSkills.length} Skills`}</Badge>
+        <Box onClick={() => setActiveModal((prev) => (prev === 'skills' ? null : 'skills'))}>
+          <Badge variant="info">{`📚 ${availableSkills.length} Skills`}</Badge>
+        </Box>
         {autoMode && <Badge variant="warning">AUTO</Badge>}
-        <Box flexDirection="row" gap={1} alignItems="center" onClick={() => { if (models.length > 0) setActiveModal('model'); }}>
+        <Box
+          flexDirection="row"
+          gap={1}
+          alignItems="center"
+          onClick={() => {
+            if (models.length > 0) setActiveModal((prev) => (prev === 'model' ? null : 'model'));
+          }}
+        >
           <Text bold color={activeModal === 'model' ? (myTheme.colors.focus ?? 'green') : 'cyan'}>
             Model: <Text color="white">{selectedModel || 'none'}</Text>
           </Text>
@@ -137,7 +150,13 @@ const App: React.FC = () => {
         </Box>
       </Box>
       {columns >= 90 && (
-        <Box flexDirection="row" alignItems="center">
+        <Box
+          flexDirection="row"
+          alignItems="center"
+          onClick={() => {
+            if (activeModal) setActiveModal(null);
+          }}
+        >
           <Text color="gray" dimColor>{activeModal ? '[Esc Close Modal]' : '[Ctrl+O Model • Ctrl+T View]'}</Text>
         </Box>
       )}
@@ -186,7 +205,9 @@ const App: React.FC = () => {
                     focus={true} theme={myTheme} maxVisible={6}
                   />
                 </Box>
-                <Box marginTop={1}><Text color="gray" dimColor>[↑/↓ Navigate • Enter Select • Esc Close]</Text></Box>
+                <Box marginTop={1} onClick={() => setActiveModal(null)}>
+                  <Text color="gray" dimColor>[↑/↓ Navigate • Enter Select • Esc Close]</Text>
+                </Box>
               </Box>
             )}
 
@@ -216,7 +237,9 @@ const App: React.FC = () => {
                     focus={true} theme={myTheme} maxVisible={6}
                   />
                 </Box>
-                <Box marginTop={1}><Text color="gray" dimColor>[↑/↓ Navigate • Enter Load Skill • Esc Close]</Text></Box>
+                <Box marginTop={1} onClick={() => setActiveModal(null)}>
+                  <Text color="gray" dimColor>[↑/↓ Navigate • Enter Load Skill • Esc Close]</Text>
+                </Box>
               </Box>
             )}
           </Box>
@@ -233,6 +256,9 @@ const App: React.FC = () => {
             </Box>
             <Box display={activeTab === 'system' ? 'flex' : 'none'} width={columns} flexDirection="column">
               <StatusBar client={client} tokenCount={calculateTokenCount()} theme={myTheme} width={columns} />
+            </Box>
+            <Box display={activeTab === 'genui' ? 'flex' : 'none'} width={columns} flexDirection="column">
+              <GenUIPanel width={columns} height={Math.max(6, rows - 4)} theme={myTheme} isActive={activeTab === 'genui'} />
             </Box>
           </>
         )}

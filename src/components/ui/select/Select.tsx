@@ -30,8 +30,8 @@ interface ListDisplayProps<T> {
   isFocused: boolean;
   theme: InkUITheme;
   maxVisible?: number;
-  /** Click handler for item rows (mouse support). */
   onItemPick?: (item: SelectItem<T>, index: number) => void;
+  onMove?: (dir: 1 | -1) => void;
 }
 
 function ListDisplay<T>({
@@ -41,6 +41,7 @@ function ListDisplay<T>({
   theme,
   maxVisible = 6,
   onItemPick,
+  onMove,
 }: ListDisplayProps<T>) {
   const needsScroll = items.length > maxVisible;
   let start = 0;
@@ -51,7 +52,13 @@ function ListDisplay<T>({
   const slice = needsScroll ? items.slice(start, start + maxVisible) : items;
 
   return (
-    <Box flexDirection="column">
+    <Box
+      flexDirection="column"
+      onWheel={(e: any) => {
+        if (e?.button === 'wheelUp') onMove?.(-1);
+        else if (e?.button === 'wheelDown') onMove?.(1);
+      }}
+    >
       {start > 0 ? (
         <Text color={theme.colors.muted} dimColor>  ▲ {start} more above</Text>
       ) : null}
@@ -139,7 +146,17 @@ function FocusedSelect<T>({ items, onSelect, theme, maxVisible }: FocusedSelectP
     }
   });
 
-  return <ListDisplay items={items} activeIndex={index} isFocused theme={theme} maxVisible={maxVisible} onItemPick={pick} />;
+  return (
+    <ListDisplay
+      items={items}
+      activeIndex={index}
+      isFocused
+      theme={theme}
+      maxVisible={maxVisible}
+      onItemPick={pick}
+      onMove={move}
+    />
+  );
 }
 
 // ─── public component ─────────────────────────────────────────────────────────
@@ -166,6 +183,7 @@ export function Select<T = string>({
       isFocused={false}
       theme={theme}
       maxVisible={maxVisible}
+      onItemPick={onSelect}
     />
   );
 }

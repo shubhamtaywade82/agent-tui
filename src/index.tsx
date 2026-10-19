@@ -16,6 +16,8 @@ const inline =
 // Termina manages alternate screen buffer and mouse tracking cleanly on mount and exit.
 const instance = render(<App />, {
   alternateScreen: !inline,
+  incrementalRendering: true,
+  maxFps: 30,
   mouse: true,
 });
 
