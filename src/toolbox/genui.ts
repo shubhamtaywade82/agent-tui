@@ -11,6 +11,9 @@ import {
   Divider,
   JSONViewer,
 } from '@nemesis-oss/termina-ui';
+import { Link } from '../components/ui/link/index.js';
+import { LinkButton } from '../components/ui/link-button/index.js';
+import { MenuItem } from '../components/ui/menu-item/index.js';
 import {
   createDefaultComponents,
   createGenUIRegistry,
@@ -130,6 +133,72 @@ function createExtendedComponents(): GenUIComponent<any>[] {
       render: (props: any) => React.createElement(JSONViewer, {
         data: props.data,
         maxDepth: props.maxDepth,
+      }),
+    }),
+    // --- Clickable components (step 5 batch 7) ---
+    // Link: a clickable URL rendered as an OSC 8 terminal hyperlink.
+    // The terminal emulator handles the click itself (Cmd+Click opens the
+    // URL) — no GenUI action is dispatched. In terminals without OSC 8
+    // support, the URL is shown after the label in parentheses.
+    defineGenUIComponent({
+      name: 'Link',
+      description: 'A clickable URL rendered as a terminal hyperlink (OSC 8). The terminal handles the click — no action is dispatched. Use for external resources the model should cite.',
+      schema: zv4.object({
+        url: zv4.string(),
+        label: zv4.string().optional(),
+      }) as any,
+      render: (props: any) => React.createElement(Link, {
+        url: props.url,
+        label: props.label,
+      }),
+    }),
+    // LinkButton: chromeless clickable text that dispatches a GenUI action.
+    // Use for inline interactions like "click to expand", "show more", "copy".
+    // The click calls ctx.dispatchAction(props.action, ctx.runtime.getValues()).
+    defineGenUIComponent({
+      name: 'LinkButton',
+      description: 'A chromeless clickable text element (no border, no button chrome). Dispatches the named action on click. Use for inline interactions like "click to expand" or "show more".',
+      schema: zv4.object({
+        label: zv4.string(),
+        action: zv4.string(),
+        icon: zv4.string().optional(),
+      }) as any,
+      render: (props: any, ctx: GenUIRenderContext) => React.createElement(LinkButton, {
+        label: props.label,
+        icon: props.icon,
+        onClick: () => {
+          if (props.action) {
+            void ctx.dispatchAction(props.action, ctx.runtime.getValues());
+          }
+        },
+      }),
+    }),
+    // MenuItem: a clickable menu row with icon + label + optional shortcut.
+    // Dispatches the named action on click OR keyboard select. The parent
+    // menu is responsible for tracking which item is isActive (hover or
+    // keyboard focus). Use for dropdown menus, context menus, command palettes.
+    defineGenUIComponent({
+      name: 'MenuItem',
+      description: 'A clickable menu row — icon + label + optional shortcut hint. Dispatches the named action on click. The parent menu tracks isActive (hover or keyboard focus). Use for dropdown menus, context menus, and command palettes.',
+      schema: zv4.object({
+        label: zv4.string(),
+        action: zv4.string(),
+        icon: zv4.string().optional(),
+        shortcut: zv4.string().optional(),
+        isActive: zv4.boolean().optional(),
+        isDisabled: zv4.boolean().optional(),
+      }) as any,
+      render: (props: any, ctx: GenUIRenderContext) => React.createElement(MenuItem, {
+        label: props.label,
+        icon: props.icon,
+        shortcut: props.shortcut,
+        isActive: props.isActive,
+        isDisabled: props.isDisabled,
+        onClick: () => {
+          if (props.action) {
+            void ctx.dispatchAction(props.action, ctx.runtime.getValues());
+          }
+        },
       }),
     }),
   ];
