@@ -14,6 +14,10 @@ import {
 import { Link } from '../components/ui/link/index.js';
 import { LinkButton } from '../components/ui/link-button/index.js';
 import { MenuItem } from '../components/ui/menu-item/index.js';
+import { Button } from '../components/ui/button/index.js';
+import { ClickableSelect } from '../components/ui/clickable-select/index.js';
+import { ClickableMultiSelect } from '../components/ui/clickable-multi-select/index.js';
+import { ComboBox } from '../components/ui/combobox/index.js';
 import {
   createDefaultComponents,
   createGenUIRegistry,
@@ -200,6 +204,128 @@ function createExtendedComponents(): GenUIComponent<any>[] {
           }
         },
       }),
+    }),
+    // --- Clickable form components (step 5 batch 7.2) ---
+    // Button: a bordered standalone button (not the GenUI default Button
+    // which is already in createDefaultComponents). This variant supports
+    // color variants (primary/secondary/danger/success) + icon.
+    defineGenUIComponent({
+      name: 'StyledButton',
+      description: 'A bordered action button with color variant support (primary/secondary/danger/success) and optional icon. Dispatches the named action on click.',
+      schema: zv4.object({
+        label: zv4.string(),
+        action: zv4.string(),
+        variant: zv4.enum(['primary', 'secondary', 'danger', 'success']).optional(),
+        icon: zv4.string().optional(),
+        isDisabled: zv4.boolean().optional(),
+      }) as any,
+      render: (props: any, ctx: GenUIRenderContext) => React.createElement(Button, {
+        label: props.label,
+        variant: props.variant,
+        icon: props.icon,
+        isDisabled: props.isDisabled,
+        onClick: () => {
+          if (props.action) {
+            void ctx.dispatchAction(props.action, ctx.runtime.getValues());
+          }
+        },
+      }),
+    }),
+    // ClickableSelect: mouse + keyboard single-select dropdown.
+    // Each option is a clickable row. The parent tracks activeIndex.
+    defineGenUIComponent({
+      name: 'ClickableSelect',
+      description: 'A mouse + keyboard driven single-selection dropdown. Each option row is clickable. Dispatches the named action with the selected value on click.',
+      schema: zv4.object({
+        action: zv4.string(),
+        options: zv4.array(zv4.object({
+          label: zv4.string(),
+          value: zv4.string(),
+          icon: zv4.string().optional(),
+          shortcut: zv4.string().optional(),
+        })),
+        activeIndex: zv4.number().optional(),
+        isDisabled: zv4.boolean().optional(),
+      }) as any,
+      render: (props: any, ctx: GenUIRenderContext) => React.createElement(ClickableSelect, {
+        options: props.options,
+        activeIndex: props.activeIndex ?? -1,
+        isDisabled: props.isDisabled,
+        onSelect: (value: string) => {
+          if (props.action) {
+            // Merge the selected value into the form state before dispatching.
+            ctx.runtime.setValue('__selected', value);
+            void ctx.dispatchAction(props.action, ctx.runtime.getValues());
+          }
+        },
+      }),
+    }),
+    // ClickableMultiSelect: checkboxes, mouse + keyboard multi-select.
+    defineGenUIComponent({
+      name: 'ClickableMultiSelect',
+      description: 'A mouse + keyboard multi-selection dropdown with checkboxes (✓/☐). Each row is click-to-toggle. Dispatches the named action with all selected values on each toggle.',
+      schema: zv4.object({
+        action: zv4.string(),
+        options: zv4.array(zv4.object({
+          label: zv4.string(),
+          value: zv4.string(),
+        })),
+        selectedValues: zv4.array(zv4.string()).optional(),
+        isDisabled: zv4.boolean().optional(),
+      }) as any,
+      render: (props: any, ctx: GenUIRenderContext) => {
+        const selected = new Set<string>(props.selectedValues ?? []);
+        return React.createElement(ClickableMultiSelect, {
+          options: props.options,
+          selectedValues: selected,
+          isDisabled: props.isDisabled,
+          onToggle: (_value: string, _isSelected: boolean) => {
+            // After toggling, read the current selection from the runtime
+            // form state (the parent should have updated it via an action).
+            // For GenUI, we dispatch the action with the toggle info.
+            if (props.action) {
+              void ctx.dispatchAction(props.action, ctx.runtime.getValues());
+            }
+          },
+        });
+      },
+    }),
+    // ComboBox: text input + clickable filtered dropdown (autocomplete).
+    defineGenUIComponent({
+      name: 'ComboBox',
+      description: 'A text input with a filtered dropdown of clickable suggestions (autocomplete / typeahead). Dispatches the named action when a suggestion is selected.',
+      schema: zv4.object({
+        action: zv4.string(),
+        options: zv4.array(zv4.object({
+          label: zv4.string(),
+          value: zv4.string(),
+        })),
+        placeholder: zv4.string().optional(),
+        maxSuggestions: zv4.number().optional(),
+        isDisabled: zv4.boolean().optional(),
+      }) as any,
+      render: (props: any, ctx: GenUIRenderContext) => {
+        // The ComboBox is controlled — we need state for the input value.
+        // GenUI components are supposed to be stateless (the runtime owns
+        // form state via ctx.runtime.setValue/getValue), so we wire the
+        // input to the runtime's form state under a generated key.
+        const valueKey = `__combo_${props.action}`;
+        const value = (ctx.runtime.getValue(valueKey) as string) ?? '';
+        return React.createElement(ComboBox, {
+          value,
+          onChange: (v: string) => ctx.runtime.setValue(valueKey, v),
+          options: props.options,
+          placeholder: props.placeholder,
+          maxSuggestions: props.maxSuggestions,
+          isDisabled: props.isDisabled,
+          onSelect: (selectedValue: string) => {
+            ctx.runtime.setValue(valueKey, selectedValue);
+            if (props.action) {
+              void ctx.dispatchAction(props.action, ctx.runtime.getValues());
+            }
+          },
+        });
+      },
     }),
   ];
 }

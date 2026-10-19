@@ -28,10 +28,13 @@
  * for the old path. Once the transcript path reaches feature parity,
  * the old path can be deleted (see scratch/STEP5.md).
  */
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Box, Text } from '@nemesis-oss/termina-core';
 import { ScrollBox, Spinner, LogStream } from '@nemesis-oss/termina-ui';
+import { LinkButton } from './ui/link-button/index.js';
+import { Button } from './ui/button/index.js';
 import type { TranscriptEvent, TranscriptState } from '../transcript/index.js';
+import type { ElicitationChoice } from '../transcript/index.js';
 import {
   LoopStrip,
   ContextPanel,
@@ -56,6 +59,12 @@ export interface TranscriptViewProps {
   readonly width?: number | string;
   /** Optional turn phase */
   readonly phase?: TurnPhase;
+  /**
+   * Called when the user clicks a response button on an unresolved
+   * elicitation event. The parent should dispatch `cb.patch(eventId,
+   * makeElicitationResolutionPatch(choice))` to resolve the event.
+   */
+  readonly onElicitationRespond?: (eventId: number, choice: ElicitationChoice) => void;
 }
 
 /** Format a millisecond duration as 'X.Ys' or 'Xm Ys'. */
@@ -66,8 +75,26 @@ function formatDuration(ms: number): string {
   return `${m}m ${s}s`;
 }
 
-/** Render a single event as a row in the transcript. Pure function. */
-export function renderEvent(ev: TranscriptEvent): React.ReactElement {
+/** Optional context passed to renderEvent for interactive event kinds. */
+export interface RenderEventContext {
+  /** Called when the user clicks a response button on an elicitation event. */
+  readonly onElicitationRespond?: (eventId: number, choice: ElicitationChoice) => void;
+  /** Whether a tool event's details are expanded. */
+  readonly isToolExpanded?: (eventId: number) => boolean;
+  /** Called when the user clicks a tool's name to expand/collapse its details. */
+  readonly onToggleTool?: (eventId: number) => void;
+}
+
+/**
+ * Render a single event as a row in the transcript. Pure function for
+ * most event kinds; tool and elicitation events return stateful
+ * sub-components (ToolEventRow, ElicitationEventRow) that manage their
+ * own interaction state.
+ *
+ * The optional `ctx` parameter carries callbacks for interactive kinds.
+ * For pure (non-interactive) kinds it's ignored.
+ */
+export function renderEvent(ev: TranscriptEvent, ctx?: RenderEventContext): React.ReactElement {
   switch (ev.kind) {
     case 'user':
       return (
@@ -125,25 +152,57 @@ export function renderEvent(ev: TranscriptEvent): React.ReactElement {
     }
 
     case 'tool': {
+      // Tool events render inline (pure function, no useState) — the
+      // expand/collapse state is controlled by ctx.isToolExpanded +
+      // ctx.onToggleTool, which the parent TranscriptView manages.
+      const expanded = ctx?.isToolExpanded?.(ev.id) ?? false;
+      const hasDetails = Boolean(ev.result || ev.error);
       const statusIcon =
         ev.status === 'success' ? '✓' : ev.status === 'error' ? '✗' : ev.status === 'blocked' ? '⊘' : '⏺';
       const statusColor =
         ev.status === 'success' ? 'green' : ev.status === 'error' ? 'red' : ev.status === 'blocked' ? 'red' : 'magenta';
       return (
-        <Box flexDirection="row">
-          <Text color={statusColor} bold>
-            {statusIcon}{' '}
-          </Text>
-          <Text bold>{ev.name}</Text>
-          <Text dimColor> ({JSON.stringify(ev.arguments)})</Text>
-          {ev.status === 'running' ? <Spinner type="dots" /> : null}
-          {ev.result ? (
-            <Text dimColor wrap="wrap">
-              {' '}
-              → {ev.result.length > 80 ? `${ev.result.slice(0, 77)}…` : ev.result}
+        <Box flexDirection="column">
+          <Box flexDirection="row">
+            <Text color={statusColor} bold>
+              {statusIcon}{' '}
             </Text>
+            {hasDetails ? (
+              <LinkButton
+                label={ev.name}
+                color={statusColor}
+                underline={false}
+                bold
+                onClick={() => ctx?.onToggleTool?.(ev.id)}
+              />
+            ) : (
+              <Text bold>{ev.name}</Text>
+            )}
+            <Text dimColor> ({JSON.stringify(ev.arguments)})</Text>
+            {ev.status === 'running' ? <Spinner type="dots" /> : null}
+            {hasDetails ? (
+              <Text dimColor> {expanded ? '[-]' : '[+]'}</Text>
+            ) : null}
+            {!expanded && ev.result ? (
+              <Text dimColor wrap="wrap">
+                {' '}
+                → {ev.result.length > 80 ? `${ev.result.slice(0, 77)}…` : ev.result}
+              </Text>
+            ) : null}
+            {!expanded && ev.error ? (
+              <Text color="red">
+                {' '}
+                — {ev.error.length > 80 ? `${ev.error.slice(0, 77)}…` : ev.error}
+              </Text>
+            ) : null}
+          </Box>
+          {expanded && hasDetails ? (
+            <Box flexDirection="column" paddingLeft={2} marginTop={0}>
+              {ev.result ? <Text dimColor wrap="wrap">{ev.result}</Text> : null}
+              {ev.error ? <Text color="red"> — {ev.error}</Text> : null}
+              {ev.durationMs ? <Text dimColor> ({ev.durationMs}ms)</Text> : null}
+            </Box>
           ) : null}
-          {ev.error ? <Text color="red"> — {ev.error}</Text> : null}
         </Box>
       );
     }
@@ -187,6 +246,9 @@ export function renderEvent(ev: TranscriptEvent): React.ReactElement {
       );
 
     case 'elicitation':
+      // Elicitation events render clickable Button choices when unresolved.
+      // The parent passes `onElicitationRespond` which dispatches
+      // `cb.patch(eventId, makeElicitationResolutionPatch(choice))`.
       return (
         <Box flexDirection="column">
           <Text color="yellow" bold>
@@ -195,6 +257,27 @@ export function renderEvent(ev: TranscriptEvent): React.ReactElement {
           <Text dimColor> {ev.prompt}</Text>
           {ev.choice ? (
             <Text color={ev.choice === 'deny' ? 'red' : 'green'}> → {ev.choice}</Text>
+          ) : ctx?.onElicitationRespond ? (
+            <Box flexDirection="row" gap={1} marginTop={0}>
+              <Button
+                label="Allow once"
+                variant="success"
+                icon="✓"
+                onClick={() => ctx.onElicitationRespond!(ev.id, 'allow_once')}
+              />
+              <Button
+                label="Allow session"
+                variant="primary"
+                icon="✓"
+                onClick={() => ctx.onElicitationRespond!(ev.id, 'allow_session')}
+              />
+              <Button
+                label="Deny"
+                variant="danger"
+                icon="✖"
+                onClick={() => ctx.onElicitationRespond!(ev.id, 'deny')}
+              />
+            </Box>
           ) : (
             <Text dimColor italic> (awaiting response…)</Text>
           )}
@@ -230,8 +313,17 @@ export function renderEvent(ev: TranscriptEvent): React.ReactElement {
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * The tool + elicitation cases are inlined in renderEvent above
+ * (not extracted to sub-components) because the walk-based tests in
+ * test/TranscriptView.test.ts call renderEvent directly and walk the
+ * returned element tree — function components that use hooks (like
+ * Text/Box from termina-core) can't be called outside a React render
+ * context. The inline approach keeps renderEvent a pure function.
+ * ------------------------------------------------------------------ */
+
 /** The full transcript view — TurnStream observatory when width allows, otherwise single column. */
-export const TranscriptView: React.FC<TranscriptViewProps> = ({ events, height, isActive = true, width, phase }) => {
+export const TranscriptView: React.FC<TranscriptViewProps> = ({ events, height, isActive = true, width, phase, onElicitationRespond }) => {
   const numCols = typeof width === 'number' ? width : 100;
   const isObservatory = numCols >= 88 && height >= 12;
   const derivedPhase = useMemo(() => deriveLoopPhase(events, phase), [events, phase]);
@@ -246,9 +338,19 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ events, height, 
     return <Box height={height} width={width} alignItems="center" justifyContent="center"><Text dimColor>Transcript is empty. Type a prompt to start streaming.</Text></Box>;
   }
 
+  const [expandedToolIds, setExpandedToolIds] = useState<Set<number>>(new Set());
+  const renderCtx: RenderEventContext = {
+    isToolExpanded: (id: number) => expandedToolIds.has(id),
+    onToggleTool: (id: number) => setExpandedToolIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    }),
+    ...(onElicitationRespond ? { onElicitationRespond } : {}),
+  };
   const scrollContent = (
     <ScrollBox height={isObservatory ? height - 4 : height - 1} followTail={true} showScrollbar={true} isActive={isActive}>
-      {events.map((ev) => (<Box key={ev.id} flexDirection="column">{renderEvent(ev)}</Box>))}
+      {events.map((ev) => (<Box key={ev.id} flexDirection="column">{renderEvent(ev, renderCtx)}</Box>))}
     </ScrollBox>
   );
 
