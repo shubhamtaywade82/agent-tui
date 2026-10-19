@@ -1,27 +1,26 @@
 /**
  * src/components/ui/mouse/mouseTrackingShim.tsx
  *
- * Upstream bug compensation for @nemesis-oss/termina-core 0.1.0.
+ * Originally a workaround for @nemesis-oss/termina-core 0.1.0, which shipped
+ * a corrupted `mouseTrackingEnable` constant (three bare ESC bytes that no
+ * terminal interprets, instead of the DEC private mode SET sequence).
  *
- * The framework exports:
- *   mouseTrackingEnable  = '\x1b\x1b\x1b'                       (corrupted)
- *   mouseTrackingDisable = '\x1b[?1006l\x1b[?1002l\x1b[?1000l'  (correct)
+ * As of @nemesis-oss/termina-core 0.2.0, the upstream constant is FIXED —
+ * it now correctly writes `ESC[?1000h ESC[?1002h ESC[?1006h` (click
+ * reporting + drag reporting + SGR extended coordinates). The framework's
+ * own `setMouseTracking(true)` call (triggered by `render(..., {mouse:
+ * true})` + any mounted `useMouse` hook) now writes the correct bytes.
  *
- * `mouseTrackingEnable` should be the DEC private mode turn-on sequence
- * (`?1000h ?1002h ?1006h` — click reporting, drag reporting, SGR extended
- * coordinates), but the shipped constant is three bare ESC bytes, which no
- * terminal interprets. `MouseRouter` is mounted by `render(..., {mouse:
- * true})` and calls `setMouseTracking(true)`, which writes the corrupted
- * sequence — so tracking never actually turns on and no mouse report ever
- * reaches the hit-tested `Box onClick / onWheel` handlers.
+ * This shim is now REDUNDANT — it writes the same sequence the framework
+ * already writes. It is kept as a safety net:
+ *   - Idempotent: writing the enable sequence twice is harmless.
+ *   - Defensive: if a future termina-core version regresses the constant,
+ *     the shim still ensures mouse tracking works.
+ *   - Cheap: one stdout.write on mount, one on unmount.
  *
- * This shim writes the correct sequence once at app mount and the matching
- * disable sequence on unmount/exit. It is idempotent relative to the
- * framework's own (broken) writes: enabling twice is harmless, and both
- * disable paths write the same bytes.
- *
- * When termina-core fixes the constant upstream, this shim can be deleted
- * without touching any call site (it is only mounted in `App.tsx`).
+ * To remove: delete this file, remove the import + `useMouseTrackingShim()`
+ * call in `App.tsx`, and remove `src/components/ui/mouse/index.ts`. No
+ * other call site depends on it.
  */
 import { useEffect } from 'react';
 import { useStdout } from '@nemesis-oss/termina-core';
