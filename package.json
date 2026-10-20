@@ -27,7 +27,8 @@
     "supervisor:lint:fix": "biome check --write src/supervisor test/supervisor",
     "supervisor:migrate": "tsx src/supervisor/db/migrate.ts",
     "supervisor:seed-models": "bash supervisor/scripts/seed-models.sh",
-    "supervisor:evals": "vitest run test/supervisor/evals"
+    "supervisor:evals": "vitest run test/supervisor/evals",
+    "bench:modelfiles": "tsx scripts/bench-modelfiles.ts"
   },
   "keywords": [
     "ai",

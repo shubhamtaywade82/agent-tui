@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Seed the four MiniCPM5 sub-agent models into the local Ollama daemon.
+# Seed all MiniCPM5 sub-agent models into the local Ollama daemon.
 # Idempotent: skips models that already exist.
 #
 # Existence checks use `ollama show` rather than `ollama list | grep -q`,
@@ -23,13 +23,26 @@ if ! ollama show "${BASE_MODEL}" > /dev/null 2>&1; then
 fi
 
 # 2. Create each specialised model from its Modelfile
-for modelfile in router toolagent analyst summarizer; do
-  model_name="minicpm5-${modelfile}"
+# Original 4 variants + 10 new benchmark variants
+VARIANTS=(
+  router toolagent analyst summarizer
+  reasoning fast-router tool-agent tool-search
+  coding-agent long-context recovery structured-output
+  low-repetition cloud-escalation
+)
+
+for variant in "${VARIANTS[@]}"; do
+  model_name="minicpm5-${variant}"
   if ollama show "${model_name}" > /dev/null 2>&1; then
     echo "✓ ${model_name} already exists — skipping"
   else
-    echo "→ Creating ${model_name} from ${MODELFILES_DIR}/${modelfile}.Modelfile"
-    ollama create "${model_name}" -f "${MODELFILES_DIR}/${modelfile}.Modelfile"
+    modelfile="${MODELFILES_DIR}/${variant}.Modelfile"
+    if [[ ! -f "${modelfile}" ]]; then
+      echo "✗ ${modelfile} not found — skipping"
+      continue
+    fi
+    echo "→ Creating ${model_name} from ${modelfile}"
+    ollama create "${model_name}" -f "${modelfile}"
     echo "✓ Created ${model_name}"
   fi
 done

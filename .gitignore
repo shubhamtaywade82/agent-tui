@@ -28,5 +28,8 @@ chat-*.md
 rails_app/
 # Supervisor artifacts
 supervisor-data/
+
+# Benchmark results
+results/
 .agent/
 *.pid
