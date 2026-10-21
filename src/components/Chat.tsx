@@ -18,10 +18,39 @@ import { autoMaxChains } from '../auto-mode.js';
 import { getTaskRuntime, buildTaskPrompt, isPlanSatisfied } from '../tasks.js';
 import { TranscriptView } from './TranscriptView.js';
 import { useTranscript } from '../hooks/useTranscript.js';
-import { runOllamaChat, makeUserEvent, makePlanEvent, makePlanStatusPatch, makeSystemEvent, makeElicitationResolutionPatch } from '../transcript/index.js';
+import { runOllamaChat, makeUserEvent, makePlanEvent, makePlanStatusPatch, makeSystemEvent } from '../transcript/index.js';
+import { useElicitation } from '../hooks/useElicitation.js';
 
 export interface ChatMessage extends Message { timestamp?: number; thinking?: string; tokens?: number; skill?: string; }
 export interface PendingContinuation { type: 'task' | 'turn_limit'; taskId?: string; label: string; detail?: string; prompt: string; }
+
+/**
+ * Tools that modify state (filesystem, shell, external systems) and
+ * require user confirmation before execution. The elicitation gate
+ * pauses tool execution until the user clicks Allow/Deny.
+ *
+ * Read-only tools (read_file, list_tree, web_search, etc.) skip the
+ * elicitation gate entirely — they're safe to execute without confirmation.
+ */
+const DANGEROUS_TOOLS = new Set([
+  'write_file', 'write_files',
+  'delete_path',
+  'run_shell', 'run_code',
+  'clone_repo',
+  'edit_image',
+  'generate_image',
+  'index_document',
+  'text_to_speech',
+]);
+
+function isDangerousTool(name: string): boolean {
+  // Exact match first
+  if (DANGEROUS_TOOLS.has(name)) return true;
+  // Heuristic: names containing write/delete/edit/run/clone/install are dangerous
+  const lower = name.toLowerCase();
+  return /\b(write|delete|edit|run|clone|install|remove|execute|shred|chmod|chown)\b/i.test(lower)
+    || /\b(bash|sh|exec|cmd|rm)\b/i.test(lower);
+}
 
 const HIST = '.history';
 const filterValidHistory = (items: string[]): string[] => {
@@ -167,6 +196,16 @@ const Chat: React.FC<ChatProps> = ({
   // so a re-read in turn 5 is caught even if turn 4 already read the file.
   // Reset when /clear is dispatched in transcript mode.
   const transcriptLedgerRef = React.useRef<ToolCallLedger | null>(null);
+  // Step 5 batch 7: the elicitation hook — async confirmation gate for
+  // dangerous tools. When the model requests a tool that modifies state
+  // (write_file, delete_path, run_shell, etc.), the onToolCall callback
+  // awaits requestElicitation() before executing. The tool execution
+  // PAUSES until the user clicks Allow/Deny in the TranscriptView.
+  const {
+    requestElicitation,
+    respondToElicitation: rawRespondToElicitation,
+    resetSessionPermissions: resetElicitationSession,
+  } = useElicitation(transcriptCb);
 
   const term = useTerminalSize(); const columns = propCols ?? term.columns; const rows = propRows ?? term.rows;
   const { isFocused, setFocus } = useFocusManager({ count: 2, initialIndex: 0, nextKey: 'none', prevKey: 'none' });
@@ -415,6 +454,25 @@ const Chat: React.FC<ChatProps> = ({
       const onToolCall = reg ? async (tc: any) => {
         const name = tc?.function?.name ?? '<unknown>';
         const args = tc?.function?.arguments ?? {};
+
+        // Step 5 batch 7: elicitation gate. If the tool is dangerous
+        // (writes files, deletes, runs shell commands, etc.), pause
+        // execution and ask the user for confirmation before proceeding.
+        // The TranscriptView shows clickable Allow/Deny buttons; the
+        // engine awaits the response here.
+        if (isDangerousTool(name)) {
+          const promptText = `Allow ${name}(${JSON.stringify(args).slice(0, 60)}${JSON.stringify(args).length > 60 ? '…' : ''})?`;
+          const choice = await requestElicitation(name, args, promptText);
+          if (choice === 'deny') {
+            return {
+              result: 'User denied the tool call.',
+              durationMs: 0,
+              status: 'blocked' as const,
+            };
+          }
+          // 'allow_once' or 'allow_session' — proceed with execution.
+        }
+
         // Step 5 batch 5.5: ask the ledger if this call should be short-circuited.
         const blocked = ledger.beforeExecute(name, args);
         if (blocked) {
@@ -611,6 +669,10 @@ const Chat: React.FC<ChatProps> = ({
         // Also reset skill + system-prompt refs so /clear truly starts fresh.
         transcriptSkillRef.current = null;
         transcriptSystemPromptRef.current = null;
+        // Reset session-level tool permissions — after /clear, the user
+        // needs to re-approve dangerous tools even if they previously
+        // chose "allow_session".
+        resetElicitationSession();
         show('Transcript cleared', 'info', 2000);
         return true;
       case '/compact': {
@@ -1066,7 +1128,12 @@ const Chat: React.FC<ChatProps> = ({
             width={columns}
             phase={phase === 'thinking' ? 'reason' : phase === 'executing-tools' ? 'act' : phase === 'responding' ? 'respond' : 'idle'}
             onElicitationRespond={(eventId, choice) => {
-              transcriptCb.patch(eventId, makeElicitationResolutionPatch(choice));
+              // The hook handles: (1) patching the event with the choice,
+              // (2) resolving the pending promise so the engine's
+              // `await requestElicitation(...)` in onToolCall unblocks,
+              // (3) caching 'allow_session' so future calls to the
+              // same tool skip the elicitation prompt.
+              rawRespondToElicitation(eventId, choice);
               if (choice === 'deny') {
                 show('Tool call denied', 'warning', 2000);
               } else {
