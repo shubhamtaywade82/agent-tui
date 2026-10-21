@@ -4,6 +4,8 @@ import { ThemeProvider, defaultTheme } from '@nemesis-oss/termina-ui';
 import { StatusIndicator } from './components/ui/status-indicator/index.js';
 import { Badge } from './components/ui/badge/index.js';
 import { Select } from './components/ui/select/index.js';
+import { ClickableSelect } from './components/ui/clickable-select/index.js';
+import { useListNavigation } from './components/ui/hooks/index.js';
 import { Tabs } from './components/ui/tabs/index.js';
 import type { Tab } from './components/ui/tabs/index.js';
 import { Divider } from './components/ui/divider/index.js';
@@ -45,6 +47,22 @@ const App: React.FC = () => {
   const { client, models, isLoading } = useOllama();
   const { columns, rows } = useWindowSize();
   const [selectedModel, setSelectedModel] = useState<string>(() => loadUserConfig().model || '');
+
+  // Keyboard navigation for the model selector modal — only active when
+  // the model modal is open. Up/Down moves the highlight, Enter selects,
+  // Escape closes (handled by the existing useInput handler below).
+  const modelNav = useListNavigation({
+    length: models.length,
+    onSelect: (i) => {
+      const model = models[i];
+      if (model) {
+        setSelectedModel(model);
+        saveUserConfig({ model });
+        setActiveModal(null);
+      }
+    },
+    isActive: activeModal === 'model',
+  });
 
   useEffect(() => {
     if (client) setIsConnected(true);
@@ -199,14 +217,26 @@ const App: React.FC = () => {
                 <Text bold color={myTheme.colors.primary}>Select Ollama Model</Text>
                 <Text color="gray" dimColor>Current: {selectedModel || 'none'}</Text>
                 <Box marginTop={1}>
-                  <Select
-                    items={models.map((m) => ({ label: `${m === selectedModel ? '● ' : '○ '}${m}${m === selectedModel ? ' (active)' : ''}`, value: m }))}
-                    onSelect={(item) => { setSelectedModel(item.value); saveUserConfig({ model: item.value }); setActiveModal(null); }}
-                    focus={true} theme={myTheme} maxVisible={6}
+                  <ClickableSelect
+                    options={models.map((m) => ({
+                      label: `${m === selectedModel ? '● ' : '○ '}${m}`,
+                      value: m,
+                      icon: m === selectedModel ? '●' : '○',
+                    }))}
+                    activeIndex={modelNav.activeIndex}
+                    onActiveChange={modelNav.setActiveIndex}
+                    onSelect={(value) => {
+                      setSelectedModel(value);
+                      saveUserConfig({ model: value });
+                      setActiveModal(null);
+                    }}
+                    visibleOptionCount={6}
+                    color="white"
+                    theme={myTheme}
                   />
                 </Box>
                 <Box marginTop={1} onClick={() => setActiveModal(null)}>
-                  <Text color="gray" dimColor>[↑/↓ Navigate • Enter Select • Esc Close]</Text>
+                  <Text color="gray" dimColor>[↑/↓ Navigate • Enter Select • Click to Select • Esc Close]</Text>
                 </Box>
               </Box>
             )}
