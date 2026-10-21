@@ -18,3 +18,6 @@ export type { UseAlternateScreenOptions } from './useAlternateScreen.js';
 
 export { useClipboard } from './useClipboard.js';
 export type { ClipboardResult } from './useClipboard.js';
+
+export { useListNavigation } from './useListNavigation.js';
+export type { UseListNavigationOptions, UseListNavigationResult } from './useListNavigation.js';
