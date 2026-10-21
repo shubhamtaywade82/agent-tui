@@ -44,8 +44,8 @@ header/footer rule, Badge in `src/App.tsx` header).
 |-------|------------|-------|
 | 2 | `Gauge`, `ProgressBar` | Local uses `value`/`max`/`label`/`color`/`theme`; npm uses percent `value` only. Adapter computes `percent = (value / max) * 100`. |
 | 3 | `Stepper`, `StatusIndicator` | `StatusIndicator` doesn't exist in npm — use `StatusMessage` with `variant` mapping. `Stepper` API matches (`steps` + `current`/`currentStep`). |
-| 4 | `Table`, `Tabs`, `Dialog` | Local `Tabs` uses `tabs`+`activeKey`+`onChange`; npm `Tabs` uses `tabs`+`defaultId` (uncontrolled). Adapter needs to manage internal state. Local `Dialog` has `isOpen`/`actions`/`onAction`; npm `Dialog` has `title`/`children`/`onClose`. Adapter needs to render buttons as children. |
-| 5 | `Select`, `TextInput`, `MultiSelect`, `Autocomplete` | Local `Select` uses `items`+`onSelect`; npm uses `options`+`onChange`. Local `TextInput` has autocomplete integration that the npm version doesn't. These are the biggest API deltas. |
+| 4 | `Table`, `Tabs`, `Dialog` | **KEEP** — APIs too different. Local `Tabs` has `variant`/`badge`/`disabled`/`position`/`focus` (npm has none). Local `Dialog` has `isOpen`/`actions`/`onAction` (npm has `title`/`children`/`onClose`). Local `Table` has per-column `width`/`borderStyle` (npm has no width). Migrating would lose features. |
+| 5 | `Select`, `TextInput`, `MultiSelect`, `Autocomplete` | **SUPERSeded** — use the new clickable alternatives instead: `ClickableSelect` (for `Select`), `ClickableMultiSelect` (for `MultiSelect`), `ComboBox` (for `Autocomplete`). The local keyboard-only versions remain in `src/components/ui/` for backward compat. |
 | 6 | `ScrollArea`, `ScrollBox` | Local `ScrollArea` has rich API (`scrollOffset`, `onScrollOffsetChange`, `mouseScroll`, `autoScroll`). NPM `ScrollBox` is simpler. Adapter needs to wrap. |
 | 7 | `Accordion`, `CodeBlock`, `DataTable`, `DiffView`, `Header`, `JSONViewer`, `KeyHint`, `LoadingBar`, `Markdown`, `Sparkline`, `StreamingText`, `TokenCounter`, `TreeView`, `Typewriter`, `Toast` | Mostly API-shape deltas. One at a time. |
 
