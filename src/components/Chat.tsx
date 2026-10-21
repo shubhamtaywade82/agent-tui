@@ -18,7 +18,7 @@ import { autoMaxChains } from '../auto-mode.js';
 import { getTaskRuntime, buildTaskPrompt, isPlanSatisfied } from '../tasks.js';
 import { TranscriptView } from './TranscriptView.js';
 import { useTranscript } from '../hooks/useTranscript.js';
-import { runOllamaChat, makeUserEvent, makePlanEvent, makePlanStatusPatch, makeSystemEvent } from '../transcript/index.js';
+import { runOllamaChat, makeUserEvent, makePlanEvent, makePlanStatusPatch, makeSystemEvent, makeElicitationResolutionPatch } from '../transcript/index.js';
 
 export interface ChatMessage extends Message { timestamp?: number; thinking?: string; tokens?: number; skill?: string; }
 export interface PendingContinuation { type: 'task' | 'turn_limit'; taskId?: string; label: string; detail?: string; prompt: string; }
@@ -1065,6 +1065,14 @@ const Chat: React.FC<ChatProps> = ({
             isActive={isActive && isChatFocused}
             width={columns}
             phase={phase === 'thinking' ? 'reason' : phase === 'executing-tools' ? 'act' : phase === 'responding' ? 'respond' : 'idle'}
+            onElicitationRespond={(eventId, choice) => {
+              transcriptCb.patch(eventId, makeElicitationResolutionPatch(choice));
+              if (choice === 'deny') {
+                show('Tool call denied', 'warning', 2000);
+              } else {
+                show(`Tool call ${choice === 'allow_session' ? 'allowed for session' : 'allowed once'}`, 'info', 2000);
+              }
+            }}
           />
         ) : (
           <Box width="100%" onClick={() => { if (!isChatFocused) setFocus(1); }}>
