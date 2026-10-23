@@ -30,7 +30,8 @@ import { getToolRegistry } from './toolbox/index.js';
 import { listSessions, loadSession } from './session.js';
 import { loadConfig, type AgentConfig } from './config.js';
 import { initLogger, log } from './logger.js';
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { isBearerAuthorized, resolveBearerToken } from './utils/auth.js';
 
 interface ChatRequest {
   prompt: string;
@@ -67,24 +68,12 @@ function sendSseHeaders(res: ServerResponse): void {
   });
 }
 
-/** Constant-time check of an `Authorization: Bearer` header against the server token. */
-export function isAuthorized(authorization: string | undefined, token: string): boolean {
-  const match = /^Bearer\s+(\S+)$/i.exec(authorization ?? '');
-  if (!match) return false;
-  const given = Buffer.from(match[1]!);
-  const expected = Buffer.from(token);
-  return given.length === expected.length && timingSafeEqual(given, expected);
-}
-
 export interface ApiBinding {
   host: string;
   token: string;
   /** True when the token was generated for this run rather than configured. */
   tokenGenerated: boolean;
 }
-
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
-const MIN_CONFIGURED_TOKEN_LENGTH = 16;
 
 /**
  * Resolve the bind address and token from the environment. Throws before the
@@ -93,17 +82,8 @@ const MIN_CONFIGURED_TOKEN_LENGTH = 16;
  */
 export function resolveApiBinding(env: NodeJS.ProcessEnv = process.env): ApiBinding {
   const host = env.AGENT_API_HOST?.trim() || '127.0.0.1';
-  const configured = env.AGENT_API_TOKEN?.trim() || undefined;
-  if (configured && configured.length < MIN_CONFIGURED_TOKEN_LENGTH) {
-    throw new Error(`AGENT_API_TOKEN must be at least ${MIN_CONFIGURED_TOKEN_LENGTH} characters.`);
-  }
-  if (!LOOPBACK_HOSTS.has(host) && !configured) {
-    throw new Error(
-      `AGENT_API_HOST=${host} exposes the API beyond this machine. Set AGENT_API_TOKEN to a strong secret first.`,
-    );
-  }
-  if (configured) return { host, token: configured, tokenGenerated: false };
-  return { host, token: randomBytes(24).toString('base64url'), tokenGenerated: true };
+  const { token, generated } = resolveBearerToken({ host, configured: env.AGENT_API_TOKEN, envName: 'AGENT_API_TOKEN' });
+  return { host, token, tokenGenerated: generated };
 }
 
 function sse(res: ServerResponse, event: string, data: unknown): void {
@@ -258,7 +238,7 @@ async function handlePost(
 
 export function createApiServer(cfg: AgentConfig, opts: { port: number; token: string }) {
   return createServer(async (req, res) => {
-    if (!isAuthorized(req.headers.authorization, opts.token)) {
+    if (!isBearerAuthorized(req.headers.authorization, opts.token)) {
       res.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;

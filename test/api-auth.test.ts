@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import { createApiServer, isAuthorized, resolveApiBinding } from '../src/server.js';
+import { createApiServer, resolveApiBinding } from '../src/server.js';
 import { loadConfig } from '../src/config.js';
+import { isBearerAuthorized } from '../src/utils/auth.js';
 
 const TOKEN = 'test-token-0123456789abcdef';
 
@@ -53,11 +54,11 @@ test('no response carries CORS headers, and a cross-origin preflight is not gran
   assert.equal(preflight.headers.get('access-control-allow-origin'), null);
 });
 
-test('isAuthorized accepts the Bearer scheme case-insensitively and rejects other schemes', () => {
-  assert.equal(isAuthorized(`bearer ${TOKEN}`, TOKEN), true);
-  assert.equal(isAuthorized(`Basic ${TOKEN}`, TOKEN), false);
-  assert.equal(isAuthorized(undefined, TOKEN), false);
-  assert.equal(isAuthorized('Bearer', TOKEN), false);
+test('isBearerAuthorized accepts the Bearer scheme case-insensitively and rejects other schemes', () => {
+  assert.equal(isBearerAuthorized(`bearer ${TOKEN}`, TOKEN), true);
+  assert.equal(isBearerAuthorized(`Basic ${TOKEN}`, TOKEN), false);
+  assert.equal(isBearerAuthorized(undefined, TOKEN), false);
+  assert.equal(isBearerAuthorized('Bearer', TOKEN), false);
 });
 
 test('resolveApiBinding defaults to loopback with a generated token', () => {

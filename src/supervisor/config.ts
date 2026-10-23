@@ -19,8 +19,12 @@ if (existsSync(envPath)) dotenv.config({ path: envPath, override: false });
 
 const schema = z.object({
   http: z.object({
-    host: z.string().default('0.0.0.0'),
+    // Loopback by default. The compose stack sets SUPERVISOR_HTTP_HOST=0.0.0.0 inside the container.
+    host: z.string().default('127.0.0.1'),
     port: z.coerce.number().int().positive().default(7480),
+    /** Bearer token for protected routes. Unset generates one per run (loopback only). */
+    apiKey: z.string().optional(),
+    corsOrigins: z.array(z.string()).default([]),
   }),
   log: z.object({
     level: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
@@ -107,6 +111,10 @@ function loadConfig(): SupervisorConfig {
     http: {
       host: process.env.SUPERVISOR_HTTP_HOST,
       port: process.env.SUPERVISOR_HTTP_PORT,
+      apiKey: process.env.SUPERVISOR_API_KEY,
+      corsOrigins: process.env.SUPERVISOR_CORS_ORIGINS?.split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
     },
     log: {
       level: process.env.SUPERVISOR_LOG_LEVEL,

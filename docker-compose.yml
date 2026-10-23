@@ -125,9 +125,14 @@ services:
       OLLAMA_HOST: http://ollama:11434
       INFERENCE_BACKEND: ollama
       SUPERVISOR_LOG_FORMAT: json
+      # The container must listen on all interfaces so the published port reaches it.
+      # Publishing is restricted to the host's loopback below, and the key is mandatory:
+      # with an empty SUPERVISOR_API_KEY the container refuses to start.
+      SUPERVISOR_HTTP_HOST: 0.0.0.0
+      SUPERVISOR_API_KEY: ${SUPERVISOR_API_KEY:-}
       SANDBOX_IMAGE: supervisor-sandbox:latest
       SANDBOX_NETWORK: minicpm5-supervisor_supervisor-net
-    ports: ["7480:7480"]
+    ports: ["127.0.0.1:7480:7480"]
     volumes:
       # The supervisor needs docker.sock to spawn sandbox containers
       - /var/run/docker.sock:/var/run/docker.sock
