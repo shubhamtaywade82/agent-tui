@@ -1,25 +1,31 @@
 /**
  * Ollama backend — default inference engine (§13, §17).
  *
- * Uses the official `ollama` npm SDK's async client. The SYSTEM prompt and
- * runtime options (temperature, num_ctx) live in the Modelfile; we only
- * override per-call `temperature` and `think` here as a failsafe.
+ * Uses `@nemesis-oss/ollama-sdk`, the same HTTP client the TUI runs on, so the
+ * supervisor inherits the SDK's per-request timeout, retry/backoff (Retry-After
+ * on 429s included) and typed error taxonomy instead of a second, unmanaged
+ * transport. The SYSTEM prompt and runtime options (temperature, num_ctx) live
+ * in the Modelfile; we only override per-call `temperature` and `think` here as
+ * a failsafe.
  */
-import { Ollama } from 'ollama';
+import { OllamaClient } from '@nemesis-oss/ollama-sdk';
 import type { SupervisorConfig } from '../config.js';
 import type { Backend, InferenceRequest, InferenceResponse } from './backend.js';
 
+/** Matches the `timeoutMs` default documented on `InferenceRequest`. */
+const DEFAULT_TIMEOUT_MS = 60_000;
+
 export class OllamaBackend implements Backend {
   readonly name = 'ollama';
-  private readonly client: Ollama;
+  private readonly client: OllamaClient;
 
   /** `fetchImpl` is the transport seam for tests; production uses the runtime's global fetch. */
   constructor(
     private readonly config: SupervisorConfig,
     fetchImpl?: typeof fetch,
   ) {
-    this.client = new Ollama({
-      host: config.inference.ollamaHost,
+    this.client = new OllamaClient({
+      baseUrl: config.inference.ollamaHost,
       ...(fetchImpl ? { fetch: fetchImpl } : {}),
     });
   }
@@ -29,6 +35,8 @@ export class OllamaBackend implements Backend {
     const thinkMode = req.thinkMode ?? this.config.inference.defaultThinkMode;
     const temperature = req.temperature ?? 0.1;
 
+    // `stream: false` selects the non-streaming overload so the response is a
+    // plain ChatResponse rather than an OllamaStream.
     const response = await this.client.chat({
       model: req.model,
       messages: [{ role: 'user', content: req.prompt }],
@@ -38,6 +46,8 @@ export class OllamaBackend implements Backend {
         num_ctx: req.maxTokens ?? this.config.context.budgetTokens,
       },
       think: thinkMode === 'think',
+      stream: false,
+      timeoutMs: req.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
 
     const content = (response.message?.content ?? '').trim();
@@ -65,12 +75,9 @@ export class OllamaBackend implements Backend {
     };
   }
 
+  /** `ping()` resolves (never throws) with `healthy: false` on refused/timeout — a liveness datapoint. */
   async health(): Promise<boolean> {
-    try {
-      const r = await this.client.list();
-      return Array.isArray(r.models);
-    } catch {
-      return false;
-    }
+    const { healthy } = await this.client.ping();
+    return healthy;
   }
 }
