@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSy
 import { resolve, relative, join, basename, dirname, extname } from 'node:path';
 import { loadConfig, loadGitHubToken, resolvePath } from '../config.js';
 import { log } from '../logger.js';
-import { runProcess } from './process.js';
+import { runProcess, sandboxEnv } from './process.js';
 
 const MAX_READ = 16_000;
 
@@ -124,7 +124,7 @@ export const cloneRepoTool = defineTool({
     mkdirSync(dirname(dest), { recursive: true });
     const args = ['clone', repoUrl, dest];
     if (branch) args.splice(1, 0, '-b', branch);
-    const r = await runProcess('git', args, { timeoutMs: 100_000, maxBufferBytes: 4 * 1024 * 1024 });
+    const r = await runProcess('git', args, { timeoutMs: 100_000, maxBufferBytes: 4 * 1024 * 1024, env: sandboxEnv() });
     if (r.exitCode !== 0) {
       const reason = r.timedOut ? 'timed out' : (r.stderr.trim() || r.errorMessage || 'unknown error');
       return `Clone failed: ${reason.replace(/x-access-token:[^@]+@/g, '***@')}`;

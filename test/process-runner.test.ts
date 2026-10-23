@@ -47,3 +47,42 @@ test('runProcess runs through the shell only when asked', async () => {
   const literal = await runProcess('echo $((2+3))', [], { timeoutMs: 5_000, maxBufferBytes: 1 << 20 });
   assert.notEqual(literal.stdout.trim(), '5');
 });
+
+test('sandboxEnv withholds API keys and tokens but keeps PATH and proxies', async () => {
+  const { sandboxEnv } = await import('../src/toolbox/process.js');
+  const saved = { ...process.env };
+  try {
+    process.env.OPENAI_API_KEY = 'sk-secret';
+    process.env.GITHUB_TOKEN = 'ghp_secret';
+    process.env.OLLAMA_API_KEY = 'ol-secret';
+    process.env.NODE_OPTIONS = '--require /tmp/evil.js';
+    process.env.HTTPS_PROXY = 'http://proxy.local:3128';
+    process.env.LC_CTYPE = 'C.UTF-8';
+    delete process.env.AGENT_TOOL_ENV_PASSTHROUGH;
+    const env = sandboxEnv({ NODE_NO_WARNINGS: '1' });
+    assert.equal(env.OPENAI_API_KEY, undefined);
+    assert.equal(env.GITHUB_TOKEN, undefined);
+    assert.equal(env.OLLAMA_API_KEY, undefined);
+    assert.equal(env.NODE_OPTIONS, undefined);
+    assert.equal(env.PATH, saved.PATH);
+    assert.equal(env.HTTPS_PROXY, 'http://proxy.local:3128');
+    assert.equal(env.LC_CTYPE, 'C.UTF-8');
+    assert.equal(env.NODE_NO_WARNINGS, '1');
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+  }
+});
+
+test('AGENT_TOOL_ENV_PASSTHROUGH opts named variables back in, case-insensitively', async () => {
+  const { sandboxEnv } = await import('../src/toolbox/process.js');
+  const saved = { ...process.env };
+  try {
+    process.env.SSH_AUTH_SOCK = '/tmp/agent.sock';
+    process.env.AGENT_TOOL_ENV_PASSTHROUGH = ' ssh_auth_sock , ';
+    assert.equal(sandboxEnv().SSH_AUTH_SOCK, '/tmp/agent.sock');
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+  }
+});

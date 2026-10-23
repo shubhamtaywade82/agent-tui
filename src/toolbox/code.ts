@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { log } from '../logger.js';
 import { resolvePath } from '../config.js';
-import { runProcess, type ProcessOutcome } from './process.js';
+import { runProcess, sandboxEnv, type ProcessOutcome } from './process.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_CHARS = 6000;
@@ -59,7 +59,7 @@ export const runCodeTool = defineTool({
       const args = lang === 'typescript' ? ['tsx', file] : [file];
       const r = await runProcess(runner, args, {
         cwd: dir,
-        env: { ...process.env, NODE_NO_WARNINGS: '1' },
+        env: sandboxEnv({ NODE_NO_WARNINGS: '1' }),
         timeoutMs: timeout,
         maxBufferBytes: 2 * 1024 * 1024,
       });
@@ -93,7 +93,7 @@ export const runShellTool = defineTool({
     log.info('run_shell', { cmd: command.slice(0, 80), cwd: workDir, timeout });
     const r = await runProcess(command, [], {
       cwd: workDir,
-      env: { ...process.env },
+      env: sandboxEnv(),
       timeoutMs: timeout,
       maxBufferBytes: 4 * 1024 * 1024,
       shell: true,

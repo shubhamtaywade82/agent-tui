@@ -8,8 +8,42 @@
  */
 import { execFile } from 'node:child_process';
 
+/**
+ * Variables a tool child may inherit. Everything else is withheld, so API keys
+ * and tokens in the parent environment never reach model-generated commands.
+ * Proxy variables stay because outbound HTTPS depends on them.
+ */
+const INHERITED_ENV = new Set([
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'TERM', 'SHELL', 'PWD',
+  'TMPDIR', 'TEMP', 'TMP', 'SYSTEMROOT', 'COMSPEC', 'PATHEXT', 'USERPROFILE',
+  'SSL_CERT_FILE', 'NODE_EXTRA_CA_CERTS',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY',
+]);
+
+/**
+ * Environment for a tool child: the allowlist above, plus names listed in
+ * AGENT_TOOL_ENV_PASSTHROUGH (comma-separated) for operators who need more, such
+ * as SSH_AUTH_SOCK for git over SSH. `extra` is merged last.
+ */
+export function sandboxEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const passthrough = new Set(
+    (process.env.AGENT_TOOL_ENV_PASSTHROUGH ?? '')
+      .split(',')
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean),
+  );
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    const upper = key.toUpperCase();
+    if (INHERITED_ENV.has(upper) || upper.startsWith('LC_') || passthrough.has(upper)) env[key] = value;
+  }
+  return { ...env, ...extra };
+}
+
 export interface RunProcessOptions {
   cwd?: string;
+  /** Child environment. Omitted means the child inherits the full parent environment; tools pass `sandboxEnv()`. */
   env?: NodeJS.ProcessEnv;
   timeoutMs: number;
   maxBufferBytes: number;
