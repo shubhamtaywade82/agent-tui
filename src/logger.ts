@@ -5,6 +5,7 @@
 import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { loadConfig, resolvePath } from './config.js';
+import { redactText, redactValue } from './utils/redact.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
 
@@ -34,7 +35,10 @@ export function initLogger(level?: LogLevel, file?: string): void {
   }
 }
 
-function write(level: LogLevel, msg: string, ctx: Record<string, unknown>): void {
+function write(level: LogLevel, rawMsg: string, rawCtx: Record<string, unknown>): void {
+  // Every entry is redacted before it reaches the file or the console.
+  const msg = redactText(rawMsg);
+  const ctx = redactValue(rawCtx);
   const full: LogEntry = { ts: new Date().toISOString(), level, msg, extra: ctx };
   if (LEVEL_ORDER[level] >= LEVEL_ORDER[_level]) {
     if (_file) {
@@ -90,6 +94,3 @@ export class RunMetrics {
   }
 }
 
-export function redactForLog(s: string): string {
-  return s.replace(/(ghp_[A-Za-z0-9]{20,})|(sk-[A-Za-z0-9]{20,})|(sk-ant-[A-Za-z0-9]{20,})/g, '***REDACTED***');
-}
