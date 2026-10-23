@@ -13,8 +13,15 @@ export class OllamaBackend implements Backend {
   readonly name = 'ollama';
   private readonly client: Ollama;
 
-  constructor(private readonly config: SupervisorConfig) {
-    this.client = new Ollama({ host: config.inference.ollamaHost });
+  /** `fetchImpl` is the transport seam for tests; production uses the runtime's global fetch. */
+  constructor(
+    private readonly config: SupervisorConfig,
+    fetchImpl?: typeof fetch,
+  ) {
+    this.client = new Ollama({
+      host: config.inference.ollamaHost,
+      ...(fetchImpl ? { fetch: fetchImpl } : {}),
+    });
   }
 
   async invoke(req: InferenceRequest): Promise<InferenceResponse> {
