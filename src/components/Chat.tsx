@@ -6,6 +6,7 @@ import { useFocusManager, useTerminalSize } from './ui/hooks/index.js';
 import { getActiveToolRegistry, consumeStream, dispatchSlashCommand, SLASH_COMMANDS, executeMcpCalls, loadAvailableSkills, loadUserConfig, saveUserConfig, matchBestSkill, findSkillFile } from '../tools.js';
 import { ChatAccordion, renderSingleTurn, renderStreamingRows, parseTextToolCalls } from './ChatAccordion.js';
 import { GENUI_SYSTEM_INSTRUCTIONS } from '../toolbox/genui.js';
+import { defaultChatSystemPrompt, withUntrustedContentRule } from '../prompts.js';
 import { budgetMessages, resolveMessageTokenBudget } from '../utils/context.js';
 import { ToolCallLedger } from '../utils/tool-loop-guard.js';
 import { loadConfig } from '../config.js';
@@ -74,7 +75,7 @@ const loadHistory = (): string[] => {
   try { return filterValidHistory(readFileSync(HIST, 'utf-8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return l; } })); } catch { return []; }
 };
 
-const DEFAULT_SYSTEM_PROMPT = `You are an expert AI assistant. Workspace: ${process.cwd()}. Use run_shell to execute commands (e.g. rails new, bundle, npm, git). Use filesystem tools to inspect or edit files. For multi-step tasks, create a plan with create_task (with id, title, objective), execute the steps, and call complete_task when done. Do not stall or narrate future steps; execute tools directly.\n${GENUI_SYSTEM_INSTRUCTIONS}`;
+const DEFAULT_SYSTEM_PROMPT = withUntrustedContentRule(defaultChatSystemPrompt(process.cwd(), GENUI_SYSTEM_INSTRUCTIONS));
 const prepareMessages = (h: ChatMessage[], skillName?: string, budget = 9000, compactionHint?: string | null): ChatMessage[] => {
   let prompt = DEFAULT_SYSTEM_PROMPT;
   if (skillName) {
