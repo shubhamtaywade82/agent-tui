@@ -207,8 +207,8 @@ export const deletePathTool = defineTool({
   execute: async ({ path }) => {
     const abs = resolvePath(path);
     const cwd = process.cwd();
-    const rel = relative(cwd, abs);
-    if (rel.startsWith('..') || rel === '') return `Refused: cannot delete path outside working directory: ${abs}`;
+    // Compare path segments, not string prefixes: `..cache` inside the project is allowed.
+    if (abs === cwd || !isWithin(cwd, abs)) return `Refused: cannot delete path outside working directory: ${abs}`;
     if (!existsSync(abs)) return `Path not found: ${abs}`;
     try {
       rmSync(abs, { recursive: true, force: true });
