@@ -30,8 +30,9 @@ test('redactText removes credentials embedded in URLs', () => {
 test('redactText removes secret assignments and flags', () => {
   assert.ok(!redactText('GITHUB_TOKEN=abc123xyz node run.js').includes('abc123xyz'));
   assert.ok(!redactText('OLLAMA_API_KEY=ollama-live-value run').includes('ollama-live-value'));
-  assert.ok(!redactText('tool --token=supersecretvalue').includes('supersecretvalue'));
-  assert.ok(!redactText('tool --password hunter2 --verbose').includes('hunter2'));
+  // Placeholder values only. They are obviously fake so secret scanners do not flag the fixtures.
+  assert.ok(!redactText('tool --token=FAKE_TOKEN_PLACEHOLDER').includes('FAKE_TOKEN_PLACEHOLDER'));
+  assert.ok(!redactText('tool --password FAKE_PASSWORD_PLACEHOLDER --verbose').includes('FAKE_PASSWORD_PLACEHOLDER'));
   assert.equal(redactText('ls -la /tmp'), 'ls -la /tmp', 'ordinary commands are left alone');
 });
 
