@@ -4,7 +4,8 @@ import { TextInput } from './ui/text-input/index.js'; import { Divider } from '.
 import { OllamaClient, Message } from '@nemesis-oss/ollama-sdk'; import { ToastStack, useToast } from './ui/toast/index.js'; import { ScrollArea } from './ui/scroll-area/index.js';
 import { useFocusManager, useTerminalSize } from './ui/hooks/index.js';
 import { getActiveToolRegistry, consumeStream, dispatchSlashCommand, SLASH_COMMANDS, executeMcpCalls, loadAvailableSkills, loadUserConfig, saveUserConfig, matchBestSkill, findSkillFile } from '../tools.js';
-import { ChatAccordion, renderSingleTurn, renderStreamingRows, parseTextToolCalls } from './ChatAccordion.js';
+import { ChatAccordion, renderSingleTurn, renderStreamingRows } from './ChatAccordion.js';
+import { parseTextToolCalls } from '../utils/text-tool-calls.js';
 import { GENUI_SYSTEM_INSTRUCTIONS } from '../toolbox/genui.js';
 import { defaultChatSystemPrompt, withUntrustedContentRule } from '../prompts.js';
 import { budgetMessages, resolveMessageTokenBudget } from '../utils/context.js';
