@@ -7,9 +7,9 @@ import { z } from 'zod';
 import { defineTool } from '@nemesis-oss/ollama-sdk';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, appendFileSync, rmSync } from 'node:fs';
 import { resolve, relative, join, basename, dirname, extname } from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { loadConfig, loadGitHubToken, resolvePath } from '../config.js';
 import { log } from '../logger.js';
+import { runProcess } from './process.js';
 
 const MAX_READ = 16_000;
 
@@ -124,14 +124,14 @@ export const cloneRepoTool = defineTool({
     mkdirSync(dirname(dest), { recursive: true });
     const args = ['clone', repoUrl, dest];
     if (branch) args.splice(1, 0, '-b', branch);
-    try {
-      execFileSync('git', args, { timeout: 100_000, encoding: 'utf8', stdio: 'pipe' });
-      log.info('clone_repo', { url: url.replace(token ?? '***', '***'), dest });
-      // Avoid leaking the token-bearing URL in logs
-      return `Cloned ${url} → ${dest}`;
-    } catch (err: any) {
-      return `Clone failed: ${err.message?.replace(/x-access-token:[^@]+@/g, '***@')}`;
+    const r = await runProcess('git', args, { timeoutMs: 100_000, maxBufferBytes: 4 * 1024 * 1024 });
+    if (r.exitCode !== 0) {
+      const reason = r.timedOut ? 'timed out' : (r.stderr.trim() || r.errorMessage || 'unknown error');
+      return `Clone failed: ${reason.replace(/x-access-token:[^@]+@/g, '***@')}`;
     }
+    log.info('clone_repo', { url: url.replace(token ?? '***', '***'), dest });
+    // Avoid leaking the token-bearing URL in logs
+    return `Cloned ${url} → ${dest}`;
   },
 });
 

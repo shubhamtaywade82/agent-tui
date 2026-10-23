@@ -10,12 +10,12 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@nemesis-oss/ollama-sdk';
-import { execFileSync } from 'node:child_process';
-import { writeFileSync, unlinkSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { log } from '../logger.js';
-import { loadConfig, resolvePath } from '../config.js';
+import { resolvePath } from '../config.js';
+import { runProcess, type ProcessOutcome } from './process.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_CHARS = 6000;
@@ -23,6 +23,17 @@ const MAX_OUTPUT_CHARS = 6000;
 function truncate(s: string, max = MAX_OUTPUT_CHARS): string {
   if (s.length <= max) return s;
   return s.slice(0, max) + `\n... [truncated ${s.length - max} chars]`;
+}
+
+/** Render a non-zero, timed-out, or failed-to-spawn outcome for the model. */
+function formatFailure(r: ProcessOutcome, timeoutMs: number): string {
+  const status = r.timedOut ? 'timeout' : (r.exitCode ?? 'error');
+  const out = r.stdout ? `--- stdout ---\n${truncate(r.stdout)}\n` : '';
+  const errText = r.stderr ? `--- stderr ---\n${truncate(r.stderr)}\n` : '';
+  let detail = '';
+  if (r.timedOut) detail = `--- error ---\nTimed out after ${timeoutMs} ms\n`;
+  else if (r.exitCode === null && r.errorMessage) detail = `--- error ---\n${r.errorMessage}`;
+  return `Exit: ${status}\n${out}${errText}${detail}`;
 }
 
 /** Run JavaScript/TypeScript code in a sandboxed Node child process. */
@@ -46,20 +57,16 @@ export const runCodeTool = defineTool({
     try {
       const runner = lang === 'typescript' ? 'npx' : 'node';
       const args = lang === 'typescript' ? ['tsx', file] : [file];
-      const stdout = execFileSync(runner, args, {
-        timeout,
-        maxBuffer: 2 * 1024 * 1024,
-        encoding: 'utf8',
+      const r = await runProcess(runner, args, {
         cwd: dir,
         env: { ...process.env, NODE_NO_WARNINGS: '1' },
+        timeoutMs: timeout,
+        maxBufferBytes: 2 * 1024 * 1024,
       });
-      return `Exit: 0\n--- stdout ---\n${truncate(stdout)}`;
-    } catch (err: any) {
-      const out = err.stdout ? `--- stdout ---\n${truncate(String(err.stdout))}\n` : '';
-      const errText = err.stderr ? `--- stderr ---\n${truncate(String(err.stderr))}\n` : '';
-      return `Exit: ${err.status ?? 'error'}\n${out}${errText}${err.message ? `--- error ---\n${err.message}` : ''}`;
+      if (r.exitCode === 0) return `Exit: 0\n--- stdout ---\n${truncate(r.stdout)}`;
+      return formatFailure(r, timeout);
     } finally {
-      try { unlinkSync(file); } catch {}
+      rmSync(dir, { recursive: true, force: true });
     }
   },
 });
@@ -77,7 +84,6 @@ export const runShellTool = defineTool({
   }),
   timeoutMs: 130_000,
   execute: async ({ command, cwd, timeoutMs }) => {
-    const cfg = loadConfig();
     const deny = DEFAULT_DENY;
     if (deny.some((d) => command.includes(d))) {
       return `Blocked: command matches deny-list pattern.`;
@@ -85,21 +91,15 @@ export const runShellTool = defineTool({
     const timeout = Math.min(timeoutMs ?? DEFAULT_TIMEOUT_MS, 120_000);
     const workDir = cwd ? resolvePath(cwd) : process.cwd();
     log.info('run_shell', { cmd: command.slice(0, 80), cwd: workDir, timeout });
-    try {
-      const stdout = execFileSync(command, [], {
-        timeout,
-        maxBuffer: 4 * 1024 * 1024,
-        encoding: 'utf8',
-        cwd: workDir,
-        shell: true,
-        env: { ...process.env },
-      });
-      return `Exit: 0\n${truncate(stdout)}`;
-    } catch (err: any) {
-      const out = err.stdout ? `--- stdout ---\n${truncate(String(err.stdout))}\n` : '';
-      const errText = err.stderr ? `--- stderr ---\n${truncate(String(err.stderr))}\n` : '';
-      return `Exit: ${err.status ?? 'error'}\n${out}${errText}`;
-    }
+    const r = await runProcess(command, [], {
+      cwd: workDir,
+      env: { ...process.env },
+      timeoutMs: timeout,
+      maxBufferBytes: 4 * 1024 * 1024,
+      shell: true,
+    });
+    if (r.exitCode === 0) return `Exit: 0\n${truncate(r.stdout)}`;
+    return formatFailure(r, timeout);
   },
 });
 
