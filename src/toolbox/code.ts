@@ -71,8 +71,47 @@ export const runCodeTool = defineTool({
   },
 });
 
-/** Run a shell command with timeout and output capture. */
-const DEFAULT_DENY = ['rm -rf /', 'mkfs', 'shutdown', 'reboot', ':(){:|:&};:'];
+/**
+ * Guardrail for `run_shell`. It catches the common destructive commands a model
+ * produces, but it is not a security boundary: `$(...)`, backticks, aliases and
+ * scripts it cannot see are not analysed. The human approval gate in the TUI is
+ * the boundary. Returns the reason for a block, or null when the command passes.
+ */
+const WRAPPERS = new Set(['sudo', 'command', 'exec', 'nohup', 'env', 'time', 'nice', 'builtin']);
+const POWER_COMMANDS = new Set(['shutdown', 'reboot', 'halt', 'poweroff']);
+const HOME_TARGETS = new Set([
+  '/', '/*', '~', '~/', '~/*', '$HOME', '$HOME/', '$HOME/*', '${HOME}', '${HOME}/', '${HOME}/*',
+]);
+
+export function checkCommandPolicy(command: string): string | null {
+  if (/:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/.test(command)) return 'fork bomb';
+  if (/\b(curl|wget)\b[^|;&\n]*\|\s*(sudo\s+)?(sh|bash|zsh|dash|ksh|fish)\b/.test(command)) return 'download piped into a shell';
+  if (/>\s*\/dev\/(sd[a-z]|hd[a-z]|nvme\d|disk\d|mmcblk)/.test(command)) return 'write to a block device';
+
+  for (const segment of command.split(/&&|\|\||;|\||\n|&/)) {
+    const tokens = segment.trim().split(/\s+/).map((t) => t.replace(/["']/g, '')).filter(Boolean);
+    while (tokens.length > 0 && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]!) || WRAPPERS.has(tokens[0]!.split('/').pop()!))) {
+      tokens.shift();
+    }
+    if (tokens.length === 0) continue;
+    const cmd = tokens[0]!.split('/').pop()!;
+    const args = tokens.slice(1);
+    const targets = args.filter((t) => !t.startsWith('-'));
+
+    if (cmd.startsWith('mkfs')) return 'mkfs';
+    if (POWER_COMMANDS.has(cmd)) return cmd;
+    if (cmd === 'dd' && args.some((t) => t.startsWith('of=/dev/'))) return 'dd to a device';
+    if (args.includes('--no-preserve-root')) return '--no-preserve-root';
+
+    const shortFlags = args.filter((t) => /^-[A-Za-z]+$/.test(t)).join('');
+    const recursive = /[rR]/.test(shortFlags) || args.includes('--recursive');
+    if ((cmd === 'rm' || cmd === 'chmod' || cmd === 'chown') && recursive) {
+      const hit = targets.find((t) => HOME_TARGETS.has(t));
+      if (hit) return `recursive ${cmd} on ${hit}`;
+    }
+  }
+  return null;
+}
 
 export const runShellTool = defineTool({
   name: 'run_shell',
@@ -84,9 +123,10 @@ export const runShellTool = defineTool({
   }),
   timeoutMs: 130_000,
   execute: async ({ command, cwd, timeoutMs }) => {
-    const deny = DEFAULT_DENY;
-    if (deny.some((d) => command.includes(d))) {
-      return `Blocked: command matches deny-list pattern.`;
+    const blocked = checkCommandPolicy(command);
+    if (blocked) {
+      log.warn('run_shell blocked', { reason: blocked, cmd: command.slice(0, 80) });
+      return `Blocked by command policy (${blocked}).`;
     }
     const timeout = Math.min(timeoutMs ?? DEFAULT_TIMEOUT_MS, 120_000);
     const workDir = cwd ? resolvePath(cwd) : process.cwd();
