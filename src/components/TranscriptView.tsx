@@ -35,6 +35,7 @@ import { LinkButton } from './ui/link-button/index.js';
 import { Button } from './ui/button/index.js';
 import type { TranscriptEvent, TranscriptState } from '../transcript/index.js';
 import type { ElicitationChoice } from '../transcript/index.js';
+import { canRememberForSession } from '../transcript/elicitation-policy.js';
 import {
   LoopStrip,
   ContextPanel,
@@ -265,12 +266,14 @@ export function renderEvent(ev: TranscriptEvent, ctx?: RenderEventContext): Reac
                 icon="✓"
                 onClick={() => ctx.onElicitationRespond!(ev.id, 'allow_once')}
               />
-              <Button
-                label="Allow session"
-                variant="primary"
-                icon="✓"
-                onClick={() => ctx.onElicitationRespond!(ev.id, 'allow_session')}
-              />
+              {canRememberForSession(ev.toolName) && (
+                <Button
+                  label="Allow session"
+                  variant="primary"
+                  icon="✓"
+                  onClick={() => ctx.onElicitationRespond!(ev.id, 'allow_session')}
+                />
+              )}
               <Button
                 label="Deny"
                 variant="danger"

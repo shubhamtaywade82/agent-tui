@@ -15,6 +15,7 @@ import type {
 import { loadConfig, parseOpenAIBaseUrl, type AgentConfig, type ProviderName } from './config.js';
 import { buildOllamaClientOptions } from './ollama-endpoints.js';
 import { log } from './logger.js';
+import { parseTextToolCalls } from './utils/text-tool-calls.js';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -426,27 +427,7 @@ function toAnthropicTool(t: ToolDefinition): any {
   };
 }
 
-/** Parse LLM-emitted text tool-call tags (fallback for models that don't natively emit tool_calls). */
-export function parseTextToolCalls(text: string): ToolCall[] {
-  const calls: ToolCall[] = [];
-  const fnRe = /<function\s+name="([^"]+)">([\s\S]*?)<\/function>/g;
-  let m: RegExpExecArray | null;
-  while ((m = fnRe.exec(text)) !== null) {
-    const args: Record<string, any> = {};
-    const paramRe = /<param\s+name="([^"]+)">([\s\S]*?)<\/param>/g;
-    let pm: RegExpExecArray | null;
-    while ((pm = paramRe.exec(m[2]!)) !== null) args[pm[1]!] = pm[2]!.trim();
-    calls.push({ function: { name: m[1]!, arguments: args } });
-  }
-  const tcRe = /<tool_call>([\s\S]*?)<\/tool_call>/g;
-  while ((m = tcRe.exec(text)) !== null) {
-    try {
-      const p = JSON.parse(m[1]!.trim());
-      if (p.name) calls.push({ function: { name: p.name, arguments: p.arguments || {} } });
-    } catch {}
-  }
-  return calls;
-}
+export { parseTextToolCalls };
 
 /** Error for providers that were removed or never existed. Names the replacement for removed ones. */
 export function unsupportedProviderError(name: string): Error {

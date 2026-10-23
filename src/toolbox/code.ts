@@ -10,12 +10,12 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@nemesis-oss/ollama-sdk';
-import { execFileSync } from 'node:child_process';
-import { writeFileSync, unlinkSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { log } from '../logger.js';
-import { loadConfig, resolvePath } from '../config.js';
+import { resolvePath } from '../config.js';
+import { runProcess, sandboxEnv, type ProcessOutcome } from './process.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_CHARS = 6000;
@@ -23,6 +23,17 @@ const MAX_OUTPUT_CHARS = 6000;
 function truncate(s: string, max = MAX_OUTPUT_CHARS): string {
   if (s.length <= max) return s;
   return s.slice(0, max) + `\n... [truncated ${s.length - max} chars]`;
+}
+
+/** Render a non-zero, timed-out, or failed-to-spawn outcome for the model. */
+function formatFailure(r: ProcessOutcome, timeoutMs: number): string {
+  const status = r.timedOut ? 'timeout' : (r.exitCode ?? 'error');
+  const out = r.stdout ? `--- stdout ---\n${truncate(r.stdout)}\n` : '';
+  const errText = r.stderr ? `--- stderr ---\n${truncate(r.stderr)}\n` : '';
+  let detail = '';
+  if (r.timedOut) detail = `--- error ---\nTimed out after ${timeoutMs} ms\n`;
+  else if (r.exitCode === null && r.errorMessage) detail = `--- error ---\n${r.errorMessage}`;
+  return `Exit: ${status}\n${out}${errText}${detail}`;
 }
 
 /** Run JavaScript/TypeScript code in a sandboxed Node child process. */
@@ -46,26 +57,61 @@ export const runCodeTool = defineTool({
     try {
       const runner = lang === 'typescript' ? 'npx' : 'node';
       const args = lang === 'typescript' ? ['tsx', file] : [file];
-      const stdout = execFileSync(runner, args, {
-        timeout,
-        maxBuffer: 2 * 1024 * 1024,
-        encoding: 'utf8',
+      const r = await runProcess(runner, args, {
         cwd: dir,
-        env: { ...process.env, NODE_NO_WARNINGS: '1' },
+        env: sandboxEnv({ NODE_NO_WARNINGS: '1' }),
+        timeoutMs: timeout,
+        maxBufferBytes: 2 * 1024 * 1024,
       });
-      return `Exit: 0\n--- stdout ---\n${truncate(stdout)}`;
-    } catch (err: any) {
-      const out = err.stdout ? `--- stdout ---\n${truncate(String(err.stdout))}\n` : '';
-      const errText = err.stderr ? `--- stderr ---\n${truncate(String(err.stderr))}\n` : '';
-      return `Exit: ${err.status ?? 'error'}\n${out}${errText}${err.message ? `--- error ---\n${err.message}` : ''}`;
+      if (r.exitCode === 0) return `Exit: 0\n--- stdout ---\n${truncate(r.stdout)}`;
+      return formatFailure(r, timeout);
     } finally {
-      try { unlinkSync(file); } catch {}
+      rmSync(dir, { recursive: true, force: true });
     }
   },
 });
 
-/** Run a shell command with timeout and output capture. */
-const DEFAULT_DENY = ['rm -rf /', 'mkfs', 'shutdown', 'reboot', ':(){:|:&};:'];
+/**
+ * Guardrail for `run_shell`. It catches the common destructive commands a model
+ * produces, but it is not a security boundary: `$(...)`, backticks, aliases and
+ * scripts it cannot see are not analysed. The human approval gate in the TUI is
+ * the boundary. Returns the reason for a block, or null when the command passes.
+ */
+const WRAPPERS = new Set(['sudo', 'command', 'exec', 'nohup', 'env', 'time', 'nice', 'builtin']);
+const POWER_COMMANDS = new Set(['shutdown', 'reboot', 'halt', 'poweroff']);
+const HOME_TARGETS = new Set([
+  '/', '/*', '~', '~/', '~/*', '$HOME', '$HOME/', '$HOME/*', '${HOME}', '${HOME}/', '${HOME}/*',
+]);
+
+export function checkCommandPolicy(command: string): string | null {
+  if (/:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/.test(command)) return 'fork bomb';
+  if (/\b(curl|wget)\b[^|;&\n]*\|\s*(sudo\s+)?(sh|bash|zsh|dash|ksh|fish)\b/.test(command)) return 'download piped into a shell';
+  if (/>\s*\/dev\/(sd[a-z]|hd[a-z]|nvme\d|disk\d|mmcblk)/.test(command)) return 'write to a block device';
+
+  for (const segment of command.split(/&&|\|\||;|\||\n|&/)) {
+    const tokens = segment.trim().split(/\s+/).map((t) => t.replace(/["']/g, '')).filter(Boolean);
+    while (tokens.length > 0 && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]!) || WRAPPERS.has(tokens[0]!.split('/').pop()!))) {
+      tokens.shift();
+    }
+    if (tokens.length === 0) continue;
+    const cmd = tokens[0]!.split('/').pop()!;
+    const args = tokens.slice(1);
+    const targets = args.filter((t) => !t.startsWith('-'));
+
+    if (cmd.startsWith('mkfs')) return 'mkfs';
+    if (POWER_COMMANDS.has(cmd)) return cmd;
+    if (cmd === 'dd' && args.some((t) => t.startsWith('of=/dev/'))) return 'dd to a device';
+    if (args.includes('--no-preserve-root')) return '--no-preserve-root';
+
+    const shortFlags = args.filter((t) => /^-[A-Za-z]+$/.test(t)).join('');
+    const recursive = /[rR]/.test(shortFlags) || args.includes('--recursive');
+    if ((cmd === 'rm' || cmd === 'chmod' || cmd === 'chown') && recursive) {
+      const hit = targets.find((t) => HOME_TARGETS.has(t));
+      if (hit) return `recursive ${cmd} on ${hit}`;
+    }
+  }
+  return null;
+}
 
 export const runShellTool = defineTool({
   name: 'run_shell',
@@ -77,29 +123,23 @@ export const runShellTool = defineTool({
   }),
   timeoutMs: 130_000,
   execute: async ({ command, cwd, timeoutMs }) => {
-    const cfg = loadConfig();
-    const deny = DEFAULT_DENY;
-    if (deny.some((d) => command.includes(d))) {
-      return `Blocked: command matches deny-list pattern.`;
+    const blocked = checkCommandPolicy(command);
+    if (blocked) {
+      log.warn('run_shell blocked', { reason: blocked, cmd: command.slice(0, 80) });
+      return `Blocked by command policy (${blocked}).`;
     }
     const timeout = Math.min(timeoutMs ?? DEFAULT_TIMEOUT_MS, 120_000);
     const workDir = cwd ? resolvePath(cwd) : process.cwd();
     log.info('run_shell', { cmd: command.slice(0, 80), cwd: workDir, timeout });
-    try {
-      const stdout = execFileSync(command, [], {
-        timeout,
-        maxBuffer: 4 * 1024 * 1024,
-        encoding: 'utf8',
-        cwd: workDir,
-        shell: true,
-        env: { ...process.env },
-      });
-      return `Exit: 0\n${truncate(stdout)}`;
-    } catch (err: any) {
-      const out = err.stdout ? `--- stdout ---\n${truncate(String(err.stdout))}\n` : '';
-      const errText = err.stderr ? `--- stderr ---\n${truncate(String(err.stderr))}\n` : '';
-      return `Exit: ${err.status ?? 'error'}\n${out}${errText}`;
-    }
+    const r = await runProcess(command, [], {
+      cwd: workDir,
+      env: sandboxEnv(),
+      timeoutMs: timeout,
+      maxBufferBytes: 4 * 1024 * 1024,
+      shell: true,
+    });
+    if (r.exitCode === 0) return `Exit: 0\n${truncate(r.stdout)}`;
+    return formatFailure(r, timeout);
   },
 });
 

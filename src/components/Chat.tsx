@@ -4,11 +4,14 @@ import { TextInput } from './ui/text-input/index.js'; import { Divider } from '.
 import { OllamaClient, Message } from '@nemesis-oss/ollama-sdk'; import { ToastStack, useToast } from './ui/toast/index.js'; import { ScrollArea } from './ui/scroll-area/index.js';
 import { useFocusManager, useTerminalSize } from './ui/hooks/index.js';
 import { getActiveToolRegistry, consumeStream, dispatchSlashCommand, SLASH_COMMANDS, executeMcpCalls, loadAvailableSkills, loadUserConfig, saveUserConfig, matchBestSkill, findSkillFile } from '../tools.js';
-import { ChatAccordion, renderSingleTurn, renderStreamingRows, parseTextToolCalls } from './ChatAccordion.js';
+import { ChatAccordion, renderSingleTurn, renderStreamingRows } from './ChatAccordion.js';
+import { parseTextToolCalls } from '../utils/text-tool-calls.js';
 import { GENUI_SYSTEM_INSTRUCTIONS } from '../toolbox/genui.js';
+import { defaultChatSystemPrompt, withUntrustedContentRule } from '../prompts.js';
 import { budgetMessages, resolveMessageTokenBudget } from '../utils/context.js';
 import { ToolCallLedger } from '../utils/tool-loop-guard.js';
 import { loadConfig } from '../config.js';
+import { log } from '../logger.js';
 import {
   createOllamaRunRoutingState,
   maybeEscalateOllamaModel,
@@ -20,133 +23,16 @@ import { TranscriptView } from './TranscriptView.js';
 import { useTranscript } from '../hooks/useTranscript.js';
 import { runOllamaChat, makeUserEvent, makePlanEvent, makePlanStatusPatch, makeSystemEvent } from '../transcript/index.js';
 import { useElicitation } from '../hooks/useElicitation.js';
+import { isDangerousTool } from '../transcript/elicitation-policy.js';
+import { filterValidHistory, loadHistory, saveHistoryFile } from './chat/history.js';
+import { prepareMessages } from './chat/messages.js';
+import { cleanContinuation, isPrematureStall, resolvePendingContinuation } from './chat/continuation.js';
+import { DEFAULT_PROMPTS, getMenuOptions } from './chat/menu.js';
+import type { ChatMessage } from './chat/types.js';
+import type { PendingContinuation } from './chat/continuation.js';
+export type { ChatMessage } from './chat/types.js';
+export type { PendingContinuation } from './chat/continuation.js';
 
-export interface ChatMessage extends Message { timestamp?: number; thinking?: string; tokens?: number; skill?: string; }
-export interface PendingContinuation { type: 'task' | 'turn_limit'; taskId?: string; label: string; detail?: string; prompt: string; }
-
-/**
- * Tools that modify state (filesystem, shell, external systems) and
- * require user confirmation before execution. The elicitation gate
- * pauses tool execution until the user clicks Allow/Deny.
- *
- * Read-only tools (read_file, list_tree, web_search, etc.) skip the
- * elicitation gate entirely — they're safe to execute without confirmation.
- */
-const DANGEROUS_TOOLS = new Set([
-  'write_file', 'write_files',
-  'delete_path',
-  'run_shell', 'run_code',
-  'clone_repo',
-  'edit_image',
-  'generate_image',
-  'index_document',
-  'text_to_speech',
-]);
-
-function isDangerousTool(name: string): boolean {
-  // Exact match first
-  if (DANGEROUS_TOOLS.has(name)) return true;
-  // Heuristic: names containing write/delete/edit/run/clone/install are dangerous
-  const lower = name.toLowerCase();
-  return /\b(write|delete|edit|run|clone|install|remove|execute|shred|chmod|chown)\b/i.test(lower)
-    || /\b(bash|sh|exec|cmd|rm)\b/i.test(lower);
-}
-
-const HIST = '.history';
-const filterValidHistory = (items: string[]): string[] => {
-  const result: string[] = []; const seen = new Set<string>();
-  for (const item of items) {
-    const s = typeof item === 'string' ? item.trim() : '';
-    if (s.length > 3 && !seen.has(s)) { seen.add(s); result.push(s); }
-  }
-  return result;
-};
-const saveHistoryFile = (items: string[]): void => {
-  try { writeFileSync(HIST, items.slice(0, 500).map((i) => JSON.stringify(i)).join('\n') + '\n', 'utf-8'); } catch {}
-};
-const loadHistory = (): string[] => {
-  if (!existsSync(HIST)) return [];
-  try { return filterValidHistory(readFileSync(HIST, 'utf-8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return l; } })); } catch { return []; }
-};
-
-const DEFAULT_SYSTEM_PROMPT = `You are an expert AI assistant. Workspace: ${process.cwd()}. Use run_shell to execute commands (e.g. rails new, bundle, npm, git). Use filesystem tools to inspect or edit files. For multi-step tasks, create a plan with create_task (with id, title, objective), execute the steps, and call complete_task when done. Do not stall or narrate future steps; execute tools directly.\n${GENUI_SYSTEM_INSTRUCTIONS}`;
-const prepareMessages = (h: ChatMessage[], skillName?: string, budget = 9000, compactionHint?: string | null): ChatMessage[] => {
-  let prompt = DEFAULT_SYSTEM_PROMPT;
-  if (skillName) {
-    const file = findSkillFile(skillName);
-    if (file) {
-      try {
-        const raw = readFileSync(file, 'utf8');
-        const snippet = raw.length > 2500 ? raw.slice(0, 2500) + '\n...' : raw;
-        prompt += `\n\n[AUTHORITATIVE SKILL: ${skillName}]\n${snippet}`;
-      } catch {}
-    }
-  }
-  return budgetMessages(h.some((m) => m.role === 'system') ? h : [{ role: 'system', content: prompt, timestamp: Date.now() }, ...h], budget, compactionHint);
-};
-const isPrematureStall = (t: string): boolean =>
-  t.length <= 300 && /(let me|i('ll| will))\s+(start|inspect|check|create|look|run|examine|verify|see|read|find)/i.test(t);
-const cleanContinuation = (inp: string, acc: string): string => {
-  const norm = inp.trim().toLowerCase(); const c = acc.replace(/^["']|["']$/g, '').split('\n')[0]?.trim() || '';
-  if (!c || norm.startsWith(c.toLowerCase())) return '';
-  if (c.toLowerCase().startsWith(norm)) return c.slice(norm.length).trimStart();
-  const inW = norm.split(/\s+/); const accW = c.toLowerCase().split(/\s+/);
-  for (let i = Math.min(inW.length, accW.length); i > 0; i--) if (inW.slice(-i).join(' ') === accW.slice(0, i).join(' ')) return c.split(/\s+/).slice(i).join(' ');
-  return c;
-};
-
-const DEFAULT_PROMPTS = [
-  'tell me about rails models and controllers', 'tell me about the architecture of this agent', 'tell me about available MCP tools and skills',
-  'how to test and run the agent', 'what tools and skills are available', 'refactor this component for KISS', 'write unit tests for this function',
-];
-
-function getMenuOptions(input: string, models: string[], ghost?: string, pool: string[] = []): Array<{ name: string; args?: string; desc: string }> {
-  if (!input) return [];
-  const low = input.toLowerCase();
-  if (input.startsWith('/')) {
-    if (!input.includes(' ')) return SLASH_COMMANDS.filter((c) => c.name.startsWith(low));
-    if (input.startsWith('/model ')) return models.filter((m) => m.toLowerCase().includes(input.slice(7).toLowerCase())).map((m) => ({ name: `/model ${m}`, desc: `Switch to ${m}` }));
-    if (input.startsWith('/skills ')) return loadAvailableSkills().filter((s) => s.name.includes(input.slice(8).toLowerCase())).slice(0, 10).map((s) => ({ name: `/skills ${s.name}`, desc: `${s.family}` }));
-    return input.startsWith('/style ') ? ['box', 'line'].filter((s) => s.startsWith(input.slice(7))).map((s) => ({ name: `/style ${s}`, desc: `Style: ${s}` })) : [];
-  }
-  if (input.trim().length < 2) return [];
-  const items: Array<{ name: string; desc: string }> = [];
-  if (ghost && ghost !== input && ghost.toLowerCase().startsWith(low)) items.push({ name: ghost, desc: 'AI completion' });
-  const seen = new Set(items.map((i) => i.name.toLowerCase()));
-  const words = low.trim().split(/\s+/).filter(Boolean);
-  for (const p of pool) {
-    const pLow = p.toLowerCase();
-    if (p !== input && words.every((w) => pLow.includes(w)) && !seen.has(pLow)) {
-      items.push({ name: p, desc: pLow.startsWith(low) ? 'Prompt template' : 'History match' });
-      seen.add(pLow);
-      if (items.length >= 4) break;
-    }
-  }
-  return items;
-}
-
-function resolvePendingContinuation(isDone: boolean): PendingContinuation | null {
-  const rt = getTaskRuntime();
-  const next = rt.nextReady();
-  if (next) {
-    return {
-      type: 'task',
-      taskId: next.id,
-      label: `Next Task: [${next.id}] ${next.title}`,
-      detail: next.objective,
-      prompt: buildTaskPrompt(next),
-    };
-  }
-  if (!isDone) {
-    return {
-      type: 'turn_limit',
-      label: 'Step Limit Reached with Pending Work',
-      detail: 'Would you like to continue execution from where it left off?',
-      prompt: 'Please continue execution directly from where you left off. Proceed with the remaining tasks and verify the implementation.',
-    };
-  }
-  return null;
-}
 
 interface ChatProps {
   client: OllamaClient | null; messages: ChatMessage[]; theme?: any; isActive?: boolean;
@@ -272,7 +158,10 @@ const Chat: React.FC<ChatProps> = ({
 
   const toggleStyle = (target?: 'box' | 'line') => {
     const next = target || (inputStyle === 'box' ? 'line' : 'box');
-    setInputStyle(next); saveUserConfig({ inputStyle: next }); show(`Input style: ${next}`, 'info', 1500);
+    setInputStyle(next);
+    const saved = saveUserConfig({ inputStyle: next });
+    if (saved) show(`Input style: ${next}`, 'info', 1500);
+    else show(`Input style: ${next} for this session (config not saved)`, 'warning', 4000);
   };
 
   const toggleTurnCollapse = (mi: number) =>
@@ -781,12 +670,14 @@ const Chat: React.FC<ChatProps> = ({
       case '/system': {
         if (arg === 'reset' || arg === 'clear') {
           transcriptSystemPromptRef.current = null;
-          saveUserConfig({ systemPrompt: undefined });
-          show('System prompt reset to default', 'info', 2000);
+          const saved = saveUserConfig({ systemPrompt: undefined });
+          if (saved) show('System prompt reset to default', 'info', 2000);
+          else show('System prompt reset for this session (config not saved)', 'warning', 4000);
         } else if (arg) {
           transcriptSystemPromptRef.current = arg;
-          saveUserConfig({ systemPrompt: arg });
-          show('System prompt set for next transcript run', 'info', 2000);
+          const saved = saveUserConfig({ systemPrompt: arg });
+          if (saved) show('System prompt set for next transcript run', 'info', 2000);
+          else show('System prompt set for this session (config not saved)', 'warning', 4000);
         } else {
           const sp = transcriptSystemPromptRef.current ?? '(default)';
           show(`System prompt: ${sp}`, 'info', 3500);

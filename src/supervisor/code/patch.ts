@@ -14,16 +14,17 @@
  * §20 — "Use MiniCPM5-2B for compact, local, low-latency agent steps; use
  * external infrastructure for truth, memory, state, security, and
  * verification". This workflow is the verification half of that contract.
+ *
+ * Security: the paths, branch name and commit message come from model output.
+ * Every git call therefore runs with argv through execFile, never a shell.
+ * Paths are confined to the worktree, and writes through symlinks are refused.
  */
-import { exec } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { lstat, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { promisify } from 'node:util';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { logger } from '../observability/logger.js';
 import type { SandboxExecutor, SandboxResult } from '../sandbox/executor.js';
-
-const execAsync = promisify(exec);
 
 export interface PatchRequest {
   runId: string;
@@ -46,40 +47,144 @@ export interface PatchResult {
   error?: string;
 }
 
+/** Git branch names: a letter or digit first, then letters, digits, `.`, `_`, `-`, `/`. No leading dash. */
+const BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+
+/** Throws unless `branch` is a name git accepts and that cannot be read as an option. */
+export function validateBranch(branch: string): void {
+  if (
+    !BRANCH_RE.test(branch) ||
+    branch.includes('..') ||
+    branch.endsWith('/') ||
+    branch.endsWith('.lock')
+  ) {
+    throw new Error(`invalid branch name: ${JSON.stringify(branch)}`);
+  }
+}
+
+/**
+ * Resolve a patch-relative path to an absolute path inside `root`. Rejects absolute
+ * paths, NUL bytes, and any path that climbs out of `root`.
+ */
+export function resolveInside(root: string, relPath: string): string {
+  if (!relPath || isAbsolute(relPath) || relPath.includes('\0')) {
+    throw new Error(`unsafe patch path: ${JSON.stringify(relPath)}`);
+  }
+  const abs = resolve(root, relPath);
+  const rel = relative(root, abs);
+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error(`patch path escapes the worktree: ${relPath}`);
+  }
+  return abs;
+}
+
+/** True when `target` is `root` or lies beneath it. Both must be real paths. */
+function isWithinRoot(root: string, target: string): boolean {
+  return target === root || target.startsWith(root + sep);
+}
+
+/** Real path of `p`, or of its nearest existing ancestor when `p` does not exist yet. */
+async function realpathOfNearestAncestor(p: string): Promise<string> {
+  let current = p;
+  for (;;) {
+    try {
+      return await realpath(current);
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) throw new Error(`no existing ancestor for ${p}`);
+      current = parent;
+    }
+  }
+}
+
+/** Runs git with argv through execFile. No shell ever parses an argument. */
+function runGit(args: readonly string[], cwd?: string): Promise<string> {
+  return new Promise((done, fail) => {
+    execFile(
+      'git',
+      [...args],
+      { cwd, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) fail(new Error(`git ${args[0]} failed: ${String(stderr || err.message).trim()}`));
+        else done(String(stdout));
+      },
+    );
+  });
+}
+
 export class PatchWorkflow {
   constructor(private readonly sandbox: SandboxExecutor) {}
 
   async apply(req: PatchRequest): Promise<PatchResult> {
+    // Validate every model-supplied value before any filesystem or git side effect.
+    try {
+      validateBranch(req.branch);
+      if (!isAbsolute(req.repoPath)) throw new Error(`repoPath must be absolute: ${req.repoPath}`);
+      for (const relPath of Object.keys(req.files)) resolveInside('/patch-root', relPath);
+    } catch (e) {
+      return {
+        ok: false,
+        worktreePath: '',
+        diff: '',
+        verifyResults: [],
+        error: (e as Error).message,
+      };
+    }
+
     // 1. Create a worktree on a temp branch
     const worktree = await mkdtemp(join(tmpdir(), 'supervisor-patch-'));
     try {
-      await execAsync(
-        `git -C ${req.repoPath} worktree add -b ${req.branch}-review ${worktree} ${req.branch}`,
-      );
+      await runGit([
+        '-C',
+        req.repoPath,
+        'worktree',
+        'add',
+        '-b',
+        `${req.branch}-review`,
+        worktree,
+        req.branch,
+      ]);
+      const realRoot = await realpath(worktree);
 
-      // 2. Apply file changes
+      // 2. Apply file changes, confined to the worktree and never through a symlink
       for (const [relPath, content] of Object.entries(req.files)) {
-        const abs = join(worktree, relPath);
-        await mkdir(join(abs, '..'), { recursive: true });
+        const abs = resolveInside(worktree, relPath);
         if (content === '') {
-          await execAsync(`rm -f ${abs}`);
-        } else {
-          await writeFile(abs, content, 'utf8');
+          await rm(abs, { force: true });
+          continue;
         }
+        // Check the nearest existing ancestor before mkdir, because mkdir -p follows symlinks.
+        const ancestor = await realpathOfNearestAncestor(dirname(abs));
+        if (!isWithinRoot(realRoot, ancestor)) {
+          throw new Error(`patch path resolves outside the worktree through a symlink: ${relPath}`);
+        }
+        await mkdir(dirname(abs), { recursive: true });
+        const existing = await lstat(abs).catch(() => null);
+        if (existing?.isSymbolicLink()) {
+          throw new Error(`refusing to write through a symlink: ${relPath}`);
+        }
+        await writeFile(abs, content, 'utf8');
       }
 
       // 3. Stage all changes and produce a diff
-      await execAsync(`git -C ${worktree} add -A`);
-      const { stdout: diff } = await execAsync(`git -C ${worktree} diff --cached`);
+      await runGit(['-C', worktree, 'add', '-A']);
+      const diff = await runGit(['-C', worktree, 'diff', '--cached']);
 
-      // 4. Optionally commit (still on the temp branch)
+      // 4. Optionally commit (still on the temp branch). The message is a single argv element.
       let commitSha: string | undefined;
       if (req.commitMessage) {
-        await execAsync(
-          `git -C ${worktree} -c user.email=supervisor-bot@local -c user.name=Supervisor commit -m ${JSON.stringify(req.commitMessage)}`,
-        );
-        const { stdout: sha } = await execAsync(`git -C ${worktree} rev-parse HEAD`);
-        commitSha = sha.trim();
+        await runGit([
+          '-C',
+          worktree,
+          '-c',
+          'user.email=supervisor-bot@local',
+          '-c',
+          'user.name=Supervisor',
+          'commit',
+          '-m',
+          req.commitMessage,
+        ]);
+        commitSha = (await runGit(['-C', worktree, 'rev-parse', 'HEAD'])).trim();
       }
 
       // 5. Run validation commands in the sandbox against the worktree
@@ -123,15 +228,17 @@ export class PatchWorkflow {
   }
 
   async cleanup(worktreePath: string, repoPath: string): Promise<void> {
-    try {
-      await execAsync(`git -C ${repoPath} worktree remove --force ${worktreePath}`);
-    } catch {
-      // best effort
-    }
-    try {
-      await rm(worktreePath, { recursive: true, force: true });
-    } catch {
-      // best effort
+    if (worktreePath) {
+      try {
+        await runGit(['-C', repoPath, 'worktree', 'remove', '--force', worktreePath]);
+      } catch {
+        // best effort
+      }
+      try {
+        await rm(worktreePath, { recursive: true, force: true });
+      } catch {
+        // best effort
+      }
     }
   }
 }

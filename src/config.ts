@@ -278,17 +278,6 @@ export function resolvePath(rel: string): string {
   return resolve(process.cwd(), rel);
 }
 
-/** Redact secrets from an object for safe logging. */
-export function redact(obj: Record<string, unknown>): Record<string, unknown> {
-  const sensitive = /token|key|secret|password|auth/i;
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (sensitive.test(k)) out[k] = v ? '***' : '';
-    else if (v && typeof v === 'object' && !Array.isArray(v)) out[k] = redact(v as Record<string, unknown>);
-    else out[k] = v;
-  }
-  return out;
-}
 
 /** Returns true when a credential for the given provider is present. */
 export function hasCredential(provider: ProviderName, cfg: AgentConfig): boolean {

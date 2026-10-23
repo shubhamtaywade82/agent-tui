@@ -7,6 +7,7 @@ import type { ToolCallLedger } from './utils/tool-loop-guard.js';
 import { StdioTransport, StreamableHttpTransport, McpClient } from '@nemesis-oss/agentic-runtime/mcp';
 import { TASK_SLASH_COMMANDS, handleTasksCommand, taskTools } from './tasks.js';
 import { envList, loadConfig, isMcpEnabled } from './config.js';
+import { log } from './logger.js';
 import { runShellTool, runCodeTool } from './toolbox/code.js';
 import { renderUiTool, handleGenUiCommand } from './toolbox/genui.js';
 
@@ -131,12 +132,31 @@ export function matchBestSkill(query: string): { name: string; family: string; p
 
 export interface UserConfig { model?: string; systemPrompt?: string; inputStyle?: 'box' | 'line'; }
 const CONFIG_FILE = '.config.json';
-export const loadUserConfig = (): UserConfig => {
+/** Parse the config file. Returns undefined when it exists but cannot be parsed. */
+const readConfigStrict = (): UserConfig | undefined => {
   if (!existsSync(CONFIG_FILE)) return {};
-  try { return JSON.parse(readFileSync(CONFIG_FILE, 'utf8')); } catch { return {}; }
+  try {
+    return JSON.parse(readFileSync(CONFIG_FILE, 'utf8')) as UserConfig;
+  } catch (err) {
+    log.warn('config file is unreadable', { file: CONFIG_FILE, error: (err as Error).message });
+    return undefined;
+  }
 };
-export const saveUserConfig = (patch: Partial<UserConfig>): void => {
-  try { writeFileSync(CONFIG_FILE, JSON.stringify({ ...loadUserConfig(), ...patch }, null, 2), 'utf8'); } catch {}
+export const loadUserConfig = (): UserConfig => readConfigStrict() ?? {};
+/**
+ * Merge `patch` into the config file. Returns false (and writes nothing) when the file
+ * is unparseable, so a corrupt config is never overwritten with only the new keys.
+ */
+export const saveUserConfig = (patch: Partial<UserConfig>): boolean => {
+  const current = readConfigStrict();
+  if (current === undefined) return false;
+  try {
+    writeFileSync(CONFIG_FILE, JSON.stringify({ ...current, ...patch }, null, 2), 'utf8');
+    return true;
+  } catch (err) {
+    log.warn('config not saved', { file: CONFIG_FILE, error: (err as Error).message });
+    return false;
+  }
 };
 
 // ponytail: weak models re-query list_skills/read_skill endlessly instead of proceeding;

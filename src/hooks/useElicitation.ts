@@ -42,6 +42,7 @@ import {
   type ElicitationChoice,
   type TranscriptCallbacks,
 } from '../transcript/index.js';
+import { canRememberForSession, effectiveChoice } from '../transcript/elicitation-policy.js';
 
 /** A pending elicitation — the Deferred resolver is called when the user responds. */
 interface PendingElicitation {
@@ -95,7 +96,7 @@ export function useElicitation(cb: TranscriptCallbacks): UseElicitationResult {
     ): Promise<ElicitationChoice> => {
       // Fast path: if the user already allowed this tool for the session,
       // skip the prompt entirely.
-      if (sessionAllowedRef.current.has(toolName)) {
+      if (canRememberForSession(toolName) && sessionAllowedRef.current.has(toolName)) {
         return Promise.resolve('allow_session' as ElicitationChoice);
       }
 
@@ -118,21 +119,22 @@ export function useElicitation(cb: TranscriptCallbacks): UseElicitationResult {
 
   const respondToElicitation = useCallback(
     (eventId: number, choice: ElicitationChoice) => {
-      // Patch the elicitation event with the user's choice.
-      cb.patch(eventId, makeElicitationResolutionPatch(choice));
-
       // Look up the pending elicitation to get the tool name.
       const pending = pendingRef.current.get(eventId);
+      // 'allow_session' applies only to tools that may be remembered; for the rest it is one call.
+      const applied = pending ? effectiveChoice(pending.toolName, choice) : choice;
 
-      // If the user chose 'allow_session', cache the permission so
-      // future calls to the same tool skip the elicitation prompt.
-      if (choice === 'allow_session' && pending) {
+      // Patch the elicitation event with the choice that actually applies.
+      cb.patch(eventId, makeElicitationResolutionPatch(applied));
+
+      // Cache the permission so future calls to the same tool skip the prompt.
+      if (applied === 'allow_session' && pending) {
         sessionAllowedRef.current.add(pending.toolName);
       }
 
       // Resolve the pending promise.
       if (pending) {
-        pending.resolve(choice);
+        pending.resolve(applied);
         pendingRef.current.delete(eventId);
         setPendingCount(pendingRef.current.size);
       }

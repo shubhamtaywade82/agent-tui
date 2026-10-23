@@ -11,6 +11,16 @@
  *   POST /chat/stream         → SSE streaming chat (token-by-token)
  *   POST /embed               → embed text(s) into vectors
  *
+ * Security model:
+ *   - Every route requires `Authorization: Bearer <token>`. The token comes from
+ *     AGENT_API_TOKEN, or is generated for the run and printed once to stderr.
+ *   - The server binds to 127.0.0.1 unless AGENT_API_HOST says otherwise. A
+ *     non-loopback bind refuses to start without an explicit AGENT_API_TOKEN.
+ *   - No CORS headers are sent, so a web page cannot read responses. A page can
+ *     still send a request, which is why the token is required.
+ *   - Requests are authenticated operator requests. Tools run without the TUI's
+ *     approval prompt, so restrict AGENT_TOOLS on deployments exposed beyond you.
+ *
  * Uses only the Node.js built-in http module — no extra framework dependency.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -21,6 +31,7 @@ import { listSessions, loadSession } from './session.js';
 import { loadConfig, type AgentConfig } from './config.js';
 import { initLogger, log } from './logger.js';
 import { randomUUID } from 'node:crypto';
+import { isBearerAuthorized, resolveBearerToken } from './utils/auth.js';
 
 interface ChatRequest {
   prompt: string;
@@ -44,7 +55,7 @@ function readBody(req: IncomingMessage): Promise<string> {
 
 function sendJson(res: ServerResponse, code: number, data: unknown): void {
   const json = JSON.stringify(data);
-  res.writeHead(code, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+  res.writeHead(code, { 'content-type': 'application/json' });
   res.end(json);
 }
 
@@ -53,9 +64,26 @@ function sendSseHeaders(res: ServerResponse): void {
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
     'connection': 'keep-alive',
-    'access-control-allow-origin': '*',
     'x-accel-buffering': 'no',
   });
+}
+
+export interface ApiBinding {
+  host: string;
+  token: string;
+  /** True when the token was generated for this run rather than configured. */
+  tokenGenerated: boolean;
+}
+
+/**
+ * Resolve the bind address and token from the environment. Throws before the
+ * server starts if the configuration would expose an unauthenticated or weakly
+ * authenticated API beyond this machine.
+ */
+export function resolveApiBinding(env: NodeJS.ProcessEnv = process.env): ApiBinding {
+  const host = env.AGENT_API_HOST?.trim() || '127.0.0.1';
+  const { token, generated } = resolveBearerToken({ host, configured: env.AGENT_API_TOKEN, envName: 'AGENT_API_TOKEN' });
+  return { host, token, tokenGenerated: generated };
 }
 
 function sse(res: ServerResponse, event: string, data: unknown): void {
@@ -208,14 +236,15 @@ async function handlePost(
   return false;
 }
 
-function createApiServer(cfg: AgentConfig, port: number) {
+export function createApiServer(cfg: AgentConfig, opts: { port: number; token: string }) {
   return createServer(async (req, res) => {
-    res.setHeader('access-control-allow-origin', '*');
-    res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
-    res.setHeader('access-control-allow-headers', 'content-type');
-    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+    if (!isBearerAuthorized(req.headers.authorization, opts.token)) {
+      res.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
 
-    const url = new URL(req.url ?? '/', `http://localhost:${port}`);
+    const url = new URL(req.url ?? '/', `http://localhost:${opts.port}`);
     const path = url.pathname;
     try {
       const handled = req.method === 'GET'
@@ -233,18 +262,24 @@ function createApiServer(cfg: AgentConfig, port: number) {
 
 /** Start the HTTP API server on the given port. Returns the server instance. */
 export async function startServer(port = 8787): Promise<void> {
+  // Validate the binding before any side effects, so a misconfigured host fails fast.
+  const binding = resolveApiBinding();
   initLogger();
   const cfg = loadConfig();
-  log.info('Server starting', { port, provider: cfg.provider.active });
+  log.info('Server starting', { host: binding.host, port, provider: cfg.provider.active });
 
   // Pre-warm provider and tool registry to fail fast if config or dependencies are broken
   await getProviderAsync(cfg).catch((e) => log.warn('Provider init failed', { error: e.message }));
   await getToolRegistry(cfg).catch((e) => log.warn('Tool registry init failed', { error: e.message }));
 
-  const server = createApiServer(cfg, port);
-  server.listen(port, () => {
-    log.info('HTTP API server listening', { port });
-    process.stderr.write(`\n\x1b[36m⚡ Agentic TUI API server\x1b[0m listening on http://localhost:${port}\n`);
+  const server = createApiServer(cfg, { port, token: binding.token });
+  server.listen(port, binding.host, () => {
+    // The token is written to the terminal only, never to the log file.
+    log.info('HTTP API server listening', { host: binding.host, port, tokenGenerated: binding.tokenGenerated });
+    process.stderr.write(`\n\x1b[36m⚡ Agentic TUI API server\x1b[0m listening on http://${binding.host}:${port}\n`);
+    if (binding.tokenGenerated) {
+      process.stderr.write(`   Bearer token for this run: ${binding.token}\n`);
+    }
     process.stderr.write(`   Endpoints: /health /models /tools /sessions /chat /chat/stream /embed\n\n`);
   });
 

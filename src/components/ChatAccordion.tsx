@@ -4,6 +4,7 @@ import { Spinner } from './ui/spinner/index.js';
 import { Stepper, type Step } from './ui/stepper/index.js';
 import { parseMarkdownBlocks, wrapTextLine } from './ui/markdown/index.js';
 import { ScrollArea } from './ui/scroll-area/index.js';
+import { parseTextToolCalls } from '../utils/text-tool-calls.js';
 import { Thinking } from './ui/thinking/index.js';
 import { ToolCall } from './ui/tool-call/index.js';
 import type { ChatMessage } from './Chat.js';
@@ -261,26 +262,6 @@ function renderTurnDetails(
   return elements;
 }
 
-export function parseTextToolCalls(text: string): Array<{ function: { name: string; arguments: any } }> {
-  const calls: Array<{ function: { name: string; arguments: any } }> = [];
-  const fnRe = /<function\s+name="([^"]+)">([\s\S]*?)<\/function>/g;
-  let m: RegExpExecArray | null;
-  while ((m = fnRe.exec(text)) !== null) {
-    const args: Record<string, any> = {};
-    const paramRe = /<param\s+name="([^"]+)">([\s\S]*?)<\/param>/g;
-    let pm: RegExpExecArray | null;
-    while ((pm = paramRe.exec(m[2]!)) !== null) args[pm[1]!] = pm[2]!.trim();
-    calls.push({ function: { name: m[1]!, arguments: args } });
-  }
-  const tcRe = /<tool_call>([\s\S]*?)<\/tool_call>/g;
-  while ((m = tcRe.exec(text)) !== null) {
-    try {
-      const p = JSON.parse(m[1]!.trim());
-      if (p.name) calls.push({ function: { name: p.name, arguments: p.arguments || {} } });
-    } catch {}
-  }
-  return calls;
-}
 
 interface AccordionItemProps {
   msg: ChatMessage;

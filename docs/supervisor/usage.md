@@ -97,6 +97,9 @@ Key ones:
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama endpoint |
 | `MINICPM5_ROUTER_MODEL` etc. | `minicpm5-router` … | The four sub-agent tags |
 | `SUPERVISOR_HTTP_PORT` | `7480` | API port (`/docs` = OpenAPI) |
+| `SUPERVISOR_HTTP_HOST` | `127.0.0.1` | Bind address. Non-loopback needs `SUPERVISOR_API_KEY` |
+| `SUPERVISOR_API_KEY` | _(unset)_ | Bearer token for all routes except `/v1/healthz` and `/docs`. At least 16 characters. Unset on loopback generates a token per run |
+| `SUPERVISOR_CORS_ORIGINS` | _(empty)_ | Comma-separated browser origins allowed to call the API. Empty disables CORS |
 | `SANDBOX_IMAGE` / `SANDBOX_NETWORK` | `supervisor-sandbox:latest` | Exec sandbox |
 
 Prefer setting a value **once in `.env`** (loaded at boot, git-ignored); use an
@@ -160,7 +163,8 @@ Smoke test:
 curl -fsS http://localhost:7480/v1/healthz
 # {"ok":true,"ts":"…"}
 
-curl -sS http://localhost:7480/v1/runs -H 'content-type: application/json' \
+curl -sS http://localhost:7480/v1/runs -H "authorization: Bearer $SUPERVISOR_API_KEY" \
+  -H 'content-type: application/json' \
   -d '{"objective":"Summarize these logs:\nERROR db refused\nWARN retrying in 5s"}' | jq
 # {"runId":"…","status":"COMPLETED","intent":"LOG_SUMMARIZATION","finalResponse":"## Summary\n…"}
 ```
@@ -171,9 +175,10 @@ summarizer model generated the answer, the validator passed it, and the state
 machine persisted `runs` + `events` + `steps`. Inspect it:
 
 ```bash
-curl -sS localhost:7480/v1/runs/$RUN_ID/events | jq
-curl -sS localhost:7480/v1/metrics | jq
-curl -sS localhost:7480/v1/tools | jq
+AUTH="authorization: Bearer $SUPERVISOR_API_KEY"
+curl -sS -H "$AUTH" localhost:7480/v1/runs/$RUN_ID/events | jq
+curl -sS -H "$AUTH" localhost:7480/v1/metrics | jq
+curl -sS -H "$AUTH" localhost:7480/v1/tools | jq
 ```
 
 Offline development (no model calls at all):

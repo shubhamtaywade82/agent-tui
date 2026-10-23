@@ -103,7 +103,9 @@ export function listSessions(): SessionMeta[] {
         id: s.id, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt,
         provider: s.provider, model: s.model, messageCount: s.messageCount,
       });
-    } catch {}
+    } catch (err) {
+      log.warn('skipping unreadable session file', { file: f, error: (err as Error).message });
+    }
   }
   return metas.sort((a, b) => b.updatedAt - a.updatedAt);
 }
@@ -131,7 +133,9 @@ export function appendToConversationLog(role: string, content: string): void {
     const dir = resolvePath(LOG_FILE);
     if (!existsSync(resolve(dir, '..'))) mkdirSync(resolve(dir, '..'), { recursive: true });
     appendFileSync(dir, `[${new Date().toISOString()}] ${role.toUpperCase()}: ${content.replace(/\n/g, ' ').slice(0, 500)}\n`, 'utf8');
-  } catch {}
+  } catch (err) {
+    log.warn('conversation log not written', { error: (err as Error).message });
+  }
 }
 
 function deriveTitle(messages: ChatMessage[]): string {

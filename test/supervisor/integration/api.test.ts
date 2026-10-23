@@ -15,6 +15,8 @@ import { MockBackend } from '../../../src/supervisor/inference/mock.js';
 import { PgStateStore } from '../../../src/supervisor/state/store.js';
 
 const SKIP = !process.env.TEST_DATABASE_URL && !process.env.CI;
+const API_KEY = 'integration-test-key-0123456789';
+const AUTH = { authorization: `Bearer ${API_KEY}` };
 
 describe.skipIf(SKIP)('Supervisor HTTP API (integration)', () => {
   let container: StartedPostgreSqlContainer;
@@ -44,7 +46,7 @@ describe.skipIf(SKIP)('Supervisor HTTP API (integration)', () => {
     }
 
     supervisor = new Supervisor({ backend, store });
-    app = await createServer({ supervisor, store });
+    app = await createServer({ supervisor, store, apiKey: API_KEY });
     await app.ready();
   }, 60_000);
 
@@ -56,6 +58,7 @@ describe.skipIf(SKIP)('Supervisor HTTP API (integration)', () => {
 
   it('POST /v1/runs kicks off and completes a run', async () => {
     const r = await app.inject({
+      headers: AUTH,
       method: 'POST',
       url: '/v1/runs',
       payload: { objective: 'Hello, integration world.' },
@@ -68,12 +71,13 @@ describe.skipIf(SKIP)('Supervisor HTTP API (integration)', () => {
 
   it('GET /v1/runs/:id returns the run', async () => {
     const post = await app.inject({
+      headers: AUTH,
       method: 'POST',
       url: '/v1/runs',
       payload: { objective: 'Second run.' },
     });
     const { runId } = post.json() as { runId: string };
-    const r = await app.inject({ method: 'GET', url: `/v1/runs/${runId}` });
+    const r = await app.inject({ headers: AUTH, method: 'GET', url: `/v1/runs/${runId}` });
     expect(r.statusCode).toBe(200);
     const body = r.json() as { runId: string };
     expect(body.runId).toBe(runId);
@@ -81,12 +85,13 @@ describe.skipIf(SKIP)('Supervisor HTTP API (integration)', () => {
 
   it('GET /v1/runs/:id/events returns persisted events', async () => {
     const post = await app.inject({
+      headers: AUTH,
       method: 'POST',
       url: '/v1/runs',
       payload: { objective: 'Eventful run.' },
     });
     const { runId } = post.json() as { runId: string };
-    const r = await app.inject({ method: 'GET', url: `/v1/runs/${runId}/events` });
+    const r = await app.inject({ headers: AUTH, method: 'GET', url: `/v1/runs/${runId}/events` });
     expect(r.statusCode).toBe(200);
     const body = r.json() as { events: { type: string }[] };
     const types = body.events.map((e) => e.type);
@@ -95,14 +100,14 @@ describe.skipIf(SKIP)('Supervisor HTTP API (integration)', () => {
   });
 
   it('GET /v1/metrics returns non-zero counts after a run', async () => {
-    const r = await app.inject({ method: 'GET', url: '/v1/metrics' });
+    const r = await app.inject({ headers: AUTH, method: 'GET', url: '/v1/metrics' });
     expect(r.statusCode).toBe(200);
     const body = r.json() as { runsTotal: number };
     expect(body.runsTotal).toBeGreaterThan(0);
   });
 
   it('GET /v1/healthz returns ok', async () => {
-    const r = await app.inject({ method: 'GET', url: '/v1/healthz' });
+    const r = await app.inject({ headers: AUTH, method: 'GET', url: '/v1/healthz' });
     expect(r.statusCode).toBe(200);
     const body = r.json() as { ok: boolean };
     expect(body.ok).toBe(true);

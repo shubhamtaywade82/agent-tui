@@ -10,6 +10,7 @@
 import { getProviderAsync, parseTextToolCalls, rawOllama, type LLMProvider, type ChatMessage, type ToolCall, type StreamCallbacks } from './providers.js';
 import { getToolRegistry, closeToolRegistry } from './toolbox/index.js';
 import { resetSkillLookupBudget } from './tools.js';
+import { withUntrustedContentRule } from './prompts.js';
 import { budgetMessages, resolveMessageTokenBudget, truncateToolOutput } from './utils/context.js';
 import { ToolCallLedger } from './utils/tool-loop-guard.js';
 import { loadConfig, type AgentConfig } from './config.js';
@@ -72,9 +73,9 @@ WORKFLOW — When a task requires multiple steps: (1) if it's a coding/engineeri
 function loadSystemPrompt(): string {
   const file = resolve(process.cwd(), 'AGENTS.md');
   if (existsSync(file)) {
-    try { return readFileSync(file, 'utf8'); } catch {}
+    try { return withUntrustedContentRule(readFileSync(file, 'utf8')); } catch {}
   }
-  return DEFAULT_SYSTEM_PROMPT;
+  return withUntrustedContentRule(DEFAULT_SYSTEM_PROMPT);
 }
 
 // ponytail: some models emit tool names with a prefix ("functions.run_shell")
