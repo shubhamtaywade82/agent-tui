@@ -101,6 +101,34 @@ export const listTreeTool = defineTool({
   },
 });
 
+/**
+ * Build the `git clone` argv and environment. The token never goes into the URL
+ * or argv. Git would record a token-bearing URL in the clone's `.git/config`,
+ * and argv is visible to other local users through `ps`. It is sent as an HTTP
+ * header scoped to github.com via GIT_CONFIG_* (git >= 2.31), which keeps it
+ * out of both.
+ */
+export function buildCloneInvocation(
+  repoUrl: string,
+  dest: string,
+  branch: string | undefined,
+  token: string | undefined,
+): { args: string[]; env: Record<string, string> } {
+  const args = ['clone'];
+  if (branch) args.push('-b', branch);
+  args.push(repoUrl, dest);
+  if (!token || !repoUrl.startsWith('https://github.com/')) return { args, env: {} };
+  const basic = Buffer.from(`x-access-token:${token}`).toString('base64');
+  return {
+    args,
+    env: {
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'http.https://github.com/.extraHeader',
+      GIT_CONFIG_VALUE_0: `Authorization: Basic ${basic}`,
+    },
+  };
+}
+
 /** Clone a GitHub repository using the secured token (if available). */
 export const cloneRepoTool = defineTool({
   name: 'clone_repo',
@@ -113,24 +141,23 @@ export const cloneRepoTool = defineTool({
   timeoutMs: 120_000,
   execute: async ({ url, targetDir, branch }) => {
     const cfg = loadConfig();
-    let repoUrl = url.startsWith('http') ? url : `https://github.com/${url}.git`;
-    const token = loadGitHubToken();
-    if (token && repoUrl.startsWith('https://github.com/')) {
-      repoUrl = repoUrl.replace('https://', `https://x-access-token:${token}@`);
-    }
+    const repoUrl = url.startsWith('http') ? url : `https://github.com/${url}.git`;
+    const token = repoUrl.startsWith('https://github.com/') ? loadGitHubToken() : undefined;
     const name = basename(repoUrl).replace(/\.git$/, '');
     const dest = targetDir ? resolvePath(targetDir) : resolvePath(`${cfg.sessionsDir.replace(/\/sessions$/, '/repos')}/${name}`);
     if (existsSync(dest)) return `Target already exists: ${dest}. Remove it first or choose another path.`;
     mkdirSync(dirname(dest), { recursive: true });
-    const args = ['clone', repoUrl, dest];
-    if (branch) args.splice(1, 0, '-b', branch);
-    const r = await runProcess('git', args, { timeoutMs: 100_000, maxBufferBytes: 4 * 1024 * 1024, env: sandboxEnv() });
+    const invocation = buildCloneInvocation(repoUrl, dest, branch, token);
+    const r = await runProcess('git', invocation.args, {
+      timeoutMs: 100_000,
+      maxBufferBytes: 4 * 1024 * 1024,
+      env: sandboxEnv(invocation.env),
+    });
     if (r.exitCode !== 0) {
       const reason = r.timedOut ? 'timed out' : (r.stderr.trim() || r.errorMessage || 'unknown error');
-      return `Clone failed: ${reason.replace(/x-access-token:[^@]+@/g, '***@')}`;
+      return `Clone failed: ${reason}`;
     }
-    log.info('clone_repo', { url: url.replace(token ?? '***', '***'), dest });
-    // Avoid leaking the token-bearing URL in logs
+    log.info('clone_repo', { url: repoUrl, dest, authenticated: Boolean(token) });
     return `Cloned ${url} → ${dest}`;
   },
 });
