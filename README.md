@@ -101,8 +101,11 @@ Exposes the agent as REST + SSE for other apps:
 | `/chat/stream` | POST | SSE streaming chat (token-by-token) |
 | `/embed` | POST | Embed text into vectors |
 
+Every request needs `Authorization: Bearer <token>`. The server binds to `127.0.0.1` by default. Set `AGENT_API_TOKEN` (at least 16 characters) to choose the token. If you leave it unset, a token is generated for each run and printed once to the terminal. To listen on another interface, set `AGENT_API_HOST` and also `AGENT_API_TOKEN`; the server refuses to start otherwise. Requests are operator requests: tools run without the TUI's approval prompt, so set `AGENT_TOOLS` to a narrower list on any deployment beyond your own machine.
+
 ```bash
-curl -X POST localhost:8787/chat -H 'content-type: application/json' \
+curl -X POST localhost:8787/chat \
+  -H "authorization: Bearer $AGENT_API_TOKEN" -H 'content-type: application/json' \
   -d '{"prompt":"what tools are available?"}'
 ```
 
