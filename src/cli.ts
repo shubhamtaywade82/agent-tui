@@ -385,7 +385,9 @@ export async function runCli(argv: string[]): Promise<number> {
         const { startServer } = await import('./server.js');
         const port = Number(positional[0] ?? 8787);
         await startServer(port);
-        return 0; // server runs until killed
+        // Never resolve: index.ts exits the process as soon as runCli returns, which
+        // closed the socket before it bound. The server's SIGINT/SIGTERM handler exits.
+        return new Promise<number>(() => {});
       }
       case 'help': case '--help': case '-h': case '': console.log(HELP); break;
       default: console.error(`Unknown command: ${command}\n${HELP}`); exit = 1;
