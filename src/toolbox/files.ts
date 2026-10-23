@@ -5,8 +5,8 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@nemesis-oss/ollama-sdk';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, appendFileSync, rmSync } from 'node:fs';
-import { resolve, relative, join, basename, dirname, extname } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, appendFileSync, rmSync, realpathSync } from 'node:fs';
+import { resolve, relative, join, basename, dirname, extname, isAbsolute, sep } from 'node:path';
 import { loadConfig, loadGitHubToken, resolvePath } from '../config.js';
 import { log } from '../logger.js';
 import { runProcess, sandboxEnv } from './process.js';
@@ -16,6 +16,38 @@ const MAX_READ = 16_000;
 function truncate(s: string, max = MAX_READ): string {
   return s.length <= max ? s : s.slice(0, max) + `\n... [truncated ${s.length - max} chars]`;
 }
+
+function realpathOrSelf(p: string): string {
+  try { return realpathSync(p); } catch { return p; }
+}
+
+/** True when `target` is `root` or lies beneath it. Both paths must already be real paths. */
+function isWithin(root: string, target: string): boolean {
+  const r = relative(root, target);
+  return r === '' || (r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r));
+}
+
+/**
+ * Directories the read tools may use: the working directory plus any
+ * AGENT_FS_EXTRA_DIRS entries (the same setting the MCP filesystem server reads).
+ */
+function readRoots(): string[] {
+  const extra = (process.env.AGENT_FS_EXTRA_DIRS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  return [process.cwd(), ...extra].map((d) => realpathOrSelf(resolve(d)));
+}
+
+/**
+ * Resolve a path for reading. Symlinks are followed before the containment check,
+ * so a link inside the workspace that points outside it is refused. Returns null
+ * when the path is outside every readable root.
+ */
+export function resolveReadable(p: string): string | null {
+  const real = realpathOrSelf(resolvePath(p));
+  // Return the real path, not the lexical one: the caller reads the exact target that was checked.
+  return readRoots().some((root) => isWithin(root, real)) ? real : null;
+}
+
+const OUTSIDE_WORKSPACE = 'Refused: outside the workspace. Set AGENT_FS_EXTRA_DIRS to allow another directory.';
 
 /** Read one or more files and return their concatenated contents. */
 export const readFilesTool = defineTool({
@@ -28,7 +60,8 @@ export const readFilesTool = defineTool({
   execute: async ({ paths }) => {
     const out: string[] = [];
     for (const p of paths) {
-      const abs = resolvePath(p);
+      const abs = resolveReadable(p);
+      if (!abs) { out.push(`=== ${p} ===\n[${OUTSIDE_WORKSPACE}]`); continue; }
       if (!existsSync(abs)) { out.push(`=== ${p} ===\n[File not found: ${abs}]`); continue; }
       try {
         const stat = statSync(abs);
@@ -71,7 +104,8 @@ export const listTreeTool = defineTool({
   }),
   timeoutMs: 10_000,
   execute: async ({ path, maxDepth, maxEntries }) => {
-    const root = path ? resolvePath(path) : process.cwd();
+    const root = path ? resolveReadable(path) : process.cwd();
+    if (!root) return OUTSIDE_WORKSPACE;
     if (!existsSync(root)) return `Path not found: ${root}`;
     const depth = maxDepth ?? 2;
     const limit = maxEntries ?? 100;
