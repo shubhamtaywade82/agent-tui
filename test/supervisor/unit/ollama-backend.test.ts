@@ -1,6 +1,6 @@
 /**
- * OllamaBackend — §13. Drives the `ollama` client against an injected fetch so
- * the request wire shape, response mapping and health probe are verified
+ * OllamaBackend — §13. Drives the SDK client against an injected fetch so the
+ * request wire shape, response mapping, timeout and health probe are verified
  * without a running Ollama server.
  */
 import { describe, expect, it } from 'vitest';
@@ -9,9 +9,9 @@ import { OllamaBackend } from '../../../src/supervisor/inference/ollama.js';
 
 const HOST = 'http://ollama.test:11434';
 
-function makeConfig(): SupervisorConfig {
+function makeConfig(ollamaHost = HOST): SupervisorConfig {
   return {
-    inference: { ollamaHost: HOST, defaultThinkMode: 'no-think' },
+    inference: { ollamaHost, defaultThinkMode: 'no-think' },
     context: { budgetTokens: 8192 },
   } as unknown as SupervisorConfig;
 }
@@ -55,7 +55,7 @@ function recordingFetch(respond: (url: string) => Response): {
 }
 
 describe('OllamaBackend.invoke', () => {
-  it('sends a JSON-format chat request with num_ctx and think=false', async () => {
+  it('sends a non-streaming JSON-format chat request with num_ctx and think=false', async () => {
     const { fetch, calls } = recordingFetch(() => chatResponse('{"intent":"TOOL_EXECUTION"}'));
     const backend = new OllamaBackend(makeConfig(), fetch);
 
@@ -68,6 +68,7 @@ describe('OllamaBackend.invoke', () => {
       model: 'minicpm5-router',
       messages: [{ role: 'user', content: 'ping' }],
       format: 'json',
+      stream: false,
       think: false,
       options: { temperature: 0.1, num_ctx: 8192 },
     });
@@ -115,6 +116,29 @@ describe('OllamaBackend.invoke', () => {
     expect(r.json).toBeUndefined();
   });
 
+  it('sends format requests to a docker-compose service-name host (regression: SDK 1.20.0 refused these)', async () => {
+    const { fetch, calls } = recordingFetch(() => chatResponse('{"intent":"TOOL_EXECUTION"}'));
+    const backend = new OllamaBackend(makeConfig('http://ollama:11434'), fetch);
+
+    const r = await backend.invoke({ model: 'minicpm5-router', prompt: 'ping', formatJson: true });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('http://ollama:11434/api/chat');
+    expect(r.parsed).toBe(true);
+  });
+
+  it('aborts the request when the per-call timeoutMs elapses', async () => {
+    const hang = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      await new Promise<never>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+      throw new Error('unreachable');
+    }) as typeof fetch;
+    const backend = new OllamaBackend(makeConfig(), hang);
+
+    await expect(backend.invoke({ model: 'm', prompt: 'p', timeoutMs: 25 })).rejects.toThrow();
+  });
+
   it('propagates transport failures to the caller instead of swallowing them', async () => {
     const down = (async () => {
       throw new TypeError('fetch failed');
@@ -126,18 +150,12 @@ describe('OllamaBackend.invoke', () => {
 });
 
 describe('OllamaBackend.health', () => {
-  it('is true when /api/tags returns a models array', async () => {
-    const { fetch, calls } = recordingFetch(
-      () =>
-        new Response(JSON.stringify({ models: [] }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-    );
+  it('is true when the HEAD / liveness probe succeeds', async () => {
+    const { fetch, calls } = recordingFetch(() => new Response(null, { status: 200 }));
     const backend = new OllamaBackend(makeConfig(), fetch);
 
     await expect(backend.health()).resolves.toBe(true);
-    expect(calls[0].url).toBe(`${HOST}/api/tags`);
+    expect(calls[0]).toMatchObject({ url: HOST, method: 'HEAD' });
   });
 
   it('is false (never throws) when the server is unreachable', async () => {
