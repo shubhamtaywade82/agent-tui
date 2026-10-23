@@ -21,6 +21,7 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
 
 let _level: LogLevel = 'info';
 let _file = '';
+let writeFailureReported = false;
 
 export function initLogger(level?: LogLevel, file?: string): void {
   const cfg = loadConfig();
@@ -37,7 +38,15 @@ function write(level: LogLevel, msg: string, ctx: Record<string, unknown>): void
   const full: LogEntry = { ts: new Date().toISOString(), level, msg, extra: ctx };
   if (LEVEL_ORDER[level] >= LEVEL_ORDER[_level]) {
     if (_file) {
-      try { appendFileSync(resolvePath(_file), JSON.stringify(full) + '\n', 'utf8'); } catch {}
+      try {
+        appendFileSync(resolvePath(_file), JSON.stringify(full) + '\n', 'utf8');
+      } catch (err) {
+        // Report the first failure once. Dropping every entry without a word hides the outage.
+        if (!writeFailureReported) {
+          writeFailureReported = true;
+          process.stderr.write(`[logger] cannot write ${_file}: ${(err as Error).message}\n`);
+        }
+      }
     }
     // Pretty console
     const color = level === 'error' ? '\x1b[31m'

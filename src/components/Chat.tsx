@@ -9,6 +9,7 @@ import { GENUI_SYSTEM_INSTRUCTIONS } from '../toolbox/genui.js';
 import { budgetMessages, resolveMessageTokenBudget } from '../utils/context.js';
 import { ToolCallLedger } from '../utils/tool-loop-guard.js';
 import { loadConfig } from '../config.js';
+import { log } from '../logger.js';
 import {
   createOllamaRunRoutingState,
   maybeEscalateOllamaModel,
@@ -62,7 +63,11 @@ const filterValidHistory = (items: string[]): string[] => {
   return result;
 };
 const saveHistoryFile = (items: string[]): void => {
-  try { writeFileSync(HIST, items.slice(0, 500).map((i) => JSON.stringify(i)).join('\n') + '\n', 'utf-8'); } catch {}
+  try {
+    writeFileSync(HIST, items.slice(0, 500).map((i) => JSON.stringify(i)).join('\n') + '\n', 'utf-8');
+  } catch (err) {
+    log.warn('input history not saved', { file: HIST, error: (err as Error).message });
+  }
 };
 const loadHistory = (): string[] => {
   if (!existsSync(HIST)) return [];
@@ -272,7 +277,10 @@ const Chat: React.FC<ChatProps> = ({
 
   const toggleStyle = (target?: 'box' | 'line') => {
     const next = target || (inputStyle === 'box' ? 'line' : 'box');
-    setInputStyle(next); saveUserConfig({ inputStyle: next }); show(`Input style: ${next}`, 'info', 1500);
+    setInputStyle(next);
+    const saved = saveUserConfig({ inputStyle: next });
+    if (saved) show(`Input style: ${next}`, 'info', 1500);
+    else show(`Input style: ${next} for this session (config not saved)`, 'warning', 4000);
   };
 
   const toggleTurnCollapse = (mi: number) =>
@@ -781,12 +789,14 @@ const Chat: React.FC<ChatProps> = ({
       case '/system': {
         if (arg === 'reset' || arg === 'clear') {
           transcriptSystemPromptRef.current = null;
-          saveUserConfig({ systemPrompt: undefined });
-          show('System prompt reset to default', 'info', 2000);
+          const saved = saveUserConfig({ systemPrompt: undefined });
+          if (saved) show('System prompt reset to default', 'info', 2000);
+          else show('System prompt reset for this session (config not saved)', 'warning', 4000);
         } else if (arg) {
           transcriptSystemPromptRef.current = arg;
-          saveUserConfig({ systemPrompt: arg });
-          show('System prompt set for next transcript run', 'info', 2000);
+          const saved = saveUserConfig({ systemPrompt: arg });
+          if (saved) show('System prompt set for next transcript run', 'info', 2000);
+          else show('System prompt set for this session (config not saved)', 'warning', 4000);
         } else {
           const sp = transcriptSystemPromptRef.current ?? '(default)';
           show(`System prompt: ${sp}`, 'info', 3500);
