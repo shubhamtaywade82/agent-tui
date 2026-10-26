@@ -22,6 +22,13 @@ export interface RouteDeps {
    * for production.
    */
   taskPlanner?: TaskPlanner;
+  /**
+   * Phase 4 — retrieval mode reported on GET /v1/healthz so operators
+   * can see whether hybrid (vector + FTS) or keyword-only search is
+   * active. main.ts sets this based on whether the OllamaEmbedder
+   * health check passed.
+   */
+  retrievalMode?: 'hybrid' | 'keyword-only';
 }
 
 // ── Task-ledger request schemas ────────────────────────────────────────────
@@ -267,8 +274,13 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     });
   });
 
-  // GET /v1/healthz — liveness probe
-  app.get('/v1/healthz', async () => ({ ok: true, ts: new Date().toISOString() }));
+  // GET /v1/healthz — liveness probe. Reports retrieval mode so operators
+  // can see whether hybrid (vector + FTS) or keyword-only search is active.
+  app.get('/v1/healthz', async () => ({
+    ok: true,
+    ts: new Date().toISOString(),
+    retrievalMode: deps.retrievalMode ?? 'keyword-only',
+  }));
 
   // ── Task-ledger routes (Phase 1) ───────────────────────────────────────────
   //

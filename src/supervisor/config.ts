@@ -100,6 +100,54 @@ const schema = z.object({
     rerank: z.boolean().default(true),
     minScore: z.coerce.number().min(0).max(1).default(0.35),
   }),
+  /**
+   * Phase 4 — embedding provider for hybrid retrieval. When
+   * `embedding.model` is set, the OllamaEmbedder calls Ollama's
+   * `/api/embed` endpoint to produce query embeddings at retrieve time
+   * and chunk embeddings at ingest time. When unset, the retriever
+   * silently degrades to keyword-only search (the pre-Phase-4
+   * behaviour) and `GET /v1/healthz` reports `retrievalMode: 'keyword-only'`.
+   *
+   * The vector dimension MUST match the dimension the chunks table
+   * was created with. The retriever validates this on init() and
+   * refuses to start if they disagree — silently storing 1024-dim
+   * vectors in a 768-dim column would corrupt the index.
+   */
+  embedding: z.object({
+    /**
+     * Ollama embedding model name, e.g. `nomic-embed-text`,
+     * `bge-m3`, `mxbai-embed-large`. MUST be a model the configured
+     * Ollama instance has pulled. Defaults to `nomic-embed-text`
+     * (768-dim, matches the existing chunks schema).
+     */
+    model: z.string().default('nomic-embed-text'),
+    /**
+     * Vector dimension the embedder produces. MUST match the
+     * `vector(N)` declaration in the chunks table DDL. Default 768
+     * (nomic-embed-text). Override for bge-m3 (1024) or
+     * mxbai-embed-large (1024). The retriever validates this on
+     * init() against the live schema and refuses to start on mismatch.
+     */
+    dimension: z.coerce.number().int().positive().default(768),
+    /**
+     * Max texts per /api/embed call. Ollama batches embeddings
+     * server-side; larger batches are more efficient but use more
+     * VRAM. Default 32.
+     */
+    batchSize: z.coerce.number().int().positive().default(32),
+    /**
+     * Truncate inputs longer than the model's max context. Default
+     * true — without this, an over-long input returns an error
+     * instead of a truncated embedding.
+     */
+    truncate: z.boolean().default(true),
+    /**
+     * Stable version label stored on each chunk at ingest time. When
+     * the embedder changes (model swap, dimension change), bump this
+     * so old chunks can be identified and re-indexed.
+     */
+    modelVersion: z.string().default('nomic-embed-text-v1'),
+  }),
   memory: z.object({
     episodicTtlDays: z.coerce.number().int().positive().default(30),
     importanceThreshold: z.coerce.number().min(0).max(1).default(0.6),
@@ -261,6 +309,13 @@ function loadConfig(): SupervisorConfig {
       topK: process.env.RETRIEVAL_TOP_K,
       rerank: process.env.RETRIEVAL_RERANK,
       minScore: process.env.RETRIEVAL_MIN_SCORE,
+    },
+    embedding: {
+      model: process.env.EMBEDDING_MODEL,
+      dimension: process.env.EMBEDDING_DIMENSION,
+      batchSize: process.env.EMBEDDING_BATCH_SIZE,
+      truncate: process.env.EMBEDDING_TRUNCATE === 'false' ? false : undefined,
+      modelVersion: process.env.EMBEDDING_MODEL_VERSION,
     },
     memory: {
       episodicTtlDays: process.env.MEMORY_EPISODIC_TTL_DAYS,

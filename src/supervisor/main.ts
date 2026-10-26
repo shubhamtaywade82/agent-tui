@@ -21,6 +21,7 @@ import { MemoryService } from './context/memory.js';
 import { HybridRetriever } from './context/retrieval.js';
 import { Supervisor } from './engine.js';
 import type { Backend } from './inference/backend.js';
+import { OllamaEmbedder } from './inference/embedder.js';
 import { MockBackend } from './inference/mock.js';
 import { ModelPool } from './inference/model-pool.js';
 import { OllamaBackend } from './inference/ollama.js';
@@ -107,11 +108,36 @@ async function main() {
   const store = new PgStateStore(supervisorConfig.database.url);
   await store.init();
 
-  const retriever = new HybridRetriever();
+  const retriever = new HybridRetriever({
+    vectorDimension: supervisorConfig.embedding.dimension,
+  });
   try {
     await retriever.init();
   } catch (e) {
     logger.warn({ err: e }, 'retriever init failed — continuing without retrieval');
+  }
+
+  // Phase 4 — embedding provider. Only constructed when the inference
+  // backend is Ollama (the vLLM/mock paths don't have an embed endpoint).
+  // When omitted, the retriever silently degrades to keyword-only search
+  // — the pre-Phase-4 behaviour. The health endpoint reports the mode.
+  let embedder: OllamaEmbedder | undefined;
+  if (supervisorConfig.inference.backend === 'ollama') {
+    embedder = new OllamaEmbedder({ config: supervisorConfig });
+    const h = await embedder.health();
+    if (h.ok) {
+      logger.info(
+        { model: embedder.modelName, dimension: h.dimension, latencyMs: h.latencyMs },
+        'embedding provider healthy — hybrid retrieval active',
+      );
+    } else {
+      logger.warn(
+        { model: embedder.modelName, latencyMs: h.latencyMs },
+        'embedding provider health check failed — retriever will degrade to keyword-only search. ' +
+          `Pull the model with \`ollama pull ${embedder.modelName}\` or set EMBEDDING_MODEL to a model that is pulled.`,
+      );
+      embedder = undefined;
+    }
   }
 
   const memory = new MemoryService();
@@ -161,12 +187,17 @@ async function main() {
   // permissions, filter validation, top_k limits, query length, rate limits,
   // memory type allowlist, content length, duplicate detection, and PII/secret
   // scanning (§12).
+  // Phase 4 — when an embedder is wired (Ollama backend), the
+  // retrieve_knowledge tool calls embedAndRetrieve → vector + FTS.
+  // When undefined, the tool falls back to FTS-only and the health
+  // endpoint reports retrievalMode: 'keyword-only'.
+  const embedFn = embedder ? (text: string) => embedder.embed(text) : undefined;
   registerRetrievalAndMemoryTools(supervisor.registry, {
     retriever,
     memory,
     permissions,
-    embedFn: undefined, // wire a real embedder here in production
-    embeddingModelVersion: 'default-v1',
+    embedFn,
+    embeddingModelVersion: embedder ? embedder.modelVersionLabel : 'default-v1',
   });
 
   // Phase 1 — durable task ledger. The same Postgres database backs the
@@ -209,7 +240,14 @@ async function main() {
   void _cache;
   // (Skipped here to avoid pulling more deps; see docs/supervisor/api.md for examples.)
 
-  const app = await startServer({ supervisor, store, taskLedger, taskOrchestrator, taskPlanner });
+  const app = await startServer({
+    supervisor,
+    store,
+    taskLedger,
+    taskOrchestrator,
+    taskPlanner,
+    retrievalMode: embedder ? 'hybrid' : 'keyword-only',
+  });
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'shutting down');
