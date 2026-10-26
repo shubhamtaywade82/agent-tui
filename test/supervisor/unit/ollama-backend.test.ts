@@ -108,12 +108,66 @@ describe('OllamaBackend.invoke', () => {
     const { fetch, calls } = recordingFetch(() => chatResponse('hello'));
     const backend = new OllamaBackend(makeConfig(), fetch);
 
-    const r = await backend.invoke({ model: 'm', prompt: 'p', maxTokens: 2048, temperature: 0.7 });
+    const r = await backend.invoke({
+      model: 'm',
+      prompt: 'p',
+      contextTokens: 2048,
+      maxOutputTokens: 256,
+      temperature: 0.7,
+    });
 
     expect(calls[0].body?.format).toBeUndefined();
-    expect(calls[0].body?.options).toMatchObject({ temperature: 0.7, num_ctx: 2048 });
+    // num_ctx is the context-window hint, num_predict is the generation cap.
+    // These are independent knobs and must NOT be derived from each other.
+    expect(calls[0].body?.options).toMatchObject({
+      temperature: 0.7,
+      num_ctx: 2048,
+      num_predict: 256,
+    });
     expect(r.parsed).toBe(false);
     expect(r.json).toBeUndefined();
+  });
+
+  it('defaults num_ctx to config.context.budgetTokens when no hint is provided', async () => {
+    const { fetch, calls } = recordingFetch(() => chatResponse('hello'));
+    const backend = new OllamaBackend(makeConfig(), fetch);
+
+    await backend.invoke({ model: 'm', prompt: 'p' });
+
+    expect(calls[0].body?.options).toMatchObject({ num_ctx: 8192 });
+    // num_predict must be omitted so the Modelfile default applies — the
+    // previous code forwarded `maxTokens` as `num_ctx`, which silently
+    // truncated the router model's context window to 512 tokens.
+    expect(calls[0].body?.options).not.toHaveProperty('num_predict');
+  });
+
+  it('forwards maxOutputTokens as num_predict and never as num_ctx', async () => {
+    const { fetch, calls } = recordingFetch(() => chatResponse('ok'));
+    const backend = new OllamaBackend(makeConfig(), fetch);
+
+    await backend.invoke({ model: 'm', prompt: 'p', maxOutputTokens: 100 });
+
+    const options = calls[0].body?.options as Record<string, unknown>;
+    expect(options.num_predict).toBe(100);
+    // Critical regression guard: a generation cap must NEVER shrink the
+    // context window. The router model's Modelfile ships with a much larger
+    // num_ctx; conflating the two silently broke routing.
+    expect(options.num_ctx).toBe(8192);
+  });
+
+  it('treats legacy `maxTokens` as a back-compat alias for contextTokens (num_ctx)', async () => {
+    // Older callers (e.g. the previous router classifier) passed `maxTokens: 512`
+    // intending to request a small JSON output. The legacy field is now an
+    // alias for `contextTokens` (num_ctx), preserving the previous wire shape.
+    // New callers should pass `maxOutputTokens` to cap generation length.
+    const { fetch, calls } = recordingFetch(() => chatResponse('ok'));
+    const backend = new OllamaBackend(makeConfig(), fetch);
+
+    await backend.invoke({ model: 'm', prompt: 'p', maxTokens: 2048 });
+
+    const options = calls[0].body?.options as Record<string, unknown>;
+    expect(options.num_ctx).toBe(2048);
+    expect(options).not.toHaveProperty('num_predict');
   });
 
   it('sends format requests to a docker-compose service-name host (regression: SDK 1.20.0 refused these)', async () => {

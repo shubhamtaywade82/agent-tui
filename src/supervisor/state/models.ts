@@ -168,6 +168,14 @@ export const AgentState = z.object({
   // I3: query is immutable — the original user input must not be mutated
   query: z.string().readonly(),
   context: z.string().optional(),
+  /**
+   * Filesystem paths the caller has authorised this run to touch. Forwarded
+   * to the tool validator on every tool-call step so a path-bearing tool
+   * argument outside this scope is rejected before execution. Set at run
+   * creation by `Supervisor.run({ allowedPaths })` and propagated to the
+   * repair loop's `ctx` as well.
+   */
+  allowedPaths: z.array(z.string()).default([]),
   retrievedEvidence: z.array(z.string()).default([]),
   toolPayload: z.record(z.string(), z.unknown()).optional(),
   executionResult: z.string().optional(),
@@ -177,6 +185,20 @@ export const AgentState = z.object({
   steps: z.array(StepRecord).default([]),
   toolCalls: z.array(ToolCallRecord).default([]),
   artifacts: z.array(z.string()).default([]),
+  /**
+   * Validation outcome produced by `stepValidateOutput`. Stored on the
+   * state so the run loop can decide between COMPLETED and FAILED, and so
+   * an operator replaying the event stream can see exactly which
+   * validators ran and what they concluded. `undefined` until the
+   * VALIDATING state is reached.
+   */
+  validationOutcome: z
+    .object({
+      ok: z.boolean(),
+      reasons: z.array(z.string()).default([]),
+      validators: z.array(z.string()).default([]),
+    })
+    .optional(),
   updatedAt: z.string().datetime(),
 });
 export type AgentState = z.infer<typeof AgentState>;
@@ -203,6 +225,7 @@ export function newAgentState(
     steps: [],
     toolCalls: [],
     artifacts: [],
+    allowedPaths: [],
     createdAt: now,
     updatedAt: now,
   });

@@ -35,16 +35,27 @@ export class OllamaBackend implements Backend {
     const thinkMode = req.thinkMode ?? this.config.inference.defaultThinkMode;
     const temperature = req.temperature ?? 0.1;
 
+    // Resolve context-window hint. `contextTokens` is the explicit knob; the
+    // legacy `maxTokens` field is treated as a back-compat alias for it
+    // (older callers used `maxTokens: 512` to mean "shrink the context window
+    // for a small JSON output" — that was the bug we are correcting).
+    const contextTokens = req.contextTokens ?? req.maxTokens ?? this.config.context.budgetTokens;
+
+    // `num_predict` is the Ollama generation-length cap. Only set it when the
+    // caller explicitly asked for one — otherwise leave it unset so the
+    // model's own Modelfile default (or Ollama's built-in) applies.
+    const options: Record<string, unknown> = { temperature, num_ctx: contextTokens };
+    if (req.maxOutputTokens !== undefined) {
+      options.num_predict = req.maxOutputTokens;
+    }
+
     // `stream: false` selects the non-streaming overload so the response is a
     // plain ChatResponse rather than an OllamaStream.
     const response = await this.client.chat({
       model: req.model,
       messages: [{ role: 'user', content: req.prompt }],
       format: req.formatJson ? 'json' : undefined,
-      options: {
-        temperature,
-        num_ctx: req.maxTokens ?? this.config.context.budgetTokens,
-      },
+      options,
       think: thinkMode === 'think',
       stream: false,
       timeoutMs: req.timeoutMs ?? DEFAULT_TIMEOUT_MS,

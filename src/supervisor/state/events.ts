@@ -67,7 +67,13 @@ export type DomainEvent =
       runId: string;
       payload: {
         tool: string;
-        status: 'SUCCESS' | 'FAILED' | 'TIMEOUT' | 'DENIED';
+        /**
+         * `SIMULATED` is emitted only when a tool was validated but no
+         * executor was available — neither a registered `execute` hook nor
+         * a usable sandbox command. It must NEVER be confused with
+         * `SUCCESS`, which means a real side effect actually happened.
+         */
+        status: 'SUCCESS' | 'FAILED' | 'TIMEOUT' | 'DENIED' | 'SIMULATED';
         resultSummary?: string;
       };
       occurredAt: string;
@@ -111,7 +117,20 @@ export type DomainEvent =
   | {
       type: 'run_completed';
       runId: string;
-      payload: { finalResponsePreview: string };
+      payload: {
+        finalResponsePreview: string;
+        /**
+         * Honest terminal outcome. `SUCCEEDED` requires validation to pass;
+         * `FAILED` is emitted when any validator rejected the output, when a
+         * tool execution produced an ERROR, or when the repair loop
+         * exhausted. `SIMULATED` is emitted when the run completed with a
+         * `SIMULATED_SUCCESS` executionResult (no real side effect).
+         * Previously the event was published unconditionally with no
+         * outcome field, so a downstream consumer could not distinguish a
+         * validated success from a silently-failed run.
+         */
+        outcome: 'SUCCEEDED' | 'FAILED' | 'SIMULATED';
+      };
       occurredAt: string;
     };
 

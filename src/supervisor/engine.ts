@@ -33,7 +33,7 @@ import { logger } from './observability/logger.js';
 import { withSpan, zodParseFailureCounter } from './observability/telemetry.js';
 import { RouterClassifier } from './router/classifier.js';
 import { ComplexityScorer } from './router/complexity.js';
-import { ModelRouter } from './router/router.js';
+import { type ModelChoice, ModelRouter } from './router/router.js';
 import { PermissionService } from './security/permissions.js';
 import { SecretResolver } from './security/secrets.js';
 import { type DomainEvent, EventBus } from './state/events.js';
@@ -98,6 +98,14 @@ export interface SupervisorDeps {
   patchWorkflow?: PatchWorkflow;
   permissions?: PermissionService;
   secrets?: SecretResolver;
+  /**
+   * Stronger-model backend used when the router decides to escalate (§13.1).
+   * When omitted, an escalation choice fails loudly instead of silently
+   * degrading to the local model — the previous behaviour made the
+   * `model_escalated` event a lie (the fallback model was never actually
+   * invoked).
+   */
+  fallback?: Backend;
 }
 
 export class Supervisor {
@@ -119,6 +127,14 @@ export class Supervisor {
   // Keyed by runId so concurrent runs don't collide.
   private readonly runEvidence = new Map<string, RetrievalResult[]>();
   private readonly runMemory = new Map<string, MemoryRecord[]>();
+  /**
+   * Per-run model choice produced by `stepPlan`. Stored transiently so the
+   * execute step knows whether to invoke the local sub-agent model or the
+   * configured fallback. The router's `ModelChoice.escalate` was previously
+   * used only to publish a `model_escalated` event — the fallback model was
+   * never actually invoked, making escalation a no-op.
+   */
+  private readonly runModelChoice = new Map<string, ModelChoice>();
 
   constructor(private readonly deps: SupervisorDeps) {
     this.permissions = deps.permissions ?? new PermissionService();
@@ -159,6 +175,14 @@ export class Supervisor {
       projectId: params.projectId,
     });
     if (params.context) state.context = params.context;
+    // Persist the caller-authorised filesystem scope so stepExecuteTool can
+    // forward it to the validator (and the repair loop) on every tool-call
+    // attempt. Without this, path-bearing tool arguments are checked against
+    // an empty scope and `allowedPaths` from the API request is silently
+    // dropped on the floor.
+    if (params.allowedPaths && params.allowedPaths.length > 0) {
+      state.allowedPaths = [...params.allowedPaths];
+    }
     await this.deps.store.saveRun(state);
     await this.bus.publish({
       type: 'run_created',
@@ -193,8 +217,10 @@ export class Supervisor {
       await this.machine.transition(state, 'VALIDATING', 'validate');
       await this.stepValidateOutput(state);
 
-      // 6. §8 Checkpoint — persist progress for crash recovery
-      if (this.deps.memory) {
+      // 6. §8 Checkpoint — persist progress for crash recovery. Only when
+      // validation passed; a failed run does not get a recovery checkpoint
+      // (it is not a positive example to resume from).
+      if (state.validationOutcome?.ok && this.deps.memory) {
         try {
           await this.deps.memory.createCheckpoint({
             runId: state.runId,
@@ -213,36 +239,61 @@ export class Supervisor {
         }
       }
 
-      // 7. FINALIZE
-      await this.machine.transition(state, 'COMPLETED', 'ok');
-      state.finalResponse = state.executionResult ?? '(no output)';
-      await this.bus.publish({
-        type: 'run_completed',
-        runId: state.runId,
-        payload: { finalResponsePreview: state.finalResponse.slice(0, 200) },
-        occurredAt: new Date().toISOString(),
-      });
-      this.metrics.recordRun('succeeded', Date.now() - startedAt, { prompt: 0, completion: 0 });
+      // 7. FINALIZE — gate the terminal transition on the validation outcome.
+      // A run whose validation failed must NOT transition to COMPLETED. The
+      // previous code unconditionally moved to COMPLETED, so a failed tool
+      // execution, an exhausted repair loop, or an analyst that declared
+      // insufficient evidence all masqueraded as successful runs.
+      const simulated = state.executionResult?.startsWith('SIMULATED_SUCCESS') ?? false;
+      if (!state.validationOutcome?.ok) {
+        await this.machine.transition(state, 'FAILED', 'validation failed');
+        state.finalResponse = state.executionResult ?? '(no output)';
+        await this.bus.publish({
+          type: 'run_completed',
+          runId: state.runId,
+          payload: {
+            finalResponsePreview: state.finalResponse.slice(0, 200),
+            outcome: 'FAILED',
+          },
+          occurredAt: new Date().toISOString(),
+        });
+        this.metrics.recordRun('failed', Date.now() - startedAt, { prompt: 0, completion: 0 });
+      } else {
+        await this.machine.transition(state, 'COMPLETED', 'ok');
+        state.finalResponse = state.executionResult ?? '(no output)';
+        await this.bus.publish({
+          type: 'run_completed',
+          runId: state.runId,
+          payload: {
+            finalResponsePreview: state.finalResponse.slice(0, 200),
+            outcome: simulated ? 'SIMULATED' : 'SUCCEEDED',
+          },
+          occurredAt: new Date().toISOString(),
+        });
+        this.metrics.recordRun('succeeded', Date.now() - startedAt, { prompt: 0, completion: 0 });
 
-      // 8. §10 Consolidation — write an episodic memory of this run
-      if (this.deps.memory && state.projectId) {
-        try {
-          await this.deps.memory.consolidateRun({
-            runId: state.runId,
-            namespace: `project:${state.projectId}`,
-            objective: state.objective,
-            completedSteps: state.steps
-              .filter((s) => s.status === 'SUCCEEDED')
-              .map((s) => s.stepType),
-            failedAttempts: state.steps.filter((s) => s.status === 'FAILED').length,
-            constraints: [],
-            summarizeFn: async (input) =>
-              `Run ${state.runId} (${input.objective.slice(0, 80)}): completed ${input.completedSteps.length} steps, ${input.failedAttempts} failures. Final: ${state.finalResponse?.slice(0, 120) ?? '(none)'}`,
-          });
-        } catch (e) {
-          logger.warn({ err: e }, 'memory consolidation failed');
+        // 8. §10 Consolidation — write an episodic memory of a successful
+        // run. Failed runs do not consolidate (their finalResponse is not a
+        // positive example worth remembering).
+        if (this.deps.memory && state.projectId) {
+          try {
+            await this.deps.memory.consolidateRun({
+              runId: state.runId,
+              namespace: `project:${state.projectId}`,
+              objective: state.objective,
+              completedSteps: state.steps
+                .filter((s) => s.status === 'SUCCEEDED')
+                .map((s) => s.stepType),
+              failedAttempts: state.steps.filter((s) => s.status === 'FAILED').length,
+              constraints: [],
+              summarizeFn: async (input) =>
+                `Run ${state.runId} (${input.objective.slice(0, 80)}): completed ${input.completedSteps.length} steps, ${input.failedAttempts} failures. Final: ${state.finalResponse?.slice(0, 120) ?? '(none)'}`,
+            });
+          } catch (e) {
+            logger.warn({ err: e }, 'memory consolidation failed');
+          }
         }
-      }
+      } // end SUCCEEDED else-branch
     } catch (e) {
       const err = e as Error;
       state.errorTrace = [...state.errorTrace, err.message];
@@ -255,8 +306,35 @@ export class Supervisor {
       // Clean up transient per-run maps to avoid memory growth
       this.runEvidence.delete(state.runId);
       this.runMemory.delete(state.runId);
+      this.runModelChoice.delete(state.runId);
     }
     return state;
+  }
+
+  /**
+   * Resolve which backend + model to invoke for this run. When the router
+   * chose to escalate (§13.1) AND a fallback backend is configured, route
+   * to the fallback with the router's `fallbackModel`. When the router
+   * chose to escalate but NO fallback is configured, throw — the previous
+   * behaviour silently invoked the local sub-agent model, which made the
+   * `model_escalated` event a lie and defeated the entire point of having
+   * an escalation pathway. The caller catches and records a FAILED run.
+   */
+  private selectBackend(
+    state: AgentState,
+    defaultLocalModel: string,
+  ): { backend: Backend; model: string } {
+    const choice = this.runModelChoice.get(state.runId);
+    if (choice && choice.kind === 'escalate') {
+      if (!this.deps.fallback) {
+        throw new Error(
+          `router escalated to ${choice.fallbackModel} (${choice.reason}) but no fallback backend is configured — ` +
+            `set ESCALATION_FALLBACK_BASE_URL and ESCALATION_FALLBACK_API_KEY, or relax the escalation triggers`,
+        );
+      }
+      return { backend: this.deps.fallback, model: choice.fallbackModel };
+    }
+    return { backend: this.deps.backend, model: defaultLocalModel };
   }
 
   // ─── Steps ──────────────────────────────────────────────────────────────
@@ -283,6 +361,9 @@ export class Supervisor {
       const complexity = this.complexity.score(state.query, state.intent ?? undefined);
       const choice = this.router.decide(state.intent ?? 'UNKNOWN', complexity);
       state.thinkMode = choice.kind === 'local' ? choice.thinkMode : 'think';
+      // Stash the choice so the execute step can act on it. Previously the
+      // choice was computed and then discarded — only an event was published.
+      this.runModelChoice.set(state.runId, choice);
 
       await this.bus.publish({
         type: 'plan_generated',
@@ -370,8 +451,9 @@ export class Supervisor {
   private async stepExecuteTool(state: AgentState): Promise<void> {
     await withSpan('supervisor.execute.tool', async () => {
       const prompt = `Determine the tool and arguments for:\n${state.query}\n\nAvailable tools:\n${this.registry.renderForPrompt()}`;
-      const r = await this.deps.backend.invoke({
-        model: supervisorConfig.inference.toolModel,
+      const { backend, model } = this.selectBackend(state, supervisorConfig.inference.toolModel);
+      const r = await backend.invoke({
+        model,
         prompt,
         formatJson: true,
         thinkMode: state.thinkMode,
@@ -380,7 +462,7 @@ export class Supervisor {
         type: 'model_invoked',
         runId: state.runId,
         payload: {
-          model: supervisorConfig.inference.toolModel,
+          model,
           thinkMode: state.thinkMode,
           latencyMs: r.latencyMs,
           tokens: r.tokens.prompt + r.tokens.completion,
@@ -433,12 +515,17 @@ export class Supervisor {
       });
 
       const tool = this.registry.get(toolName);
+      const validationCtx = {
+        userId: state.userId,
+        projectId: state.projectId,
+        // Forward the caller-authorised filesystem scope so the validator can
+        // reject path arguments outside the run's approved scope. Previously
+        // this was hardcoded to `undefined`, which meant `allowedPaths` from
+        // the API request was enforced nowhere on the tool-call path.
+        allowedPaths: state.allowedPaths,
+      };
       let validation = tool
-        ? this.validator.validateWithTool(tool, rawArgs, {
-            userId: state.userId,
-            projectId: state.projectId,
-            allowedPaths: undefined,
-          })
+        ? this.validator.validateWithTool(tool, rawArgs, validationCtx)
         : {
             ok: false,
             errors: [`unknown tool: ${toolName}`],
@@ -455,7 +542,13 @@ export class Supervisor {
           toolName,
           originalPrompt: state.query,
           originalRawOutput: r.content,
-          ctx: { userId: state.userId, projectId: state.projectId },
+          ctx: {
+            userId: state.userId,
+            projectId: state.projectId,
+            // Propagate the filesystem scope to the repair loop so repaired
+            // arguments are still checked against the run's authorised scope.
+            allowedPaths: state.allowedPaths,
+          },
         });
         attempts = repair.attempts;
         if (repair.ok && repair.finalArgs) {
@@ -470,10 +563,17 @@ export class Supervisor {
         } else {
           this.metrics.recordToolCall('invalid');
           state.executionResult = `ERROR: tool call invalid after ${attempts} repair attempts`;
-          state.errorTrace = [...state.errorTrace, `tool ${toolName} validation failed`];
+          // Surface the validator's specific failure reasons so a caller (or
+          // an operator reading the run's audit trail) can tell whether the
+          // failure was a schema mismatch, a missing permission, a path
+          // outside the authorised scope, or something else. The previous
+          // generic `tool {name} validation failed` message made every
+          // failure look identical.
+          const detail = validation.errors.length > 0 ? validation.errors.join('; ') : 'no detail';
+          state.errorTrace = [...state.errorTrace, `tool ${toolName} validation failed: ${detail}`];
           this.recordStep(state, 'EXECUTE_TOOL', {
             status: 'FAILED',
-            error: 'repair loop exhausted',
+            error: `repair loop exhausted: ${detail}`,
             toolName,
             toolArguments: finalArgs,
           });
@@ -510,24 +610,47 @@ export class Supervisor {
         state.executionResult = sb.ok ? sb.stdout : `ERROR (exit ${sb.exitCode}): ${sb.stderr}`;
         this.metrics.recordToolCall(sb.ok ? 'executed' : 'denied');
       } else {
-        state.executionResult = `SIMULATED_SUCCESS: tool ${toolName} validated with args ${JSON.stringify(finalArgs)}`;
-        this.metrics.recordToolCall('executed');
+        // No executor available — neither a registered `execute` hook on the
+        // tool definition, nor a usable sandbox command (no `command` arg,
+        // or no sandbox configured). The previous code recorded this as a
+        // `SUCCEEDED` step with `recordToolCall('executed')`, which made a
+        // never-executed tool call indistinguishable from a real one in
+        // metrics, event stream, and the step audit trail.
+        //
+        // Honest contract: the tool was validated but NOT executed. The
+        // executionResult keeps the `SIMULATED_SUCCESS` prefix so existing
+        // consumers (golden evals) can still recognise the path, but the
+        // metric counter, event payload, and step status now reflect
+        // `SIMULATED` / `SKIPPED` — never `executed` / `SUCCEEDED`.
+        state.executionResult = `SIMULATED_SUCCESS: tool ${toolName} validated with args ${JSON.stringify(finalArgs)} (no executor available)`;
+        this.metrics.recordToolCall('simulated');
       }
+
+      // Determine the honest execution outcome for downstream event/step
+      // recording. A simulated call is NOT a success — it's a skipped
+      // execution with a clear marker in the result string.
+      const simulated = state.executionResult.startsWith('SIMULATED_SUCCESS');
+      const failed = state.executionResult.startsWith('ERROR');
+      const execStatus: 'SUCCESS' | 'FAILED' | 'SIMULATED' = simulated
+        ? 'SIMULATED'
+        : failed
+          ? 'FAILED'
+          : 'SUCCESS';
 
       await this.bus.publish({
         type: 'tool_executed',
         runId: state.runId,
         payload: {
           tool: toolName,
-          status: state.executionResult.startsWith('ERROR') ? 'FAILED' : 'SUCCESS',
+          status: execStatus,
           resultSummary: state.executionResult.slice(0, 200),
         },
         occurredAt: new Date().toISOString(),
       });
 
       this.recordStep(state, 'EXECUTE_TOOL', {
-        status: state.executionResult.startsWith('ERROR') ? 'FAILED' : 'SUCCEEDED',
-        output: { tool: toolName, args: finalArgs, attempts },
+        status: simulated ? 'SKIPPED' : failed ? 'FAILED' : 'SUCCEEDED',
+        output: { tool: toolName, args: finalArgs, attempts, executed: !simulated },
         toolName,
         toolArguments: finalArgs,
         executionResult: state.executionResult,
@@ -583,18 +706,22 @@ export class Supervisor {
         occurredAt: new Date().toISOString(),
       });
 
-      const r = await this.deps.backend.invoke({
-        model: supervisorConfig.inference.analystModel,
+      const { backend, model } = this.selectBackend(state, supervisorConfig.inference.analystModel);
+      const r = await backend.invoke({
+        model,
         prompt: built.prompt,
         thinkMode: state.thinkMode,
-        maxTokens: supervisorConfig.context.budgetTokens,
+        // `maxTokens: budgetTokens` previously meant `num_ctx` on Ollama —
+        // redundant with the backend default. Leaving it unset lets the
+        // Modelfile's generation defaults apply and the configured
+        // `context.budgetTokens` drive the context window.
       });
       state.executionResult = r.content;
       await this.bus.publish({
         type: 'model_invoked',
         runId: state.runId,
         payload: {
-          model: supervisorConfig.inference.analystModel,
+          model,
           thinkMode: state.thinkMode,
           latencyMs: r.latencyMs,
           tokens: r.tokens.prompt + r.tokens.completion,
@@ -603,53 +730,152 @@ export class Supervisor {
       });
       this.recordStep(state, 'INVOKE_MODEL', {
         status: 'SUCCEEDED',
-        output: { model: supervisorConfig.inference.analystModel, tokens: r.tokens },
-        modelName: supervisorConfig.inference.analystModel,
+        output: { model, tokens: r.tokens },
+        modelName: model,
       });
     });
   }
 
   private async stepExecuteSummarizer(state: AgentState): Promise<void> {
     await withSpan('supervisor.execute.summarizer', async () => {
-      const r = await this.deps.backend.invoke({
-        model: supervisorConfig.inference.summarizerModel,
+      const { backend, model } = this.selectBackend(
+        state,
+        supervisorConfig.inference.summarizerModel,
+      );
+      const r = await backend.invoke({
+        model,
         prompt: `Summarize the following:\n${state.query}`,
         thinkMode: 'no-think',
       });
       state.executionResult = r.content;
       this.recordStep(state, 'INVOKE_MODEL', {
         status: 'SUCCEEDED',
-        output: { model: supervisorConfig.inference.summarizerModel },
-        modelName: supervisorConfig.inference.summarizerModel,
+        output: { model },
+        modelName: model,
       });
     });
   }
 
   private async stepValidateOutput(state: AgentState): Promise<void> {
     await withSpan('supervisor.validate', async () => {
-      // For now: non-empty output. In production this would run §12.2
-      // validators (lint, typecheck, tests) against any produced artifacts.
+      // §12.2 validators. Previously this step checked ONLY non-emptiness and
+      // did not gate the COMPLETED transition — an empty result recorded a
+      // validation_failed event, but the run still moved to COMPLETED. The
+      // run loop now branches on `state.validationOutcome.ok`.
+      const reasons: string[] = [];
+      const validators: string[] = [];
+
+      // 1. non-empty
+      validators.push('non-empty');
       if (!state.executionResult || state.executionResult.length === 0) {
-        await this.bus.publish({
-          type: 'validation_failed',
-          runId: state.runId,
-          payload: { validator: 'non-empty', error: 'empty execution result' },
-          occurredAt: new Date().toISOString(),
-        });
-        state.errorTrace = [...state.errorTrace, 'validation failed: empty output'];
-      } else {
+        reasons.push('empty execution result');
+      }
+
+      // 2. no-error-prefix — a tool execution that produced `ERROR: …` or a
+      // repair loop that exhausted both surface as ERROR-prefixed strings.
+      // Treating those as validated successes was the original sin: the run
+      // would transition to COMPLETED even though every observable signal
+      // said the action failed.
+      validators.push('no-error-prefix');
+      if (state.executionResult?.startsWith('ERROR')) {
+        reasons.push(`execution result is an ERROR: ${state.executionResult.slice(0, 120)}`);
+      }
+
+      // 3. analyst-schema + citation-grounding — only runs when the analyst
+      // produced output that parses as JSON conforming to the documented
+      // schema. Free-text answers (e.g. the golden eval mocks) skip this
+      // validator so the existing happy path is preserved.
+      if (
+        state.intent === 'GENERAL_QUERY' ||
+        state.intent === 'DATA_EXTRACTION' ||
+        state.intent === 'CODE_REVIEW' ||
+        state.intent === 'UNKNOWN'
+      ) {
+        const candidate = this.tryParseAnalystSchema(state.executionResult);
+        if (candidate) {
+          validators.push('analyst-schema');
+          // Citation grounding — every cited evidence ID must resolve to a
+          // retrieved chunk. This is a no-op when the run retrieved no
+          // evidence (the analyst had nothing to cite against).
+          if (candidate.citations.length > 0) {
+            validators.push('citation-grounding');
+            const known = new Set(
+              state.retrievedEvidence.map((e) => e.replace(/^\[(.+)\].*$/, '$1').trim()),
+            );
+            const ungrounded = candidate.citations.filter((c) => !known.has(c));
+            if (ungrounded.length > 0) {
+              reasons.push(
+                `${ungrounded.length} citation(s) not grounded in retrieved evidence: ${ungrounded.slice(0, 3).join(', ')}`,
+              );
+            }
+          }
+          if (candidate.insufficientEvidence) {
+            // The analyst explicitly declared insufficient evidence. Treat
+            // that as a soft failure — the run completes with a clear marker
+            // in the finalResponse, but the validation outcome is honest
+            // about the insufficiency.
+            reasons.push('analyst declared insufficient_evidence');
+          }
+        }
+      }
+
+      const ok = reasons.length === 0;
+      state.validationOutcome = { ok, reasons, validators };
+
+      if (ok) {
         await this.bus.publish({
           type: 'validation_passed',
           runId: state.runId,
-          payload: { validators: ['non-empty'] },
+          payload: { validators },
           occurredAt: new Date().toISOString(),
         });
+      } else {
+        await this.bus.publish({
+          type: 'validation_failed',
+          runId: state.runId,
+          payload: { validator: validators.join(','), error: reasons.join('; ') },
+          occurredAt: new Date().toISOString(),
+        });
+        state.errorTrace = [...state.errorTrace, `validation failed: ${reasons.join('; ')}`];
       }
+
       this.recordStep(state, 'VALIDATE_OUTPUT', {
-        status: state.executionResult ? 'SUCCEEDED' : 'FAILED',
-        output: { result: state.executionResult?.slice(0, 200) },
+        status: ok ? 'SUCCEEDED' : 'FAILED',
+        output: { result: state.executionResult?.slice(0, 200), validators, reasons },
       });
     });
+  }
+
+  /**
+   * Best-effort parse of the analyst's output against the documented JSON
+   * schema (`{answer, citations, confidence, insufficient_evidence}`).
+   * Returns `null` when the output isn't JSON or doesn't match the schema —
+   * the caller treats that as "free-text answer, skip schema validator".
+   */
+  private tryParseAnalystSchema(raw: string | undefined): {
+    answer: string;
+    citations: string[];
+    confidence: 'high' | 'medium' | 'low';
+    insufficientEvidence: boolean;
+  } | null {
+    if (!raw) return null;
+    try {
+      const j = JSON.parse(raw) as unknown;
+      if (typeof j !== 'object' || j === null) return null;
+      const o = j as Record<string, unknown>;
+      if (typeof o.answer !== 'string') return null;
+      const citations = Array.isArray(o.citations)
+        ? o.citations.filter((c): c is string => typeof c === 'string')
+        : [];
+      const confidence =
+        o.confidence === 'high' || o.confidence === 'medium' || o.confidence === 'low'
+          ? o.confidence
+          : 'medium';
+      const insufficientEvidence = o.insufficient_evidence === true;
+      return { answer: o.answer, citations, confidence, insufficientEvidence };
+    } catch {
+      return null;
+    }
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────────
