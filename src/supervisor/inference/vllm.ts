@@ -30,11 +30,19 @@ export class VllmBackend implements Backend {
 
     // vLLM supports a `chat_template_kwargs` field for toggling think mode
     // when the served model exposes one (e.g. MiniCPM5's `enable_thinking`).
+    //
+    // `max_tokens` (OpenAI/vLLM) is a generation-length cap, NOT a
+    // context-window hint — vLLM derives the context window from the served
+    // model. Forward only the new `maxOutputTokens` field. The legacy
+    // `maxTokens` field is intentionally NOT forwarded here, because every
+    // prior caller that set it (e.g. the router with `maxTokens: 512`) was
+    // doing so to request a small JSON output, not to constrain generation
+    // length.
     const completion = await this.client.chat.completions.create({
       model: req.model,
       messages: [{ role: 'user', content: req.prompt }],
       temperature,
-      max_tokens: req.maxTokens ?? this.config.context.budgetTokens,
+      ...(req.maxOutputTokens !== undefined ? { max_tokens: req.maxOutputTokens } : {}),
       response_format: req.formatJson ? { type: 'json_object' } : undefined,
       // @ts-expect-error - chat_template_kwargs is supported by vLLM but not in the OpenAI SDK types
       chat_template_kwargs: { enable_thinking: thinkMode === 'think' },

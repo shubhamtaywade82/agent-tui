@@ -77,7 +77,8 @@ export class RepairLoop {
         prompt: repairPrompt,
         formatJson: true,
         temperature: 0.0,
-        maxTokens: 1024,
+        // Generation cap for the repaired JSON output (NOT a context-window hint).
+        maxOutputTokens: 1024,
       });
 
       args = this.parseArgs(r.content);

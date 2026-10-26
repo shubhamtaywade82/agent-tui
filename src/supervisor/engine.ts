@@ -587,7 +587,10 @@ export class Supervisor {
         model: supervisorConfig.inference.analystModel,
         prompt: built.prompt,
         thinkMode: state.thinkMode,
-        maxTokens: supervisorConfig.context.budgetTokens,
+        // `maxTokens: budgetTokens` previously meant `num_ctx` on Ollama —
+        // redundant with the backend default. Leaving it unset lets the
+        // Modelfile's generation defaults apply and the configured
+        // `context.budgetTokens` drive the context window.
       });
       state.executionResult = r.content;
       await this.bus.publish({

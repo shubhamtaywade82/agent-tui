@@ -74,7 +74,11 @@ export class RouterClassifier {
       prompt,
       formatJson: true,
       temperature: 0.1,
-      maxTokens: 512,
+      // Cap generation length — the router emits a tiny JSON object. This is
+      // `num_predict` on Ollama (NOT `num_ctx`); the previous field name
+      // `maxTokens` was forwarded as `num_ctx`, which silently truncated the
+      // router model's context window to 512 tokens.
+      maxOutputTokens: 512,
     });
 
     const raw = r.content;

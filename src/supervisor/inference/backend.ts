@@ -23,7 +23,27 @@ export interface InferenceRequest {
   formatJson?: boolean;
   /** Override the global think mode for this single call (§13.3). */
   thinkMode?: 'think' | 'no-think';
-  /** Soft ceiling on context tokens (§8.2). */
+  /**
+   * Context-window size hint (Ollama `num_ctx`). Defaults to
+   * `config.context.budgetTokens`. Set this ONLY when you want to shrink the
+   * context window for a small JSON-output call (e.g. the router). Do NOT use
+   * this to cap generation length — use `maxOutputTokens` for that.
+   */
+  contextTokens?: number;
+  /**
+   * Hard ceiling on the number of tokens the model may *generate*
+   * (Ollama `num_predict`, vLLM/OpenAI `max_tokens`). When omitted, the
+   * backend leaves the generation limit at the model's own default.
+   */
+  maxOutputTokens?: number;
+  /**
+   * @deprecated use `maxOutputTokens` (generation cap) or `contextTokens`
+   * (context-window hint) instead. `maxTokens` was historically forwarded to
+   * Ollama as `num_ctx`, which silently truncated the router model's context
+   * to 512 tokens whenever a caller set `maxTokens: 512` intending to cap
+   * generation. Kept only as a back-compat alias for `contextTokens` so older
+   * callers continue to work; new callers should pass the explicit field.
+   */
   maxTokens?: number;
   /** Low temperature for deterministic routing/classification; higher for prose. */
   temperature?: number;
