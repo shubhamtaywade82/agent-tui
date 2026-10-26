@@ -76,6 +76,29 @@ const schema = z.object({
     episodicTtlDays: z.coerce.number().int().positive().default(30),
     importanceThreshold: z.coerce.number().min(0).max(1).default(0.6),
   }),
+  /**
+   * Phase 3 — auto-decomposition bounds. The TaskPlanner asks the
+   * router variant to emit the initial task graph for a goal; these
+   * bounds keep the model's output deterministic and bounded.
+   */
+  planner: z.object({
+    /** Hard upper bound on tasks emitted per goal. Default 20. */
+    maxTasksPerGoal: z.coerce.number().int().positive().default(20),
+    /**
+     * Hard upper bound on the depth of the dependency graph. A linear
+     * chain of N tasks has depth N. Default 5 — deeper chains
+     * typically indicate over-decomposition and should be split into
+     * sub-goals by the caller.
+     */
+    maxDepth: z.coerce.number().int().positive().default(5),
+    /**
+     * Number of repair attempts when the model emits schema-invalid
+     * output. Default 1 — one retry with the validation errors fed
+     * back, then terminal failure. The planner never silently
+     * accepts malformed output.
+     */
+    maxRepairAttempts: z.coerce.number().int().nonnegative().default(1),
+  }),
   escalation: z.object({
     maxRetries: z.coerce.number().int().nonnegative().default(2),
     fallbackModel: z.string().optional(),
@@ -161,6 +184,11 @@ function loadConfig(): SupervisorConfig {
     memory: {
       episodicTtlDays: process.env.MEMORY_EPISODIC_TTL_DAYS,
       importanceThreshold: process.env.MEMORY_IMPORTANCE_THRESHOLD,
+    },
+    planner: {
+      maxTasksPerGoal: process.env.PLANNER_MAX_TASKS_PER_GOAL,
+      maxDepth: process.env.PLANNER_MAX_DEPTH,
+      maxRepairAttempts: process.env.PLANNER_MAX_REPAIR_ATTEMPTS,
     },
     escalation: {
       maxRetries: process.env.ESCALATION_MAX_RETRIES,

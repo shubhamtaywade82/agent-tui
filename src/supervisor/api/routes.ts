@@ -8,6 +8,7 @@ import type { Supervisor } from '../engine.js';
 import type { StateStore } from '../state/store.js';
 import type { TaskLedger } from '../tasks/ledger.js';
 import type { TaskOrchestrator } from '../tasks/orchestrator.js';
+import type { TaskPlanner } from '../tasks/planner.js';
 import { ApprovalRequest, type MetricsResponse, RunRequest, type RunResponse } from './schemas.js';
 
 export interface RouteDeps {
@@ -15,6 +16,12 @@ export interface RouteDeps {
   store: StateStore;
   taskLedger?: TaskLedger;
   taskOrchestrator?: TaskOrchestrator;
+  /**
+   * Phase 3 — task planner. Optional: when omitted, the `autoPlan`
+   * flag on POST /v1/goals is rejected with 501. Wired in `main.ts`
+   * for production.
+   */
+  taskPlanner?: TaskPlanner;
 }
 
 // ── Task-ledger request schemas ────────────────────────────────────────────
@@ -28,8 +35,9 @@ const CreateGoalRequest = z.object({
   /**
    * Optional initial task graph. Each task becomes a node in the DAG.
    * Dependencies reference indices into this array (forward references
-   * allowed). When omitted, the goal starts empty and tasks are added
-   * via POST /v1/goals/:id/tasks.
+   * forbidden). When omitted AND `autoPlan` is true, the TaskPlanner
+   * emits the initial graph via the router variant under tight schema
+   * control.
    */
   tasks: z
     .array(
@@ -51,6 +59,13 @@ const CreateGoalRequest = z.object({
       }),
     )
     .default([]),
+  /**
+   * Phase 3 — when true and `tasks` is empty, invoke the TaskPlanner
+   * to auto-decompose the objective into an initial task graph. The
+   * planner's output is Zod-validated before any task is created; a
+   * schema-invalid plan fails the request with a 422.
+   */
+  autoPlan: z.boolean().default(false),
 });
 
 const CreateTaskRequest = z.object({
@@ -271,6 +286,46 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     if (!parsed.success) {
       return reply.code(400).send({ error: 'invalid request', issues: parsed.error.issues });
     }
+    // Phase 3 — if the caller did not supply a task graph AND asked for
+    // autoPlan, invoke the TaskPlanner to emit one under tight schema
+    // control. The planner's output is Zod-validated before any task
+    // is created; a schema-invalid plan fails the request with 422.
+    let taskSpecs: Array<{
+      type: z.infer<typeof CreateGoalRequest>['tasks'][number]['type'];
+      title: string;
+      objective: string;
+      dependencies: number[];
+      maxAttempts: number;
+    }> = parsed.data.tasks;
+    let plannedByModel = false;
+    if (parsed.data.tasks.length === 0 && parsed.data.autoPlan) {
+      if (!deps.taskPlanner) {
+        return reply.code(501).send({ error: 'task planner not configured' });
+      }
+      try {
+        const plan = await deps.taskPlanner.plan(parsed.data.objective, {
+          userId: parsed.data.userId,
+          projectId: parsed.data.projectId,
+          acceptanceCriteria: parsed.data.acceptanceCriteria,
+        });
+        taskSpecs = plan.tasks.map((t) => ({
+          type: t.type,
+          title: t.title,
+          objective: t.objective,
+          dependencies: t.dependencies,
+          maxAttempts: t.maxAttempts,
+        }));
+        plannedByModel = true;
+      } catch (e) {
+        const err = e as { errors?: string[]; rawOutputs?: string[]; message?: string };
+        return reply.code(422).send({
+          error: 'task planner failed',
+          message: err.message,
+          errors: err.errors ?? [],
+          rawOutputCount: err.rawOutputs?.length ?? 0,
+        });
+      }
+    }
     const goal = await deps.taskLedger.createGoal({
       title: parsed.data.title,
       objective: parsed.data.objective,
@@ -278,12 +333,12 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       userId: parsed.data.userId,
       projectId: parsed.data.projectId,
     });
-    // Optionally create the initial task graph. Dependencies are expressed
-    // as indices into the input array — convert to taskIds now that the
-    // tasks are being created.
+    // Create the initial task graph (caller-supplied OR planner-emitted).
+    // Dependencies are expressed as indices into the input array —
+    // convert to taskIds now that the tasks are being created.
     const createdTasks: Array<{ taskId: string; sequence: number }> = [];
-    for (let i = 0; i < parsed.data.tasks.length; i++) {
-      const spec = parsed.data.tasks[i];
+    for (let i = 0; i < taskSpecs.length; i++) {
+      const spec = taskSpecs[i];
       if (!spec) continue;
       const depIds = spec.dependencies
         .map((idx) => createdTasks[idx]?.taskId)
@@ -304,6 +359,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       status: goal.status,
       taskCount: createdTasks.length,
       tasks: createdTasks,
+      plannedByModel,
       createdAt: goal.createdAt,
     });
   });
@@ -398,6 +454,65 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       maxAttempts: parsed.data.maxAttempts,
     });
     return reply.code(201).send({ taskId: task.taskId, status: task.status, sequence });
+  });
+
+  // POST /v1/goals/:id/plan — Phase 3: invoke the TaskPlanner against
+  // an existing goal's objective. Useful when a strategy change means
+  // the original task graph needs to be regenerated. The new tasks
+  // are appended to the goal; existing tasks are NOT removed (the
+  // caller can cancel them separately if desired).
+  app.post('/v1/goals/:id/plan', async (req, reply) => {
+    if (!deps.taskLedger || !deps.taskPlanner) {
+      return reply.code(501).send({ error: 'task planner not configured' });
+    }
+    const id = (req.params as { id: string }).id;
+    const goal = await deps.taskLedger.getGoal(id);
+    if (!goal) return reply.code(404).send({ error: 'goal not found' });
+    if (goal.status !== 'ACTIVE') {
+      return reply.code(409).send({
+        error: `goal is ${goal.status} — only ACTIVE goals can be re-planned`,
+      });
+    }
+    try {
+      const plan = await deps.taskPlanner.plan(goal.objective, {
+        userId: goal.userId,
+        projectId: goal.projectId,
+        acceptanceCriteria: goal.acceptanceCriteria,
+      });
+      const existing = await deps.taskLedger.listTasksByGoal(id);
+      const createdTasks: Array<{ taskId: string; sequence: number }> = [];
+      for (let i = 0; i < plan.tasks.length; i++) {
+        const spec = plan.tasks[i];
+        if (!spec) continue;
+        const depIds = spec.dependencies
+          .map((idx) => createdTasks[idx]?.taskId)
+          .filter((x): x is string => typeof x === 'string');
+        const t = await deps.taskLedger.createTask({
+          goalId: id,
+          sequence: existing.length + i,
+          type: spec.type,
+          title: spec.title,
+          objective: spec.objective,
+          dependencies: depIds,
+          maxAttempts: spec.maxAttempts,
+        });
+        createdTasks.push({ taskId: t.taskId, sequence: existing.length + i });
+      }
+      return reply.code(201).send({
+        goalId: id,
+        taskCount: createdTasks.length,
+        tasks: createdTasks,
+        plannedByModel: true,
+      });
+    } catch (e) {
+      const err = e as { errors?: string[]; rawOutputs?: string[]; message?: string };
+      return reply.code(422).send({
+        error: 'task planner failed',
+        message: err.message,
+        errors: err.errors ?? [],
+        rawOutputCount: err.rawOutputs?.length ?? 0,
+      });
+    }
   });
 
   app.get('/v1/goals/:id/tasks', async (req, reply) => {

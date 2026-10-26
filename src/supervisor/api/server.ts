@@ -25,6 +25,7 @@ import { logger } from '../observability/logger.js';
 import type { StateStore } from '../state/store.js';
 import type { TaskLedger } from '../tasks/ledger.js';
 import type { TaskOrchestrator } from '../tasks/orchestrator.js';
+import type { TaskPlanner } from '../tasks/planner.js';
 import { registerRoutes } from './routes.js';
 
 export interface ServerDeps {
@@ -40,6 +41,8 @@ export interface ServerDeps {
    */
   taskLedger?: TaskLedger;
   taskOrchestrator?: TaskOrchestrator;
+  /** Phase 3 — task planner. Optional: when omitted, autoPlan is 501. */
+  taskPlanner?: TaskPlanner;
 }
 
 /** Routes that need no credentials: the liveness probe and the OpenAPI docs. */
@@ -88,6 +91,7 @@ export async function startServer(
   deps: Pick<ServerDeps, 'supervisor' | 'store'> & {
     taskLedger?: TaskLedger;
     taskOrchestrator?: TaskOrchestrator;
+    taskPlanner?: TaskPlanner;
   },
 ) {
   const { host, port, apiKey: configuredKey, corsOrigins } = supervisorConfig.http;
