@@ -12,6 +12,7 @@
  */
 
 import { startServer } from './api/server.js';
+import { CodeChangeExecutor } from './code/code-change-executor.js';
 import { CodeIndexer } from './code/indexer.js';
 import { PatchWorkflow } from './code/patch.js';
 import { type SupervisorConfig, supervisorConfig } from './config.js';
@@ -181,7 +182,20 @@ async function main() {
     logger.info('task ledger: Postgres store initialised');
   }
   const taskLedger = new TaskLedger(taskStore);
-  const taskOrchestrator = new TaskOrchestrator(taskLedger, supervisor, taskStore);
+  // Phase 5 — wire the CodeChangeExecutor and CodeIndexer into the
+  // orchestrator so CODE_CHANGE tasks are applied in an isolated git
+  // worktree and verified before the chain advances.
+  const codeChangeExecutor = new CodeChangeExecutor(
+    backend,
+    supervisorConfig.inference.analystModel,
+    patchWorkflow,
+  );
+  const taskOrchestrator = new TaskOrchestrator(
+    taskLedger,
+    supervisor,
+    taskStore,
+    codeChangeExecutor,
+  );
   // Phase 3 — task planner. Uses the same Backend the engine uses, so
   // the model pool (Phase 2) and the verification gate (PR #31) apply.
   // The planner invokes the router variant directly (not via the engine)

@@ -90,6 +90,12 @@ const AdvanceRequest = z.object({
   maxSteps: z.number().int().positive().max(20).default(1),
   allowedPaths: z.array(z.string()).default([]),
   context: z.string().optional(),
+  /**
+   * Phase 5 — absolute path to the repository root for CODE_CHANGE
+   * tasks. Required when the goal contains a CODE_CHANGE task;
+   * the CodeChangeExecutor needs a real repo to apply patches against.
+   */
+  repoPath: z.string().optional(),
 });
 
 export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Promise<void> {
@@ -554,6 +560,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       userId: goal.userId,
       projectId: goal.projectId,
       context: parsed.data.context,
+      repoPath: parsed.data.repoPath,
     });
     return reply.send({
       steps: result.steps,
