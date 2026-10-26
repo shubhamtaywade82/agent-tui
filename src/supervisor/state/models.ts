@@ -185,6 +185,20 @@ export const AgentState = z.object({
   steps: z.array(StepRecord).default([]),
   toolCalls: z.array(ToolCallRecord).default([]),
   artifacts: z.array(z.string()).default([]),
+  /**
+   * Validation outcome produced by `stepValidateOutput`. Stored on the
+   * state so the run loop can decide between COMPLETED and FAILED, and so
+   * an operator replaying the event stream can see exactly which
+   * validators ran and what they concluded. `undefined` until the
+   * VALIDATING state is reached.
+   */
+  validationOutcome: z
+    .object({
+      ok: z.boolean(),
+      reasons: z.array(z.string()).default([]),
+      validators: z.array(z.string()).default([]),
+    })
+    .optional(),
   updatedAt: z.string().datetime(),
 });
 export type AgentState = z.infer<typeof AgentState>;

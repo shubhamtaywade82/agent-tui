@@ -205,3 +205,134 @@ describe('Supervisor engine — SIMULATED_SUCCESS must not masquerade as SUCCEED
     expect(s.metrics.snapshot().toolCallsExecuted).toBe(1);
   });
 });
+
+describe('Supervisor engine — COMPLETED must be gated on validation outcome', () => {
+  it('transitions to FAILED when the tool execution produced an ERROR result', async () => {
+    const backend = new MockBackend();
+    backend.enqueue('minicpm5-router', () => ({ json: { intent: 'TOOL_EXECUTION' } }));
+    // Model proposes an unknown tool — the engine records
+    // `ERROR: tool call invalid after N repair attempts`.
+    backend.enqueue('minicpm5-toolagent', () => ({
+      json: { tool: 'nonexistent_tool', arguments: {} },
+    }));
+
+    const s = makeSupervisor(backend);
+
+    const events: DomainEvent[] = [];
+    s.bus.subscribe((e) => {
+      if (e.type === 'run_completed') events.push(e);
+    });
+
+    const r = await s.run({ objective: 'Call a tool that does not exist.' });
+
+    // The P0 contract: a failed tool execution must NOT end in COMPLETED.
+    expect(r.status).toBe('FAILED');
+    expect(r.validationOutcome?.ok).toBe(false);
+    expect(r.validationOutcome?.validators).toContain('no-error-prefix');
+    expect(r.errorTrace.some((e) => e.includes('validation failed'))).toBe(true);
+    // The terminal event carries the honest outcome.
+    const runCompleted = events.find((e) => e.type === 'run_completed');
+    expect(runCompleted?.payload).toMatchObject({ outcome: 'FAILED' });
+  });
+
+  it('transitions to FAILED when the analyst declares insufficient_evidence', async () => {
+    const backend = new MockBackend();
+    backend.enqueue('minicpm5-router', () => ({ json: { intent: 'GENERAL_QUERY' } }));
+    backend.enqueue('minicpm5-analyst', () =>
+      JSON.stringify({
+        answer: 'I cannot answer this with the available evidence.',
+        citations: [],
+        confidence: 'low',
+        insufficient_evidence: true,
+      }),
+    );
+
+    const s = makeSupervisor(backend);
+
+    const r = await s.run({ objective: 'What is the meaning of life?' });
+
+    expect(r.status).toBe('FAILED');
+    expect(r.validationOutcome?.ok).toBe(false);
+    expect(r.validationOutcome?.reasons.some((m) => m.includes('insufficient_evidence'))).toBe(
+      true,
+    );
+    // The analyst's answer is still surfaced for debugging — the run just
+    // honestly reports that it didn't satisfy the success contract.
+    expect(r.finalResponse).toContain('cannot answer');
+  });
+
+  it('transitions to FAILED when the analyst cites evidence that was not retrieved', async () => {
+    const backend = new MockBackend();
+    backend.enqueue('minicpm5-router', () => ({ json: { intent: 'GENERAL_QUERY' } }));
+    backend.enqueue('minicpm5-analyst', () =>
+      JSON.stringify({
+        answer: 'The deploy failed because of a config error.',
+        citations: ['e9'],
+        confidence: 'high',
+        insufficient_evidence: false,
+      }),
+    );
+
+    const s = makeSupervisor(backend);
+
+    const r = await s.run({ objective: 'Why did the deploy fail?' });
+
+    expect(r.status).toBe('FAILED');
+    expect(r.validationOutcome?.validators).toContain('citation-grounding');
+    expect(r.validationOutcome?.reasons.some((m) => m.includes('not grounded'))).toBe(true);
+  });
+
+  it('transitions to COMPLETED with outcome=SUCCEEDED for a clean analyst answer', async () => {
+    const backend = new MockBackend();
+    backend.enqueue('minicpm5-router', () => ({ json: { intent: 'GENERAL_QUERY' } }));
+    backend.enqueue('minicpm5-analyst', () => 'Paris is the capital of France.');
+
+    const s = makeSupervisor(backend);
+    const events: DomainEvent[] = [];
+    s.bus.subscribe((e) => {
+      if (e.type === 'run_completed') events.push(e);
+    });
+
+    const r = await s.run({ objective: 'What is the capital of France?' });
+
+    expect(r.status).toBe('COMPLETED');
+    expect(r.validationOutcome?.ok).toBe(true);
+    // Free-text answer — analyst-schema validator is correctly skipped.
+    expect(r.validationOutcome?.validators).toEqual(['non-empty', 'no-error-prefix']);
+    const runCompleted = events.find((e) => e.type === 'run_completed');
+    expect(runCompleted?.payload).toMatchObject({ outcome: 'SUCCEEDED' });
+  });
+
+  it('transitions to COMPLETED with outcome=SIMULATED for a SIMULATED_SUCCESS path', async () => {
+    const backend = new MockBackend();
+    backend.enqueue('minicpm5-router', () => ({ json: { intent: 'TOOL_EXECUTION' } }));
+    backend.enqueue('minicpm5-toolagent', () => ({
+      json: { tool: 'no_executor_tool', arguments: { x: 1 } },
+    }));
+
+    const s = makeSupervisor(backend);
+    s.registry.register({
+      name: 'no_executor_tool',
+      description: 'A tool with no execute hook',
+      parametersSchema: z.object({ x: z.number() }),
+      permissions: [],
+      riskLevel: 'low',
+      timeoutMs: 5000,
+    });
+
+    const events: DomainEvent[] = [];
+    s.bus.subscribe((e) => {
+      if (e.type === 'run_completed') events.push(e);
+    });
+
+    const r = await s.run({ objective: 'Run no_executor_tool' });
+
+    // The simulated path is allowed to complete (preserving the existing
+    // observable contract), but the terminal event carries outcome=SIMULATED
+    // so a downstream consumer cannot confuse it with a real success.
+    expect(r.status).toBe('COMPLETED');
+    expect(r.finalResponse).toMatch(/SIMULATED_SUCCESS/);
+    const runCompleted = events.find((e) => e.type === 'run_completed');
+    expect(runCompleted?.payload).toMatchObject({ outcome: 'SIMULATED' });
+  });
+});

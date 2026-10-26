@@ -201,8 +201,10 @@ export class Supervisor {
       await this.machine.transition(state, 'VALIDATING', 'validate');
       await this.stepValidateOutput(state);
 
-      // 6. §8 Checkpoint — persist progress for crash recovery
-      if (this.deps.memory) {
+      // 6. §8 Checkpoint — persist progress for crash recovery. Only when
+      // validation passed; a failed run does not get a recovery checkpoint
+      // (it is not a positive example to resume from).
+      if (state.validationOutcome?.ok && this.deps.memory) {
         try {
           await this.deps.memory.createCheckpoint({
             runId: state.runId,
@@ -221,36 +223,61 @@ export class Supervisor {
         }
       }
 
-      // 7. FINALIZE
-      await this.machine.transition(state, 'COMPLETED', 'ok');
-      state.finalResponse = state.executionResult ?? '(no output)';
-      await this.bus.publish({
-        type: 'run_completed',
-        runId: state.runId,
-        payload: { finalResponsePreview: state.finalResponse.slice(0, 200) },
-        occurredAt: new Date().toISOString(),
-      });
-      this.metrics.recordRun('succeeded', Date.now() - startedAt, { prompt: 0, completion: 0 });
+      // 7. FINALIZE — gate the terminal transition on the validation outcome.
+      // A run whose validation failed must NOT transition to COMPLETED. The
+      // previous code unconditionally moved to COMPLETED, so a failed tool
+      // execution, an exhausted repair loop, or an analyst that declared
+      // insufficient evidence all masqueraded as successful runs.
+      const simulated = state.executionResult?.startsWith('SIMULATED_SUCCESS') ?? false;
+      if (!state.validationOutcome?.ok) {
+        await this.machine.transition(state, 'FAILED', 'validation failed');
+        state.finalResponse = state.executionResult ?? '(no output)';
+        await this.bus.publish({
+          type: 'run_completed',
+          runId: state.runId,
+          payload: {
+            finalResponsePreview: state.finalResponse.slice(0, 200),
+            outcome: 'FAILED',
+          },
+          occurredAt: new Date().toISOString(),
+        });
+        this.metrics.recordRun('failed', Date.now() - startedAt, { prompt: 0, completion: 0 });
+      } else {
+        await this.machine.transition(state, 'COMPLETED', 'ok');
+        state.finalResponse = state.executionResult ?? '(no output)';
+        await this.bus.publish({
+          type: 'run_completed',
+          runId: state.runId,
+          payload: {
+            finalResponsePreview: state.finalResponse.slice(0, 200),
+            outcome: simulated ? 'SIMULATED' : 'SUCCEEDED',
+          },
+          occurredAt: new Date().toISOString(),
+        });
+        this.metrics.recordRun('succeeded', Date.now() - startedAt, { prompt: 0, completion: 0 });
 
-      // 8. §10 Consolidation — write an episodic memory of this run
-      if (this.deps.memory && state.projectId) {
-        try {
-          await this.deps.memory.consolidateRun({
-            runId: state.runId,
-            namespace: `project:${state.projectId}`,
-            objective: state.objective,
-            completedSteps: state.steps
-              .filter((s) => s.status === 'SUCCEEDED')
-              .map((s) => s.stepType),
-            failedAttempts: state.steps.filter((s) => s.status === 'FAILED').length,
-            constraints: [],
-            summarizeFn: async (input) =>
-              `Run ${state.runId} (${input.objective.slice(0, 80)}): completed ${input.completedSteps.length} steps, ${input.failedAttempts} failures. Final: ${state.finalResponse?.slice(0, 120) ?? '(none)'}`,
-          });
-        } catch (e) {
-          logger.warn({ err: e }, 'memory consolidation failed');
+        // 8. §10 Consolidation — write an episodic memory of a successful
+        // run. Failed runs do not consolidate (their finalResponse is not a
+        // positive example worth remembering).
+        if (this.deps.memory && state.projectId) {
+          try {
+            await this.deps.memory.consolidateRun({
+              runId: state.runId,
+              namespace: `project:${state.projectId}`,
+              objective: state.objective,
+              completedSteps: state.steps
+                .filter((s) => s.status === 'SUCCEEDED')
+                .map((s) => s.stepType),
+              failedAttempts: state.steps.filter((s) => s.status === 'FAILED').length,
+              constraints: [],
+              summarizeFn: async (input) =>
+                `Run ${state.runId} (${input.objective.slice(0, 80)}): completed ${input.completedSteps.length} steps, ${input.failedAttempts} failures. Final: ${state.finalResponse?.slice(0, 120) ?? '(none)'}`,
+            });
+          } catch (e) {
+            logger.warn({ err: e }, 'memory consolidation failed');
+          }
         }
-      }
+      } // end SUCCEEDED else-branch
     } catch (e) {
       const err = e as Error;
       state.errorTrace = [...state.errorTrace, err.message];
@@ -679,29 +706,124 @@ export class Supervisor {
 
   private async stepValidateOutput(state: AgentState): Promise<void> {
     await withSpan('supervisor.validate', async () => {
-      // For now: non-empty output. In production this would run §12.2
-      // validators (lint, typecheck, tests) against any produced artifacts.
+      // §12.2 validators. Previously this step checked ONLY non-emptiness and
+      // did not gate the COMPLETED transition — an empty result recorded a
+      // validation_failed event, but the run still moved to COMPLETED. The
+      // run loop now branches on `state.validationOutcome.ok`.
+      const reasons: string[] = [];
+      const validators: string[] = [];
+
+      // 1. non-empty
+      validators.push('non-empty');
       if (!state.executionResult || state.executionResult.length === 0) {
-        await this.bus.publish({
-          type: 'validation_failed',
-          runId: state.runId,
-          payload: { validator: 'non-empty', error: 'empty execution result' },
-          occurredAt: new Date().toISOString(),
-        });
-        state.errorTrace = [...state.errorTrace, 'validation failed: empty output'];
-      } else {
+        reasons.push('empty execution result');
+      }
+
+      // 2. no-error-prefix — a tool execution that produced `ERROR: …` or a
+      // repair loop that exhausted both surface as ERROR-prefixed strings.
+      // Treating those as validated successes was the original sin: the run
+      // would transition to COMPLETED even though every observable signal
+      // said the action failed.
+      validators.push('no-error-prefix');
+      if (state.executionResult?.startsWith('ERROR')) {
+        reasons.push(`execution result is an ERROR: ${state.executionResult.slice(0, 120)}`);
+      }
+
+      // 3. analyst-schema + citation-grounding — only runs when the analyst
+      // produced output that parses as JSON conforming to the documented
+      // schema. Free-text answers (e.g. the golden eval mocks) skip this
+      // validator so the existing happy path is preserved.
+      if (
+        state.intent === 'GENERAL_QUERY' ||
+        state.intent === 'DATA_EXTRACTION' ||
+        state.intent === 'CODE_REVIEW' ||
+        state.intent === 'UNKNOWN'
+      ) {
+        const candidate = this.tryParseAnalystSchema(state.executionResult);
+        if (candidate) {
+          validators.push('analyst-schema');
+          // Citation grounding — every cited evidence ID must resolve to a
+          // retrieved chunk. This is a no-op when the run retrieved no
+          // evidence (the analyst had nothing to cite against).
+          if (candidate.citations.length > 0) {
+            validators.push('citation-grounding');
+            const known = new Set(
+              state.retrievedEvidence.map((e) => e.replace(/^\[(.+)\].*$/, '$1').trim()),
+            );
+            const ungrounded = candidate.citations.filter((c) => !known.has(c));
+            if (ungrounded.length > 0) {
+              reasons.push(
+                `${ungrounded.length} citation(s) not grounded in retrieved evidence: ${ungrounded.slice(0, 3).join(', ')}`,
+              );
+            }
+          }
+          if (candidate.insufficientEvidence) {
+            // The analyst explicitly declared insufficient evidence. Treat
+            // that as a soft failure — the run completes with a clear marker
+            // in the finalResponse, but the validation outcome is honest
+            // about the insufficiency.
+            reasons.push('analyst declared insufficient_evidence');
+          }
+        }
+      }
+
+      const ok = reasons.length === 0;
+      state.validationOutcome = { ok, reasons, validators };
+
+      if (ok) {
         await this.bus.publish({
           type: 'validation_passed',
           runId: state.runId,
-          payload: { validators: ['non-empty'] },
+          payload: { validators },
           occurredAt: new Date().toISOString(),
         });
+      } else {
+        await this.bus.publish({
+          type: 'validation_failed',
+          runId: state.runId,
+          payload: { validator: validators.join(','), error: reasons.join('; ') },
+          occurredAt: new Date().toISOString(),
+        });
+        state.errorTrace = [...state.errorTrace, `validation failed: ${reasons.join('; ')}`];
       }
+
       this.recordStep(state, 'VALIDATE_OUTPUT', {
-        status: state.executionResult ? 'SUCCEEDED' : 'FAILED',
-        output: { result: state.executionResult?.slice(0, 200) },
+        status: ok ? 'SUCCEEDED' : 'FAILED',
+        output: { result: state.executionResult?.slice(0, 200), validators, reasons },
       });
     });
+  }
+
+  /**
+   * Best-effort parse of the analyst's output against the documented JSON
+   * schema (`{answer, citations, confidence, insufficient_evidence}`).
+   * Returns `null` when the output isn't JSON or doesn't match the schema —
+   * the caller treats that as "free-text answer, skip schema validator".
+   */
+  private tryParseAnalystSchema(raw: string | undefined): {
+    answer: string;
+    citations: string[];
+    confidence: 'high' | 'medium' | 'low';
+    insufficientEvidence: boolean;
+  } | null {
+    if (!raw) return null;
+    try {
+      const j = JSON.parse(raw) as unknown;
+      if (typeof j !== 'object' || j === null) return null;
+      const o = j as Record<string, unknown>;
+      if (typeof o.answer !== 'string') return null;
+      const citations = Array.isArray(o.citations)
+        ? o.citations.filter((c): c is string => typeof c === 'string')
+        : [];
+      const confidence =
+        o.confidence === 'high' || o.confidence === 'medium' || o.confidence === 'low'
+          ? o.confidence
+          : 'medium';
+      const insufficientEvidence = o.insufficient_evidence === true;
+      return { answer: o.answer, citations, confidence, insufficientEvidence };
+    } catch {
+      return null;
+    }
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────────
