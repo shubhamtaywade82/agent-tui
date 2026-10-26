@@ -21,7 +21,9 @@ import { HybridRetriever } from './context/retrieval.js';
 import { Supervisor } from './engine.js';
 import type { Backend } from './inference/backend.js';
 import { MockBackend } from './inference/mock.js';
+import { ModelPool } from './inference/model-pool.js';
 import { OllamaBackend } from './inference/ollama.js';
+import { PooledOllamaBackend } from './inference/pooled-ollama-backend.js';
 import { VllmBackend } from './inference/vllm.js';
 import { logger } from './observability/logger.js';
 import { Telemetry } from './observability/telemetry.js';
@@ -36,8 +38,30 @@ import { registerRetrievalAndMemoryTools } from './tools/builtin.js';
 
 async function makeBackend(): Promise<Backend> {
   switch (supervisorConfig.inference.backend) {
-    case 'ollama':
-      return new OllamaBackend(supervisorConfig);
+    case 'ollama': {
+      const inner = new OllamaBackend(supervisorConfig);
+      // Phase 2 — wrap with the model residency pool when an allowlist
+      // is configured. Without an allowlist, the pool is a no-op
+      // (every model passes through acquire()).
+      const allowlist = supervisorConfig.inference.pool.allowlist;
+      if (allowlist.length === 0) {
+        logger.info('model pool: allowlist empty — skipping residency management');
+        return inner;
+      }
+      const pool = new ModelPool({
+        ollamaHost: supervisorConfig.inference.ollamaHost,
+        maxResident: supervisorConfig.inference.pool.maxResident,
+        keepAliveMs: supervisorConfig.inference.pool.keepAliveMs,
+        allowlist,
+        alwaysRefresh: supervisorConfig.inference.pool.alwaysRefresh,
+      });
+      await pool.init();
+      logger.info(
+        { maxResident: supervisorConfig.inference.pool.maxResident, allowlist },
+        'model pool: residency management active',
+      );
+      return new PooledOllamaBackend(inner, pool);
+    }
     case 'vllm':
       return new VllmBackend(supervisorConfig);
     case 'mock':

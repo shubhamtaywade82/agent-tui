@@ -40,6 +40,34 @@ const schema = z.object({
     analystModel: z.string().default('minicpm5-analyst'),
     summarizerModel: z.string().default('minicpm5-summarizer'),
     defaultThinkMode: z.enum(['think', 'no-think']).default('no-think'),
+    /**
+     * Phase 2 — model residency manager. The pool keeps at most
+     * `pool.maxResident` MiniCPM5 variants loaded in Ollama at any time.
+     * Other applications loading models into the same Ollama server can
+     * break the cap; route all model-loading traffic through agent-tui or
+     * give it a dedicated Ollama instance to enforce it (see
+     * docs/supervisor/adr/0006-model-pool.md).
+     */
+    pool: z.object({
+      /** Hard upper bound on resident MiniCPM5 variants. Default 3. */
+      maxResident: z.coerce.number().int().positive().default(3),
+      /** Ollama keep_alive in ms after a model is loaded. Default 5 min. */
+      keepAliveMs: z.coerce.number().int().nonnegative().default(300_000),
+      /**
+       * Comma-separated allowlist of model names the pool manages.
+       * Models not on the allowlist pass through acquire() as a no-op
+       * (the cloud fallback, for example, doesn't count toward the cap).
+       */
+      allowlist: z.array(z.string()).default([]),
+      /**
+       * When true, the pool polls /api/ps on every acquire() to refresh
+       * its residency cache. When false, it trusts its in-memory view
+       * and only reconciles on init() / error / explicit reconcile().
+       * Default false in production (avoid extra round-trips); true in
+       * tests for determinism.
+       */
+      alwaysRefresh: z.boolean().default(false),
+    }),
   }),
   database: z.object({
     url: z.string().default('postgres://supervisor:supervisor@localhost:5432/supervisor'),
@@ -130,6 +158,14 @@ function loadConfig(): SupervisorConfig {
       analystModel: process.env.MINICPM5_ANALYST_MODEL,
       summarizerModel: process.env.MINICPM5_SUMMARIZER_MODEL,
       defaultThinkMode: process.env.MINICPM5_DEFAULT_THINK_MODE,
+      pool: {
+        maxResident: process.env.MODEL_POOL_MAX_RESIDENT,
+        keepAliveMs: process.env.MODEL_POOL_KEEP_ALIVE_MS,
+        allowlist: process.env.MODEL_POOL_ALLOWLIST?.split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+        alwaysRefresh: process.env.MODEL_POOL_ALWAYS_REFRESH === 'true',
+      },
     },
     database: { url: process.env.DATABASE_URL },
     redis: { url: process.env.REDIS_URL },
