@@ -29,6 +29,9 @@ import { SandboxExecutor } from './sandbox/executor.js';
 import { PermissionService } from './security/permissions.js';
 import { SecretResolver } from './security/secrets.js';
 import { PgStateStore } from './state/store.js';
+import { TaskLedger } from './tasks/ledger.js';
+import { TaskOrchestrator } from './tasks/orchestrator.js';
+import { InMemoryTaskStore, PgTaskStore, type TaskStore } from './tasks/store.js';
 import { registerRetrievalAndMemoryTools } from './tools/builtin.js';
 
 async function makeBackend(): Promise<Backend> {
@@ -140,6 +143,21 @@ async function main() {
     embeddingModelVersion: 'default-v1',
   });
 
+  // Phase 1 — durable task ledger. The same Postgres database backs the
+  // task tables; an in-memory store is used when INFERENCE_BACKEND=mock so
+  // local dev and unit tests run without a database instance.
+  let taskStore: TaskStore;
+  if (supervisorConfig.inference.backend === 'mock') {
+    taskStore = new InMemoryTaskStore();
+    logger.info('task ledger: in-memory store (mock backend)');
+  } else {
+    taskStore = new PgTaskStore(supervisorConfig.database.url);
+    await taskStore.init();
+    logger.info('task ledger: Postgres store initialised');
+  }
+  const taskLedger = new TaskLedger(taskStore);
+  const taskOrchestrator = new TaskOrchestrator(taskLedger, supervisor, taskStore);
+
   // §11 cache service (prompt prefix + generation cache). Wired into the
   // engine via the backend wrapper in production; left as a standalone
   // instance here for observability and manual invalidation.
@@ -147,12 +165,13 @@ async function main() {
   void _cache;
   // (Skipped here to avoid pulling more deps; see docs/supervisor/api.md for examples.)
 
-  const app = await startServer({ supervisor, store });
+  const app = await startServer({ supervisor, store, taskLedger, taskOrchestrator });
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'shutting down');
     await app.close();
     await store.close();
+    await taskStore.close();
     await retriever.close();
     await memory.close();
     await Telemetry.shutdown();

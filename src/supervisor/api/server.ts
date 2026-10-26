@@ -23,6 +23,8 @@ import { supervisorConfig } from '../config.js';
 import type { Supervisor } from '../engine.js';
 import { logger } from '../observability/logger.js';
 import type { StateStore } from '../state/store.js';
+import type { TaskLedger } from '../tasks/ledger.js';
+import type { TaskOrchestrator } from '../tasks/orchestrator.js';
 import { registerRoutes } from './routes.js';
 
 export interface ServerDeps {
@@ -32,6 +34,12 @@ export interface ServerDeps {
   apiKey: string;
   /** Origins allowed to make cross-origin requests. Empty means CORS is off. */
   corsOrigins?: string[];
+  /**
+   * Task ledger — Phase 1 durable task chain. Optional: when omitted,
+   * the /v1/goals routes return 501. Wired in `main.ts` for production.
+   */
+  taskLedger?: TaskLedger;
+  taskOrchestrator?: TaskOrchestrator;
 }
 
 /** Routes that need no credentials: the liveness probe and the OpenAPI docs. */
@@ -76,7 +84,12 @@ export async function createServer(deps: ServerDeps) {
   return app;
 }
 
-export async function startServer(deps: Pick<ServerDeps, 'supervisor' | 'store'>) {
+export async function startServer(
+  deps: Pick<ServerDeps, 'supervisor' | 'store'> & {
+    taskLedger?: TaskLedger;
+    taskOrchestrator?: TaskOrchestrator;
+  },
+) {
   const { host, port, apiKey: configuredKey, corsOrigins } = supervisorConfig.http;
   // Resolve before listening: a non-loopback bind without a configured key must fail here.
   const auth = resolveBearerToken({

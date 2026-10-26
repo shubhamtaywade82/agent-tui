@@ -3,14 +3,79 @@
  * supervisor engine — all heavy lifting happens in `engine.ts`.
  */
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import type { Supervisor } from '../engine.js';
 import type { StateStore } from '../state/store.js';
+import type { TaskLedger } from '../tasks/ledger.js';
+import type { TaskOrchestrator } from '../tasks/orchestrator.js';
 import { ApprovalRequest, type MetricsResponse, RunRequest, type RunResponse } from './schemas.js';
 
 export interface RouteDeps {
   supervisor: Supervisor;
   store: StateStore;
+  taskLedger?: TaskLedger;
+  taskOrchestrator?: TaskOrchestrator;
 }
+
+// ── Task-ledger request schemas ────────────────────────────────────────────
+
+const CreateGoalRequest = z.object({
+  title: z.string().min(1).max(512),
+  objective: z.string().min(1).max(16384),
+  acceptanceCriteria: z.array(z.string()).default([]),
+  userId: z.string().optional(),
+  projectId: z.string().optional(),
+  /**
+   * Optional initial task graph. Each task becomes a node in the DAG.
+   * Dependencies reference indices into this array (forward references
+   * allowed). When omitted, the goal starts empty and tasks are added
+   * via POST /v1/goals/:id/tasks.
+   */
+  tasks: z
+    .array(
+      z.object({
+        type: z.enum([
+          'PLAN',
+          'RETRIEVE',
+          'ANALYZE',
+          'TOOL',
+          'CODE_CHANGE',
+          'TEST',
+          'VERIFY',
+          'SUMMARIZE',
+        ]),
+        title: z.string().min(1).max(512),
+        objective: z.string().min(1).max(16384),
+        dependencies: z.array(z.number().int().nonnegative()).default([]),
+        maxAttempts: z.number().int().positive().default(3),
+      }),
+    )
+    .default([]),
+});
+
+const CreateTaskRequest = z.object({
+  type: z.enum([
+    'PLAN',
+    'RETRIEVE',
+    'ANALYZE',
+    'TOOL',
+    'CODE_CHANGE',
+    'TEST',
+    'VERIFY',
+    'SUMMARIZE',
+  ]),
+  title: z.string().min(1).max(512),
+  objective: z.string().min(1).max(16384),
+  parentTaskId: z.string().uuid().optional(),
+  dependencies: z.array(z.string().uuid()).default([]),
+  maxAttempts: z.number().int().positive().default(3),
+});
+
+const AdvanceRequest = z.object({
+  maxSteps: z.number().int().positive().max(20).default(1),
+  allowedPaths: z.array(z.string()).default([]),
+  context: z.string().optional(),
+});
 
 export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Promise<void> {
   // POST /v1/runs — kick off a new agent run synchronously
@@ -183,4 +248,219 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
 
   // GET /v1/healthz — liveness probe
   app.get('/v1/healthz', async () => ({ ok: true, ts: new Date().toISOString() }));
+
+  // ── Task-ledger routes (Phase 1) ───────────────────────────────────────────
+  //
+  // POST   /v1/goals                       create a goal (optionally with initial task graph)
+  // GET    /v1/goals                       list goals
+  // GET    /v1/goals/:id                   fetch a goal with its task chain summary
+  // POST   /v1/goals/:id/tasks             add a task to an existing goal
+  // GET    /v1/goals/:id/tasks             list the goal's task chain
+  // POST   /v1/goals/:id/advance          run the next READY task(s) via the Supervisor engine
+  // GET    /v1/goals/:id/events            replay the task event stream
+  // POST   /v1/goals/:id/recover           reconcile in-flight tasks after a restart
+  //
+  // When the taskLedger / taskOrchestrator are not wired (e.g. in the
+  // mock backend dev path), every route below returns 501 so the API
+  // surface is honest about what is reachable.
+  app.post('/v1/goals', async (req, reply) => {
+    if (!deps.taskLedger) {
+      return reply.code(501).send({ error: 'task ledger not configured' });
+    }
+    const parsed = CreateGoalRequest.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'invalid request', issues: parsed.error.issues });
+    }
+    const goal = await deps.taskLedger.createGoal({
+      title: parsed.data.title,
+      objective: parsed.data.objective,
+      acceptanceCriteria: parsed.data.acceptanceCriteria,
+      userId: parsed.data.userId,
+      projectId: parsed.data.projectId,
+    });
+    // Optionally create the initial task graph. Dependencies are expressed
+    // as indices into the input array — convert to taskIds now that the
+    // tasks are being created.
+    const createdTasks: Array<{ taskId: string; sequence: number }> = [];
+    for (let i = 0; i < parsed.data.tasks.length; i++) {
+      const spec = parsed.data.tasks[i];
+      if (!spec) continue;
+      const depIds = spec.dependencies
+        .map((idx) => createdTasks[idx]?.taskId)
+        .filter((x): x is string => typeof x === 'string');
+      const t = await deps.taskLedger.createTask({
+        goalId: goal.goalId,
+        sequence: i,
+        type: spec.type,
+        title: spec.title,
+        objective: spec.objective,
+        dependencies: depIds,
+        maxAttempts: spec.maxAttempts,
+      });
+      createdTasks.push({ taskId: t.taskId, sequence: i });
+    }
+    return reply.code(201).send({
+      goalId: goal.goalId,
+      status: goal.status,
+      taskCount: createdTasks.length,
+      tasks: createdTasks,
+      createdAt: goal.createdAt,
+    });
+  });
+
+  app.get('/v1/goals', async (req, reply) => {
+    if (!deps.taskLedger) {
+      return reply.code(501).send({ error: 'task ledger not configured' });
+    }
+    const q = req.query as {
+      userId?: string;
+      projectId?: string;
+      status?: string;
+      limit?: string;
+    };
+    const goals = await deps.taskLedger.listGoals({
+      userId: q.userId,
+      projectId: q.projectId,
+      status: q.status as never,
+    });
+    const limit = q.limit ? Number(q.limit) : 50;
+    return reply.send({
+      goals: goals.slice(0, limit).map((g) => ({
+        goalId: g.goalId,
+        title: g.title,
+        status: g.status,
+        taskCount: g.taskCount,
+        succeededTaskCount: g.succeededTaskCount,
+        failedTaskCount: g.failedTaskCount,
+        createdAt: g.createdAt,
+      })),
+    });
+  });
+
+  app.get('/v1/goals/:id', async (req, reply) => {
+    if (!deps.taskLedger) {
+      return reply.code(501).send({ error: 'task ledger not configured' });
+    }
+    const id = (req.params as { id: string }).id;
+    const goal = await deps.taskLedger.getGoal(id);
+    if (!goal) return reply.code(404).send({ error: 'not found' });
+    const tasks = await deps.taskLedger.listTasksByGoal(id);
+    return reply.send({
+      goalId: goal.goalId,
+      title: goal.title,
+      objective: goal.objective,
+      acceptanceCriteria: goal.acceptanceCriteria,
+      status: goal.status,
+      currentHeadTaskId: goal.currentHeadTaskId,
+      nextReadyTaskId: goal.nextReadyTaskId,
+      taskCount: goal.taskCount,
+      succeededTaskCount: goal.succeededTaskCount,
+      failedTaskCount: goal.failedTaskCount,
+      createdAt: goal.createdAt,
+      updatedAt: goal.updatedAt,
+      completedAt: goal.completedAt,
+      tasks: tasks.map((t) => ({
+        taskId: t.taskId,
+        sequence: t.sequence,
+        type: t.type,
+        title: t.title,
+        status: t.status,
+        attemptCount: t.attemptCount,
+        maxAttempts: t.maxAttempts,
+        dependencies: t.dependencies,
+        outputSummary: t.outputSummary,
+        completedAt: t.completedAt,
+      })),
+    });
+  });
+
+  app.post('/v1/goals/:id/tasks', async (req, reply) => {
+    if (!deps.taskLedger) {
+      return reply.code(501).send({ error: 'task ledger not configured' });
+    }
+    const id = (req.params as { id: string }).id;
+    const goal = await deps.taskLedger.getGoal(id);
+    if (!goal) return reply.code(404).send({ error: 'goal not found' });
+    const parsed = CreateTaskRequest.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'invalid request', issues: parsed.error.issues });
+    }
+    const existing = await deps.taskLedger.listTasksByGoal(id);
+    const sequence = existing.length;
+    const task = await deps.taskLedger.createTask({
+      goalId: id,
+      sequence,
+      type: parsed.data.type,
+      title: parsed.data.title,
+      objective: parsed.data.objective,
+      parentTaskId: parsed.data.parentTaskId,
+      dependencies: parsed.data.dependencies,
+      maxAttempts: parsed.data.maxAttempts,
+    });
+    return reply.code(201).send({ taskId: task.taskId, status: task.status, sequence });
+  });
+
+  app.get('/v1/goals/:id/tasks', async (req, reply) => {
+    if (!deps.taskLedger) {
+      return reply.code(501).send({ error: 'task ledger not configured' });
+    }
+    const id = (req.params as { id: string }).id;
+    const tasks = await deps.taskLedger.listTasksByGoal(id);
+    return reply.send({
+      tasks: tasks.map((t) => ({
+        taskId: t.taskId,
+        sequence: t.sequence,
+        type: t.type,
+        title: t.title,
+        status: t.status,
+        attemptCount: t.attemptCount,
+        maxAttempts: t.maxAttempts,
+        dependencies: t.dependencies,
+        outputSummary: t.outputSummary,
+        completedAt: t.completedAt,
+      })),
+    });
+  });
+
+  app.post('/v1/goals/:id/advance', async (req, reply) => {
+    if (!deps.taskLedger || !deps.taskOrchestrator) {
+      return reply.code(501).send({ error: 'task ledger not configured' });
+    }
+    const id = (req.params as { id: string }).id;
+    const goal = await deps.taskLedger.getGoal(id);
+    if (!goal) return reply.code(404).send({ error: 'goal not found' });
+    const parsed = AdvanceRequest.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'invalid request', issues: parsed.error.issues });
+    }
+    const result = await deps.taskOrchestrator.advance(id, {
+      maxSteps: parsed.data.maxSteps,
+      allowedPaths: parsed.data.allowedPaths,
+      userId: goal.userId,
+      projectId: goal.projectId,
+      context: parsed.data.context,
+    });
+    return reply.send({
+      steps: result.steps,
+      stoppedReason: result.stoppedReason,
+    });
+  });
+
+  app.get('/v1/goals/:id/events', async (req, reply) => {
+    if (!deps.taskLedger) {
+      return reply.code(501).send({ error: 'task ledger not configured' });
+    }
+    const id = (req.params as { id: string }).id;
+    const events = await deps.taskLedger.listTaskEvents(id);
+    return reply.send({ events });
+  });
+
+  app.post('/v1/goals/:id/recover', async (req, reply) => {
+    if (!deps.taskLedger || !deps.taskOrchestrator) {
+      return reply.code(501).send({ error: 'task ledger not configured' });
+    }
+    const id = (req.params as { id: string }).id;
+    const result = await deps.taskOrchestrator.recover(id);
+    return reply.send(result);
+  });
 }
