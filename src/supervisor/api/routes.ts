@@ -91,9 +91,11 @@ const AdvanceRequest = z.object({
   allowedPaths: z.array(z.string()).default([]),
   context: z.string().optional(),
   /**
-   * Phase 5 — absolute path to the repository root for CODE_CHANGE
-   * tasks. Required when the goal contains a CODE_CHANGE task;
-   * the CodeChangeExecutor needs a real repo to apply patches against.
+   * Phase 5 — absolute path to the repository root. Required when the
+   * goal contains a CODE_CHANGE task (the CodeChangeExecutor needs a
+   * real repo to apply patches against). When supplied, RETRIEVE /
+   * CODE_CHANGE / ANALYZE / TEST tasks also get relevant file snippets
+   * injected into their objective via the CodeIndexer.
    */
   repoPath: z.string().optional(),
 });

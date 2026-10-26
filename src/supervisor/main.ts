@@ -184,7 +184,9 @@ async function main() {
   const taskLedger = new TaskLedger(taskStore);
   // Phase 5 — wire the CodeChangeExecutor and CodeIndexer into the
   // orchestrator so CODE_CHANGE tasks are applied in an isolated git
-  // worktree and verified before the chain advances.
+  // worktree and verified before the chain advances, and so RETRIEVE /
+  // CODE_CHANGE / ANALYZE / TEST tasks get relevant file snippets
+  // injected into their objective when a repoPath is supplied.
   const codeChangeExecutor = new CodeChangeExecutor(
     backend,
     supervisorConfig.inference.analystModel,
@@ -195,6 +197,7 @@ async function main() {
     supervisor,
     taskStore,
     codeChangeExecutor,
+    codeIndexer,
   );
   // Phase 3 — task planner. Uses the same Backend the engine uses, so
   // the model pool (Phase 2) and the verification gate (PR #31) apply.

@@ -10,13 +10,16 @@
  * language is a one-liner: register its grammar in `LANGUAGES`.
  */
 
+import type { Dirent } from 'node:fs';
 import { readFileSync, statSync } from 'node:fs';
+import { readdir } from 'node:fs/promises';
 import { extname, relative, resolve, sep } from 'node:path';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import Python from 'tree-sitter-python';
 import TypeScript from 'tree-sitter-typescript';
 import type { HybridRetriever } from '../context/retrieval.js';
+import { logger } from '../observability/logger.js';
 
 const LANGUAGES = {
   '.ts': { parser: TypeScript.typescript, name: 'typescript' },
@@ -102,6 +105,79 @@ export class CodeIndexer {
       symbols,
       chunks,
     };
+  }
+
+  /**
+   * Phase 5 follow-up — index an entire directory tree.
+   *
+   * Walks `root` recursively, indexes every file with a supported
+   * extension, and returns a map of `relPath → IndexedFile`. If a
+   * `HybridRetriever` is wired AND `opts.projectId` is supplied, each
+   * chunk is also ingested under namespace `code:<projectId>` so
+   * future `retrieve_knowledge` calls can find them.
+   *
+   * Files under `node_modules/`, `.git/`, `dist/`, and `build/` are
+   * skipped — they're either dependencies or build output, not source
+   * the model should reason over.
+   *
+   * Returns a map (not an array) so the orchestrator can look up
+   * specific files by relative path when building the objective context.
+   */
+  async indexDirectory(
+    root: string,
+    opts: { projectId?: string; maxFiles?: number } = {},
+  ): Promise<Map<string, IndexedFile>> {
+    const maxFiles = opts.maxFiles ?? 200;
+    const result = new Map<string, IndexedFile>();
+    const skipDirs = new Set([
+      'node_modules',
+      '.git',
+      'dist',
+      'build',
+      '.next',
+      'coverage',
+      '.cache',
+    ]);
+
+    const walk = async (dir: string): Promise<void> => {
+      if (result.size >= maxFiles) return;
+      let entries: Dirent[];
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch {
+        return; // unreadable directory — skip silently
+      }
+      for (const entry of entries) {
+        if (result.size >= maxFiles) return;
+        const fullPath = resolve(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (skipDirs.has(entry.name)) continue;
+          await walk(fullPath);
+        } else if (entry.isFile()) {
+          const ext = extname(entry.name).toLowerCase();
+          if (!(ext in LANGUAGES)) continue;
+          try {
+            const indexed = await this.indexFile(fullPath, {
+              projectId: opts.projectId,
+              root,
+            });
+            result.set(indexed.path, indexed);
+          } catch (e) {
+            logger.debug(
+              { file: fullPath, err: e },
+              'code indexer: failed to index file, skipping',
+            );
+          }
+        }
+      }
+    };
+
+    await walk(root);
+    logger.info(
+      { root, fileCount: result.size, projectId: opts.projectId },
+      'code indexer: directory indexed',
+    );
+    return result;
   }
 
   private extractSymbols(
