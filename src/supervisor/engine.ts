@@ -33,7 +33,7 @@ import { logger } from './observability/logger.js';
 import { withSpan, zodParseFailureCounter } from './observability/telemetry.js';
 import { RouterClassifier } from './router/classifier.js';
 import { ComplexityScorer } from './router/complexity.js';
-import { ModelRouter } from './router/router.js';
+import { type ModelChoice, ModelRouter } from './router/router.js';
 import { PermissionService } from './security/permissions.js';
 import { SecretResolver } from './security/secrets.js';
 import { type DomainEvent, EventBus } from './state/events.js';
@@ -98,6 +98,14 @@ export interface SupervisorDeps {
   patchWorkflow?: PatchWorkflow;
   permissions?: PermissionService;
   secrets?: SecretResolver;
+  /**
+   * Stronger-model backend used when the router decides to escalate (§13.1).
+   * When omitted, an escalation choice fails loudly instead of silently
+   * degrading to the local model — the previous behaviour made the
+   * `model_escalated` event a lie (the fallback model was never actually
+   * invoked).
+   */
+  fallback?: Backend;
 }
 
 export class Supervisor {
@@ -119,6 +127,14 @@ export class Supervisor {
   // Keyed by runId so concurrent runs don't collide.
   private readonly runEvidence = new Map<string, RetrievalResult[]>();
   private readonly runMemory = new Map<string, MemoryRecord[]>();
+  /**
+   * Per-run model choice produced by `stepPlan`. Stored transiently so the
+   * execute step knows whether to invoke the local sub-agent model or the
+   * configured fallback. The router's `ModelChoice.escalate` was previously
+   * used only to publish a `model_escalated` event — the fallback model was
+   * never actually invoked, making escalation a no-op.
+   */
+  private readonly runModelChoice = new Map<string, ModelChoice>();
 
   constructor(private readonly deps: SupervisorDeps) {
     this.permissions = deps.permissions ?? new PermissionService();
@@ -290,8 +306,35 @@ export class Supervisor {
       // Clean up transient per-run maps to avoid memory growth
       this.runEvidence.delete(state.runId);
       this.runMemory.delete(state.runId);
+      this.runModelChoice.delete(state.runId);
     }
     return state;
+  }
+
+  /**
+   * Resolve which backend + model to invoke for this run. When the router
+   * chose to escalate (§13.1) AND a fallback backend is configured, route
+   * to the fallback with the router's `fallbackModel`. When the router
+   * chose to escalate but NO fallback is configured, throw — the previous
+   * behaviour silently invoked the local sub-agent model, which made the
+   * `model_escalated` event a lie and defeated the entire point of having
+   * an escalation pathway. The caller catches and records a FAILED run.
+   */
+  private selectBackend(
+    state: AgentState,
+    defaultLocalModel: string,
+  ): { backend: Backend; model: string } {
+    const choice = this.runModelChoice.get(state.runId);
+    if (choice && choice.kind === 'escalate') {
+      if (!this.deps.fallback) {
+        throw new Error(
+          `router escalated to ${choice.fallbackModel} (${choice.reason}) but no fallback backend is configured — ` +
+            `set ESCALATION_FALLBACK_BASE_URL and ESCALATION_FALLBACK_API_KEY, or relax the escalation triggers`,
+        );
+      }
+      return { backend: this.deps.fallback, model: choice.fallbackModel };
+    }
+    return { backend: this.deps.backend, model: defaultLocalModel };
   }
 
   // ─── Steps ──────────────────────────────────────────────────────────────
@@ -318,6 +361,9 @@ export class Supervisor {
       const complexity = this.complexity.score(state.query, state.intent ?? undefined);
       const choice = this.router.decide(state.intent ?? 'UNKNOWN', complexity);
       state.thinkMode = choice.kind === 'local' ? choice.thinkMode : 'think';
+      // Stash the choice so the execute step can act on it. Previously the
+      // choice was computed and then discarded — only an event was published.
+      this.runModelChoice.set(state.runId, choice);
 
       await this.bus.publish({
         type: 'plan_generated',
@@ -405,8 +451,9 @@ export class Supervisor {
   private async stepExecuteTool(state: AgentState): Promise<void> {
     await withSpan('supervisor.execute.tool', async () => {
       const prompt = `Determine the tool and arguments for:\n${state.query}\n\nAvailable tools:\n${this.registry.renderForPrompt()}`;
-      const r = await this.deps.backend.invoke({
-        model: supervisorConfig.inference.toolModel,
+      const { backend, model } = this.selectBackend(state, supervisorConfig.inference.toolModel);
+      const r = await backend.invoke({
+        model,
         prompt,
         formatJson: true,
         thinkMode: state.thinkMode,
@@ -415,7 +462,7 @@ export class Supervisor {
         type: 'model_invoked',
         runId: state.runId,
         payload: {
-          model: supervisorConfig.inference.toolModel,
+          model,
           thinkMode: state.thinkMode,
           latencyMs: r.latencyMs,
           tokens: r.tokens.prompt + r.tokens.completion,
@@ -659,8 +706,9 @@ export class Supervisor {
         occurredAt: new Date().toISOString(),
       });
 
-      const r = await this.deps.backend.invoke({
-        model: supervisorConfig.inference.analystModel,
+      const { backend, model } = this.selectBackend(state, supervisorConfig.inference.analystModel);
+      const r = await backend.invoke({
+        model,
         prompt: built.prompt,
         thinkMode: state.thinkMode,
         // `maxTokens: budgetTokens` previously meant `num_ctx` on Ollama —
@@ -673,7 +721,7 @@ export class Supervisor {
         type: 'model_invoked',
         runId: state.runId,
         payload: {
-          model: supervisorConfig.inference.analystModel,
+          model,
           thinkMode: state.thinkMode,
           latencyMs: r.latencyMs,
           tokens: r.tokens.prompt + r.tokens.completion,
@@ -682,24 +730,28 @@ export class Supervisor {
       });
       this.recordStep(state, 'INVOKE_MODEL', {
         status: 'SUCCEEDED',
-        output: { model: supervisorConfig.inference.analystModel, tokens: r.tokens },
-        modelName: supervisorConfig.inference.analystModel,
+        output: { model, tokens: r.tokens },
+        modelName: model,
       });
     });
   }
 
   private async stepExecuteSummarizer(state: AgentState): Promise<void> {
     await withSpan('supervisor.execute.summarizer', async () => {
-      const r = await this.deps.backend.invoke({
-        model: supervisorConfig.inference.summarizerModel,
+      const { backend, model } = this.selectBackend(
+        state,
+        supervisorConfig.inference.summarizerModel,
+      );
+      const r = await backend.invoke({
+        model,
         prompt: `Summarize the following:\n${state.query}`,
         thinkMode: 'no-think',
       });
       state.executionResult = r.content;
       this.recordStep(state, 'INVOKE_MODEL', {
         status: 'SUCCEEDED',
-        output: { model: supervisorConfig.inference.summarizerModel },
-        modelName: supervisorConfig.inference.summarizerModel,
+        output: { model },
+        modelName: model,
       });
     });
   }

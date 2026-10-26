@@ -206,6 +206,85 @@ describe('Supervisor engine — SIMULATED_SUCCESS must not masquerade as SUCCEED
   });
 });
 
+describe('Supervisor engine — router escalation must actually invoke the fallback', () => {
+  it('routes escalated tasks to the configured fallback backend with the chosen model', async () => {
+    const localBackend = new MockBackend();
+    const fallbackBackend = new MockBackend();
+    // Router classifies as CODE_REVIEW — the complexity scorer will mark a
+    // multi-file refactor as 'escalate', so the router decides to escalate.
+    localBackend.enqueue('minicpm5-router', () => ({ json: { intent: 'CODE_REVIEW' } }));
+    // Fallback answers — must be invoked, NOT the local analyst model.
+    fallbackBackend.enqueue('gpt-4o', () => 'Cloud review: looks good.');
+
+    const s = new Supervisor({
+      backend: localBackend,
+      fallback: fallbackBackend,
+      store: new InMemoryStore(),
+    });
+    // Override the router's escalation decision with one we control, since
+    // the real router depends on env-configured ESCALATION_FALLBACK_MODEL.
+    // We exercise the wiring end-to-end by overriding the router's `decide`
+    // result through a run-model-choice stub:
+    (s as unknown as { router: { decide: () => unknown } }).router.decide = () => ({
+      kind: 'escalate',
+      intent: 'CODE_REVIEW',
+      reason: 'test override',
+      fallbackModel: 'gpt-4o',
+    });
+
+    const events: DomainEvent[] = [];
+    s.bus.subscribe((e) => {
+      if (e.type === 'model_invoked' || e.type === 'model_escalated') events.push(e);
+    });
+
+    const r = await s.run({
+      objective: 'Refactor the entire auth subsystem across all microservices.',
+    });
+
+    // The fallback was invoked with the chosen model name.
+    const invoked = events.filter((e) => e.type === 'model_invoked');
+    expect(invoked.length).toBeGreaterThan(0);
+    expect(invoked[0]?.payload).toMatchObject({ model: 'gpt-4o' });
+    // The local analyst model was NOT invoked.
+    expect(invoked.some((e) => e.payload.model === 'minicpm5-analyst')).toBe(false);
+    expect(r.finalResponse).toContain('Cloud review');
+    // The escalation was recorded as an event too.
+    expect(events.some((e) => e.type === 'model_escalated')).toBe(true);
+    // Sanity: the fallback backend observed the call.
+    const fallbackCalls = fallbackBackend.observedCalls();
+    expect(fallbackCalls.length).toBe(1);
+    expect(fallbackCalls[0]?.model).toBe('gpt-4o');
+    // And the local backend only saw the router call.
+    expect(localBackend.observedCalls().filter((c) => c.model === 'minicpm5-analyst')).toHaveLength(
+      0,
+    );
+  });
+
+  it('fails loudly when the router escalates but no fallback backend is configured', async () => {
+    const localBackend = new MockBackend();
+    localBackend.enqueue('minicpm5-router', () => ({ json: { intent: 'CODE_REVIEW' } }));
+
+    // No fallback backend supplied.
+    const s = new Supervisor({ backend: localBackend, store: new InMemoryStore() });
+    (s as unknown as { router: { decide: () => unknown } }).router.decide = () => ({
+      kind: 'escalate',
+      intent: 'CODE_REVIEW',
+      reason: 'test override',
+      fallbackModel: 'gpt-4o',
+    });
+
+    const r = await s.run({
+      objective: 'Refactor the entire auth subsystem across all microservices.',
+    });
+
+    // The previous behaviour silently invoked the local analyst and reported
+    // COMPLETED. The P0 contract: escalation without a fallback is a hard
+    // failure so an operator notices the misconfiguration immediately.
+    expect(r.status).toBe('FAILED');
+    expect(r.errorTrace.some((e) => e.includes('no fallback backend is configured'))).toBe(true);
+  });
+});
+
 describe('Supervisor engine — COMPLETED must be gated on validation outcome', () => {
   it('transitions to FAILED when the tool execution produced an ERROR result', async () => {
     const backend = new MockBackend();

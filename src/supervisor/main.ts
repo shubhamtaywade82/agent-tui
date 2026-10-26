@@ -14,7 +14,7 @@
 import { startServer } from './api/server.js';
 import { CodeIndexer } from './code/indexer.js';
 import { PatchWorkflow } from './code/patch.js';
-import { supervisorConfig } from './config.js';
+import { type SupervisorConfig, supervisorConfig } from './config.js';
 import { CacheService } from './context/cache.js';
 import { MemoryService } from './context/memory.js';
 import { HybridRetriever } from './context/retrieval.js';
@@ -42,6 +42,27 @@ async function makeBackend(): Promise<Backend> {
     default:
       throw new Error(`Unknown INFERENCE_BACKEND: ${supervisorConfig.inference.backend}`);
   }
+}
+
+/**
+ * Construct the fallback backend used when the router escalates (§13.1).
+ * The fallback is an OpenAI-compatible endpoint — VllmBackend works for any
+ * such endpoint (vLLM, OpenAI, Z.ai GLM, LM Studio, etc.). When unset, the
+ * supervisor is constructed without a fallback and the engine fails loudly
+ * on any escalation choice instead of silently invoking the local model.
+ */
+function makeFallbackBackend(): Backend | undefined {
+  const url = supervisorConfig.escalation.fallbackBaseUrl;
+  const key = supervisorConfig.escalation.fallbackApiKey;
+  if (!url || !key) return undefined;
+  // Reuse VllmBackend against the fallback URL by overriding config fields.
+  // VllmBackend only reads `inference.vllmBaseUrl` / `inference.vllmApiKey`
+  // and `context.budgetTokens`, so we synthesise a minimal config view.
+  const fallbackConfig: SupervisorConfig = {
+    ...supervisorConfig,
+    inference: { ...supervisorConfig.inference, vllmBaseUrl: url, vllmApiKey: key },
+  };
+  return new VllmBackend(fallbackConfig);
 }
 
 async function main() {
@@ -72,6 +93,21 @@ async function main() {
   }
 
   const backend = await makeBackend();
+  const fallback = makeFallbackBackend();
+  if (fallback) {
+    logger.info(
+      {
+        baseUrl: supervisorConfig.escalation.fallbackBaseUrl,
+        model: supervisorConfig.escalation.fallbackModel,
+      },
+      'fallback backend configured — router escalations will invoke it',
+    );
+  } else if (supervisorConfig.escalation.fallbackModel) {
+    logger.warn(
+      { model: supervisorConfig.escalation.fallbackModel },
+      'ESCALATION_FALLBACK_MODEL is set but ESCALATION_FALLBACK_BASE_URL/API_KEY are not — escalations will fail loudly',
+    );
+  }
   const sandbox = new SandboxExecutor();
   const codeIndexer = new CodeIndexer(retriever);
   const patchWorkflow = new PatchWorkflow(sandbox);
@@ -88,6 +124,7 @@ async function main() {
     patchWorkflow,
     permissions,
     secrets,
+    fallback,
   });
 
   // §8 + §13: register the validated retrieval + memory tools so the LLM
