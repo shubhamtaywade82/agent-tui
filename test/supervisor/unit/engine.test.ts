@@ -6,10 +6,8 @@
  *   - `run().allowedPaths` is forwarded to the tool validator (otherwise a
  *     path-bearing tool argument is checked against an empty scope and the
  *     caller's authorisation is silently dropped on the floor).
- *   - The router classifier's `maxOutputTokens` request is honoured as
- *     `num_predict` rather than `num_ctx` (covered separately in
- *     ollama-backend.test.ts but reproduced here end-to-end through the
- *     engine).
+ *   - A tool call with no executor available is reported honestly as
+ *     SKIPPED / SIMULATED, never as SUCCEEDED / executed.
  *
  * The StateStore is an in-memory stub (mirrors golden.test.ts) so the suite
  * runs without a Postgres instance.
@@ -103,7 +101,7 @@ describe('Supervisor engine — allowedPaths propagation', () => {
       riskLevel: 'low',
       timeoutMs: 5000,
       // Stub executor so we don't fall through to the SIMULATED_SUCCESS path
-      // — that path is exercised separately in engine-outcome.test.ts.
+      // — that path is exercised separately below.
       execute: async () => ({ ok: true, output: 'file contents' }),
     });
 
@@ -128,5 +126,82 @@ describe('Supervisor engine — allowedPaths propagation', () => {
     });
 
     expect(r.allowedPaths).toEqual(['/workspace/project-a', '/tmp/build']);
+  });
+});
+
+describe('Supervisor engine — SIMULATED_SUCCESS must not masquerade as SUCCEEDED', () => {
+  it('records a SKIPPED step and a SIMULATED tool_executed event when no executor is available', async () => {
+    const backend = new MockBackend();
+    backend.enqueue('minicpm5-router', () => ({ json: { intent: 'TOOL_EXECUTION' } }));
+    backend.enqueue('minicpm5-toolagent', () => ({
+      json: { tool: 'get_pipeline_status', arguments: { service: 'checkout' } },
+    }));
+
+    const s = makeSupervisor(backend);
+    // No `execute` hook on the tool definition — the engine has no sandbox
+    // configured either (no `sandbox` dep on the Supervisor), so the
+    // SIMULATED_SUCCESS path is the only one available.
+    s.registry.register({
+      name: 'get_pipeline_status',
+      description: 'Check CI status',
+      parametersSchema: z.object({ service: z.string() }),
+      permissions: [],
+      riskLevel: 'low',
+      timeoutMs: 5000,
+    });
+
+    const events: DomainEvent[] = [];
+    s.bus.subscribe((e) => {
+      if (e.type === 'tool_executed') events.push(e);
+    });
+
+    const r = await s.run({ objective: 'Check the checkout pipeline status.' });
+
+    // The observable string contract is preserved (golden evals rely on it).
+    expect(r.finalResponse).toMatch(/SIMULATED_SUCCESS/);
+    // But the honest signal says: nothing actually executed.
+    const toolExecuted = events.find((e) => e.type === 'tool_executed');
+    expect(toolExecuted).toBeDefined();
+    expect(toolExecuted?.payload).toMatchObject({ status: 'SIMULATED' });
+    // Step status is SKIPPED, NOT SUCCEEDED — that was the original sin.
+    const execStep = r.steps.find((st) => st.stepType === 'EXECUTE_TOOL');
+    expect(execStep?.status).toBe('SKIPPED');
+    // Metrics counter is `simulated`, not `executed`.
+    expect(s.metrics.snapshot().toolCallsSimulated).toBe(1);
+    expect(s.metrics.snapshot().toolCallsExecuted).toBe(0);
+  });
+
+  it('records a SUCCEEDED step and a SUCCESS tool_executed event when an execute hook is present', async () => {
+    const backend = new MockBackend();
+    backend.enqueue('minicpm5-router', () => ({ json: { intent: 'TOOL_EXECUTION' } }));
+    backend.enqueue('minicpm5-toolagent', () => ({
+      json: { tool: 'echo', arguments: { msg: 'hi' } },
+    }));
+
+    const s = makeSupervisor(backend);
+    s.registry.register({
+      name: 'echo',
+      description: 'Echo a message',
+      parametersSchema: z.object({ msg: z.string() }),
+      permissions: [],
+      riskLevel: 'low',
+      timeoutMs: 5000,
+      execute: async (args) => ({ ok: true, output: `echo: ${args.msg}` }),
+    });
+
+    const events: DomainEvent[] = [];
+    s.bus.subscribe((e) => {
+      if (e.type === 'tool_executed') events.push(e);
+    });
+
+    const r = await s.run({ objective: 'Echo hi' });
+
+    expect(r.finalResponse).toBe('echo: hi');
+    const toolExecuted = events.find((e) => e.type === 'tool_executed');
+    expect(toolExecuted?.payload).toMatchObject({ status: 'SUCCESS' });
+    const execStep = r.steps.find((st) => st.stepType === 'EXECUTE_TOOL');
+    expect(execStep?.status).toBe('SUCCEEDED');
+    expect(s.metrics.snapshot().toolCallsSimulated).toBe(0);
+    expect(s.metrics.snapshot().toolCallsExecuted).toBe(1);
   });
 });

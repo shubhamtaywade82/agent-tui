@@ -44,6 +44,13 @@ export const MetricsResponse = z.object({
   runsFailed: z.number(),
   toolCallsTotal: z.number(),
   toolCallsValid: z.number(),
+  /**
+   * Tools that were validated but had no executor available. Surfaced on
+   * the metrics endpoint so an operator can detect a non-zero rate, which
+   * means the harness accepted a tool call but never actually executed
+   * it. Must never be confused with `toolCallsValid`.
+   */
+  toolCallsSimulated: z.number(),
   repairLoopInvocations: z.number(),
   retrievalCallsTotal: z.number(),
   retrievalPrecisionAvg: z.number(),

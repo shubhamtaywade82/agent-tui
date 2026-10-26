@@ -22,6 +22,15 @@ export interface AgentMetrics {
   toolCallsValid: number;
   toolCallsExecuted: number;
   toolCallsDenied: number;
+  /**
+   * Tools that were validated but had no executor available (no `execute`
+   * hook on the tool definition AND no usable sandbox command). The
+   * supervisor records a `SIMULATED_SUCCESS` executionResult and emits a
+   * `tool_executed` event with `status: 'SIMULATED'`. A non-zero rate
+   * here means the harness is configured to call a tool that doesn't
+   * actually do anything — a quality signal worth alerting on.
+   */
+  toolCallsSimulated: number;
   repairLoopInvocations: number;
   retrievalCallsTotal: number;
   retrievalPrecisionAvg: number;
@@ -59,6 +68,7 @@ export class MetricsCollector {
     toolCallsValid: 0,
     toolCallsExecuted: 0,
     toolCallsDenied: 0,
+    toolCallsSimulated: 0,
     repairLoopInvocations: 0,
     retrievalCallsTotal: 0,
     retrievalPrecisionAvg: 0,
@@ -120,11 +130,12 @@ export class MetricsCollector {
     this.m.tokenCostTotal.completion += tokens.completion;
   }
 
-  recordToolCall(kind: 'valid' | 'invalid' | 'executed' | 'denied'): void {
+  recordToolCall(kind: 'valid' | 'invalid' | 'executed' | 'denied' | 'simulated'): void {
     this.m.toolCallsTotal++;
     if (kind === 'valid') this.m.toolCallsValid++;
     else if (kind === 'executed') this.m.toolCallsExecuted++;
     else if (kind === 'denied') this.m.toolCallsDenied++;
+    else if (kind === 'simulated') this.m.toolCallsSimulated++;
   }
 
   recordRepairLoop(): void {
@@ -258,6 +269,7 @@ export class MetricsCollector {
       toolCallsValid: 0,
       toolCallsExecuted: 0,
       toolCallsDenied: 0,
+      toolCallsSimulated: 0,
       repairLoopInvocations: 0,
       retrievalCallsTotal: 0,
       retrievalPrecisionAvg: 0,

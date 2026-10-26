@@ -67,7 +67,13 @@ export type DomainEvent =
       runId: string;
       payload: {
         tool: string;
-        status: 'SUCCESS' | 'FAILED' | 'TIMEOUT' | 'DENIED';
+        /**
+         * `SIMULATED` is emitted only when a tool was validated but no
+         * executor was available — neither a registered `execute` hook nor
+         * a usable sandbox command. It must NEVER be confused with
+         * `SUCCESS`, which means a real side effect actually happened.
+         */
+        status: 'SUCCESS' | 'FAILED' | 'TIMEOUT' | 'DENIED' | 'SIMULATED';
         resultSummary?: string;
       };
       occurredAt: string;

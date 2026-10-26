@@ -536,24 +536,47 @@ export class Supervisor {
         state.executionResult = sb.ok ? sb.stdout : `ERROR (exit ${sb.exitCode}): ${sb.stderr}`;
         this.metrics.recordToolCall(sb.ok ? 'executed' : 'denied');
       } else {
-        state.executionResult = `SIMULATED_SUCCESS: tool ${toolName} validated with args ${JSON.stringify(finalArgs)}`;
-        this.metrics.recordToolCall('executed');
+        // No executor available — neither a registered `execute` hook on the
+        // tool definition, nor a usable sandbox command (no `command` arg,
+        // or no sandbox configured). The previous code recorded this as a
+        // `SUCCEEDED` step with `recordToolCall('executed')`, which made a
+        // never-executed tool call indistinguishable from a real one in
+        // metrics, event stream, and the step audit trail.
+        //
+        // Honest contract: the tool was validated but NOT executed. The
+        // executionResult keeps the `SIMULATED_SUCCESS` prefix so existing
+        // consumers (golden evals) can still recognise the path, but the
+        // metric counter, event payload, and step status now reflect
+        // `SIMULATED` / `SKIPPED` — never `executed` / `SUCCEEDED`.
+        state.executionResult = `SIMULATED_SUCCESS: tool ${toolName} validated with args ${JSON.stringify(finalArgs)} (no executor available)`;
+        this.metrics.recordToolCall('simulated');
       }
+
+      // Determine the honest execution outcome for downstream event/step
+      // recording. A simulated call is NOT a success — it's a skipped
+      // execution with a clear marker in the result string.
+      const simulated = state.executionResult.startsWith('SIMULATED_SUCCESS');
+      const failed = state.executionResult.startsWith('ERROR');
+      const execStatus: 'SUCCESS' | 'FAILED' | 'SIMULATED' = simulated
+        ? 'SIMULATED'
+        : failed
+          ? 'FAILED'
+          : 'SUCCESS';
 
       await this.bus.publish({
         type: 'tool_executed',
         runId: state.runId,
         payload: {
           tool: toolName,
-          status: state.executionResult.startsWith('ERROR') ? 'FAILED' : 'SUCCESS',
+          status: execStatus,
           resultSummary: state.executionResult.slice(0, 200),
         },
         occurredAt: new Date().toISOString(),
       });
 
       this.recordStep(state, 'EXECUTE_TOOL', {
-        status: state.executionResult.startsWith('ERROR') ? 'FAILED' : 'SUCCEEDED',
-        output: { tool: toolName, args: finalArgs, attempts },
+        status: simulated ? 'SKIPPED' : failed ? 'FAILED' : 'SUCCEEDED',
+        output: { tool: toolName, args: finalArgs, attempts, executed: !simulated },
         toolName,
         toolArguments: finalArgs,
         executionResult: state.executionResult,

@@ -120,6 +120,10 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       runsFailed: m.runsFailed,
       toolCallsTotal: m.toolCallsTotal,
       toolCallsValid: m.toolCallsValid,
+      // Surface simulated tool calls so an operator can detect a non-zero
+      // rate (which means the harness accepted a tool call but never
+      // actually executed it).
+      toolCallsSimulated: m.toolCallsSimulated,
       repairLoopInvocations: m.repairLoopInvocations,
       retrievalCallsTotal: m.retrievalCallsTotal,
       retrievalPrecisionAvg: m.retrievalPrecisionAvg,
