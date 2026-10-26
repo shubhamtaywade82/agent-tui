@@ -33,6 +33,7 @@ import { SecretResolver } from './security/secrets.js';
 import { PgStateStore } from './state/store.js';
 import { TaskLedger } from './tasks/ledger.js';
 import { TaskOrchestrator } from './tasks/orchestrator.js';
+import { TaskPlanner } from './tasks/planner.js';
 import { InMemoryTaskStore, PgTaskStore, type TaskStore } from './tasks/store.js';
 import { registerRetrievalAndMemoryTools } from './tools/builtin.js';
 
@@ -181,6 +182,11 @@ async function main() {
   }
   const taskLedger = new TaskLedger(taskStore);
   const taskOrchestrator = new TaskOrchestrator(taskLedger, supervisor, taskStore);
+  // Phase 3 — task planner. Uses the same Backend the engine uses, so
+  // the model pool (Phase 2) and the verification gate (PR #31) apply.
+  // The planner invokes the router variant directly (not via the engine)
+  // because it emits a structured plan, not a Supervisor run.
+  const taskPlanner = new TaskPlanner(backend, supervisorConfig.inference.routerModel);
 
   // §11 cache service (prompt prefix + generation cache). Wired into the
   // engine via the backend wrapper in production; left as a standalone
@@ -189,7 +195,7 @@ async function main() {
   void _cache;
   // (Skipped here to avoid pulling more deps; see docs/supervisor/api.md for examples.)
 
-  const app = await startServer({ supervisor, store, taskLedger, taskOrchestrator });
+  const app = await startServer({ supervisor, store, taskLedger, taskOrchestrator, taskPlanner });
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'shutting down');
