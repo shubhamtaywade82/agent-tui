@@ -159,6 +159,14 @@ export class Supervisor {
       projectId: params.projectId,
     });
     if (params.context) state.context = params.context;
+    // Persist the caller-authorised filesystem scope so stepExecuteTool can
+    // forward it to the validator (and the repair loop) on every tool-call
+    // attempt. Without this, path-bearing tool arguments are checked against
+    // an empty scope and `allowedPaths` from the API request is silently
+    // dropped on the floor.
+    if (params.allowedPaths && params.allowedPaths.length > 0) {
+      state.allowedPaths = [...params.allowedPaths];
+    }
     await this.deps.store.saveRun(state);
     await this.bus.publish({
       type: 'run_created',
@@ -433,12 +441,17 @@ export class Supervisor {
       });
 
       const tool = this.registry.get(toolName);
+      const validationCtx = {
+        userId: state.userId,
+        projectId: state.projectId,
+        // Forward the caller-authorised filesystem scope so the validator can
+        // reject path arguments outside the run's approved scope. Previously
+        // this was hardcoded to `undefined`, which meant `allowedPaths` from
+        // the API request was enforced nowhere on the tool-call path.
+        allowedPaths: state.allowedPaths,
+      };
       let validation = tool
-        ? this.validator.validateWithTool(tool, rawArgs, {
-            userId: state.userId,
-            projectId: state.projectId,
-            allowedPaths: undefined,
-          })
+        ? this.validator.validateWithTool(tool, rawArgs, validationCtx)
         : {
             ok: false,
             errors: [`unknown tool: ${toolName}`],
@@ -455,7 +468,13 @@ export class Supervisor {
           toolName,
           originalPrompt: state.query,
           originalRawOutput: r.content,
-          ctx: { userId: state.userId, projectId: state.projectId },
+          ctx: {
+            userId: state.userId,
+            projectId: state.projectId,
+            // Propagate the filesystem scope to the repair loop so repaired
+            // arguments are still checked against the run's authorised scope.
+            allowedPaths: state.allowedPaths,
+          },
         });
         attempts = repair.attempts;
         if (repair.ok && repair.finalArgs) {
@@ -470,10 +489,17 @@ export class Supervisor {
         } else {
           this.metrics.recordToolCall('invalid');
           state.executionResult = `ERROR: tool call invalid after ${attempts} repair attempts`;
-          state.errorTrace = [...state.errorTrace, `tool ${toolName} validation failed`];
+          // Surface the validator's specific failure reasons so a caller (or
+          // an operator reading the run's audit trail) can tell whether the
+          // failure was a schema mismatch, a missing permission, a path
+          // outside the authorised scope, or something else. The previous
+          // generic `tool {name} validation failed` message made every
+          // failure look identical.
+          const detail = validation.errors.length > 0 ? validation.errors.join('; ') : 'no detail';
+          state.errorTrace = [...state.errorTrace, `tool ${toolName} validation failed: ${detail}`];
           this.recordStep(state, 'EXECUTE_TOOL', {
             status: 'FAILED',
-            error: 'repair loop exhausted',
+            error: `repair loop exhausted: ${detail}`,
             toolName,
             toolArguments: finalArgs,
           });

@@ -168,6 +168,14 @@ export const AgentState = z.object({
   // I3: query is immutable — the original user input must not be mutated
   query: z.string().readonly(),
   context: z.string().optional(),
+  /**
+   * Filesystem paths the caller has authorised this run to touch. Forwarded
+   * to the tool validator on every tool-call step so a path-bearing tool
+   * argument outside this scope is rejected before execution. Set at run
+   * creation by `Supervisor.run({ allowedPaths })` and propagated to the
+   * repair loop's `ctx` as well.
+   */
+  allowedPaths: z.array(z.string()).default([]),
   retrievedEvidence: z.array(z.string()).default([]),
   toolPayload: z.record(z.string(), z.unknown()).optional(),
   executionResult: z.string().optional(),
@@ -203,6 +211,7 @@ export function newAgentState(
     steps: [],
     toolCalls: [],
     artifacts: [],
+    allowedPaths: [],
     createdAt: now,
     updatedAt: now,
   });
