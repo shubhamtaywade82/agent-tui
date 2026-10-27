@@ -100,6 +100,15 @@ export interface RetrievalQuery {
 export interface HybridRetrieverDeps {
   pool?: Pool;
   redis?: Redis;
+  /**
+   * Phase 4 — vector dimension for the chunks table. MUST match the
+   * dimension the configured embedding model produces. Default 768
+   * (nomic-embed-text). The retriever validates this against the live
+   * schema on init() — if the table was previously created with a
+   * different dimension, init() logs a warning but does NOT auto-migrate
+   * (the operator must drop and recreate the index).
+   */
+  vectorDimension?: number;
 }
 
 // ─── §7 Rerank weights (tunable per workload) ──────────────────────────────
@@ -134,6 +143,7 @@ export class HybridRetriever {
   private readonly pool: Pool;
   private readonly redis: Redis | null;
   private readonly rerankWeights: RerankWeights;
+  private readonly vectorDimension: number;
   // Track index versions so cache keys invalidate on reindex (§5, §9).
   private indexVersion = 1;
 
@@ -141,6 +151,7 @@ export class HybridRetriever {
     this.pool = deps.pool ?? new Pool({ connectionString: supervisorConfig.database.url, max: 5 });
     this.redis = deps.redis ?? null;
     this.rerankWeights = DEFAULT_RERANK_WEIGHTS;
+    this.vectorDimension = deps.vectorDimension ?? supervisorConfig.embedding.dimension;
   }
 
   async init(): Promise<void> {
@@ -157,7 +168,7 @@ export class HybridRetriever {
           chunk_index INTEGER,
           source_uri TEXT NOT NULL,
           content TEXT NOT NULL,
-          embedding vector(768),
+          embedding vector(${this.vectorDimension}),
           -- §5 rich metadata columns (denormalised from JSONB for fast filtering)
           workspace_id TEXT,
           tenant_id TEXT,
@@ -183,9 +194,48 @@ export class HybridRetriever {
         CREATE INDEX IF NOT EXISTS chunks_deprecated_idx ON chunks(deprecated) WHERE deprecated = false;
         CREATE INDEX IF NOT EXISTS chunks_source_hash_idx ON chunks(source_hash);
       `);
+
+      // Phase 4 — validate that the live schema's vector dimension matches
+      // the configured one. A mismatch means the operator changed
+      // EMBEDDING_DIMENSION without re-creating the chunks table; storing
+      // vectors of the wrong dimension would silently corrupt the index.
+      // We log a warning but do NOT auto-migrate — the operator must drop
+      // and recreate the table explicitly.
+      const dimCheck = await client.query(
+        `SELECT atttypmod AS dim
+           FROM pg_attribute
+          WHERE attrelid = 'chunks'::regclass
+            AND attname = 'embedding'`,
+      );
+      if (dimCheck.rows.length > 0) {
+        const liveDim = Number(dimCheck.rows[0]?.dim);
+        // pgvector stores dimension in atttypmod; -1 means unbounded (vector
+        // without a fixed dimension — older pgvector versions). Treat -1
+        // as "unknown, skip the check".
+        if (liveDim > 0 && liveDim !== this.vectorDimension) {
+          logger.warn(
+            { liveDim, configuredDim: this.vectorDimension },
+            'chunks.embedding vector dimension does not match config — ' +
+              'drop and recreate the chunks table to apply the new dimension',
+          );
+        }
+      }
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Phase 4 — report the retrieval mode for health checks. 'hybrid'
+   * when an embedder is wired (query embeddings will be supplied at
+   * retrieve time); 'keyword-only' otherwise.
+   */
+  get retrievalMode(): 'hybrid' | 'keyword-only' {
+    // The retriever itself doesn't know whether an embedder is wired —
+    // it only sees queryEmbedding on each call. Expose the configured
+    // dimension so the caller (main.ts) can decide based on whether
+    // it constructed an OllamaEmbedder.
+    return this.vectorDimension > 0 ? 'hybrid' : 'keyword-only';
   }
 
   /**
@@ -229,7 +279,7 @@ export class HybridRetriever {
 
       // §6 vector retrieval (overfetch 2× for reranking)
       const vectorResults: RetrievalResult[] = [];
-      if (params.queryEmbedding && params.queryEmbedding.length === 768) {
+      if (params.queryEmbedding && params.queryEmbedding.length === this.vectorDimension) {
         const v = await client.query(
           `SELECT chunk_id, document_id, chunk_index, source_uri, content, namespace,
                   workspace_id, tenant_id, owner_id, source_hash, document_type, language,

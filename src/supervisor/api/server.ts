@@ -43,6 +43,8 @@ export interface ServerDeps {
   taskOrchestrator?: TaskOrchestrator;
   /** Phase 3 — task planner. Optional: when omitted, autoPlan is 501. */
   taskPlanner?: TaskPlanner;
+  /** Phase 4 — retrieval mode surfaced on GET /v1/healthz. */
+  retrievalMode?: 'hybrid' | 'keyword-only';
 }
 
 /** Routes that need no credentials: the liveness probe and the OpenAPI docs. */
@@ -92,6 +94,7 @@ export async function startServer(
     taskLedger?: TaskLedger;
     taskOrchestrator?: TaskOrchestrator;
     taskPlanner?: TaskPlanner;
+    retrievalMode?: 'hybrid' | 'keyword-only';
   },
 ) {
   const { host, port, apiKey: configuredKey, corsOrigins } = supervisorConfig.http;
