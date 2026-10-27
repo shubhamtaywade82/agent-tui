@@ -129,13 +129,19 @@ export class TaskPlanner {
     const maxTasks = opts.maxTasksPerGoal ?? supervisorConfig.planner.maxTasksPerGoal;
     const maxDepth = opts.maxDepth ?? supervisorConfig.planner.maxDepth;
     const maxRepair = opts.maxRepairAttempts ?? supervisorConfig.planner.maxRepairAttempts;
+    // Per-task-type model selection (ADR 0010): PLAN tasks honour
+    // `inference.taskModelMap.PLAN` when set; otherwise the planner's
+    // configured routerModel applies. This lets callers pair a cheap
+    // router with a stronger planning model (e.g. gpt-4o for planning
+    // while minicpm5-router does routing).
+    const planModel = supervisorConfig.inference.taskModelMap.PLAN ?? this.routerModel;
 
     const prompt = this.buildPrompt(objective, opts.acceptanceCriteria);
     const rawOutputs: string[] = [];
 
     // First attempt.
     let r = await this.backend.invoke({
-      model: this.routerModel,
+      model: planModel,
       prompt,
       formatJson: true,
       temperature: 0.1,
@@ -154,7 +160,7 @@ export class TaskPlanner {
       );
       const repairPrompt = this.buildRepairPrompt(prompt, r.content, parseResult.errors);
       r = await this.backend.invoke({
-        model: this.routerModel,
+        model: planModel,
         prompt: repairPrompt,
         formatJson: true,
         temperature: 0.0,
@@ -171,7 +177,7 @@ export class TaskPlanner {
       }
     }
 
-    zodParseFailureCounter.add(1, { model: this.routerModel, schema: 'PlanSchema' });
+    zodParseFailureCounter.add(1, { model: planModel, schema: 'PlanSchema' });
     throw new TaskPlannerError(
       `task planner failed after ${maxRepair + 1} attempt(s); last errors: ${parseResult.errors.join('; ')}`,
       parseResult.errors,

@@ -29,6 +29,7 @@
 
 import type { CodeChangeExecutor } from '../code/code-change-executor.js';
 import type { CodeIndexer } from '../code/indexer.js';
+import { supervisorConfig } from '../config.js';
 import type { Supervisor } from '../engine.js';
 import { logger } from '../observability/logger.js';
 import type { AgentState } from '../state/models.js';
@@ -187,6 +188,21 @@ export class TaskOrchestrator {
     };
   }
 
+  /**
+   * Resolve the analyst model for a task. Honours `inference.taskModelMap`
+   * — when the task type has a mapped model, that wins; otherwise falls
+   * back to the configured default `analystModel`.
+   *
+   * This is the per-task-type cost-optimisation knob: pair a cheap
+   * router with a capable code model and a strong analyst in the same
+   * deployment. See docs/supervisor/adr/0010-per-task-model-selection.md.
+   */
+  private resolveAnalystModel(taskType: TaskType): string {
+    return (
+      supervisorConfig.inference.taskModelMap[taskType] ?? supervisorConfig.inference.analystModel
+    );
+  }
+
   private async runOneTask(
     task: TaskNode,
     goal: Goal,
@@ -263,6 +279,7 @@ export class TaskOrchestrator {
       allowedPaths: opts.allowedPaths,
       userId: opts.userId ?? goal.userId,
       projectId: opts.projectId ?? goal.projectId,
+      analystModelOverride: this.resolveAnalystModel(task.type),
     });
 
     // Map the CodeChangeExecutor's result to an AttemptOutcome + validationReport.
@@ -381,6 +398,7 @@ export class TaskOrchestrator {
       projectId: opts.projectId ?? goal.projectId,
       allowedPaths: opts.allowedPaths ?? [],
       context: opts.context,
+      analystModelOverride: this.resolveAnalystModel(task.type),
     });
 
     await this.ledger.markRunning(task.taskId, run.runId);

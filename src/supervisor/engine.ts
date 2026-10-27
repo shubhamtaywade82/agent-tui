@@ -135,6 +135,20 @@ export class Supervisor {
    * never actually invoked, making escalation a no-op.
    */
   private readonly runModelChoice = new Map<string, ModelChoice>();
+  /**
+   * Per-run analyst-model override. When the orchestrator runs a task with
+   * a per-task-type model (see `inference.taskModelMap`), it passes the
+   * model name to `Supervisor.run({ analystModelOverride })`. The execute
+   * step uses this in preference to `supervisorConfig.inference.analystModel`
+   * so each task type can target a different specialist model — e.g.
+   * CODE_CHANGE → Claude, ANALYZE → gpt-4o, RETRIEVE → gpt-4o-mini.
+   *
+   * The override is stored per-runId (not on AgentState) to avoid a DB
+   * migration: it's a transient dispatch hint, not audit data. Escalation
+   * still wins over this override — if the router escalates, the fallback
+   * model is used regardless.
+   */
+  private readonly runAnalystModelOverride = new Map<string, string>();
 
   constructor(private readonly deps: SupervisorDeps) {
     this.permissions = deps.permissions ?? new PermissionService();
@@ -168,6 +182,14 @@ export class Supervisor {
     projectId?: string;
     context?: string;
     allowedPaths?: string[];
+    /**
+     * Override the analyst model for this run only. Used by the
+     * TaskOrchestrator when `inference.taskModelMap[taskType]` is set —
+     * each task type can target a different specialist model without
+     * changing global config. Falls back to `analystModel` when omitted.
+     * Escalation (if the router chose to escalate) still wins.
+     */
+    analystModelOverride?: string;
   }): Promise<AgentState> {
     const startedAt = Date.now();
     const state = newAgentState(params.objective, {
@@ -182,6 +204,9 @@ export class Supervisor {
     // dropped on the floor.
     if (params.allowedPaths && params.allowedPaths.length > 0) {
       state.allowedPaths = [...params.allowedPaths];
+    }
+    if (params.analystModelOverride) {
+      this.runAnalystModelOverride.set(state.runId, params.analystModelOverride);
     }
     await this.deps.store.saveRun(state);
     await this.bus.publish({
@@ -307,6 +332,7 @@ export class Supervisor {
       this.runEvidence.delete(state.runId);
       this.runMemory.delete(state.runId);
       this.runModelChoice.delete(state.runId);
+      this.runAnalystModelOverride.delete(state.runId);
     }
     return state;
   }
@@ -706,7 +732,9 @@ export class Supervisor {
         occurredAt: new Date().toISOString(),
       });
 
-      const { backend, model } = this.selectBackend(state, supervisorConfig.inference.analystModel);
+      const defaultAnalystModel =
+        this.runAnalystModelOverride.get(state.runId) ?? supervisorConfig.inference.analystModel;
+      const { backend, model } = this.selectBackend(state, defaultAnalystModel);
       const r = await backend.invoke({
         model,
         prompt: built.prompt,

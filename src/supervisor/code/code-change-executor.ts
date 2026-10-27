@@ -113,6 +113,14 @@ export interface CodeChangeRequest {
   /** Caller identity (for audit). */
   userId?: string;
   projectId?: string;
+  /**
+   * Override the analyst model for this attempt only. Used by the
+   * orchestrator when `inference.taskModelMap.CODE_CHANGE` is set —
+   * the CODE_CHANGE task type can target a different specialist model
+   * (e.g. Claude) without changing global config. Falls back to the
+   * executor's configured `analystModel` when omitted.
+   */
+  analystModelOverride?: string;
 }
 
 export interface CodeChangeResult {
@@ -164,6 +172,7 @@ export class CodeChangeExecutor {
 
   async execute(req: CodeChangeRequest): Promise<CodeChangeResult> {
     const maxRepairAttempts = supervisorConfig.patch.maxRepairAttempts;
+    const analystModel = req.analystModelOverride ?? this.analystModel;
     const rawOutputs: string[] = [];
     let lastResult: CodeChangeResult | undefined;
     let repairContext: string | undefined;
@@ -181,7 +190,7 @@ export class CodeChangeExecutor {
 
       // 1. Ask the analyst for a structured patch proposal.
       const r = await this.backend.invoke({
-        model: this.analystModel,
+        model: analystModel,
         prompt,
         formatJson: true,
         temperature: isRepair ? 0.0 : 0.1,
@@ -207,7 +216,7 @@ export class CodeChangeExecutor {
       }
       const parseResult = PatchProposalSchema.safeParse(r.json);
       if (!parseResult.success) {
-        zodParseFailureCounter.add(1, { model: this.analystModel, schema: 'PatchProposalSchema' });
+        zodParseFailureCounter.add(1, { model: analystModel, schema: 'PatchProposalSchema' });
         const errors = parseResult.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`);
         lastResult = {
           ok: false,
