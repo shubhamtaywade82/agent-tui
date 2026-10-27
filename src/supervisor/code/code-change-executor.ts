@@ -163,49 +163,129 @@ export class CodeChangeExecutor {
   ) {}
 
   async execute(req: CodeChangeRequest): Promise<CodeChangeResult> {
-    // 1. Ask the analyst for a structured patch proposal.
-    const r = await this.backend.invoke({
-      model: this.analystModel,
-      prompt: `${SYSTEM_PROMPT}\n\n# Objective\n${req.objective}`,
-      formatJson: true,
-      temperature: 0.1,
-      maxOutputTokens: 4096,
-    });
+    const maxRepairAttempts = supervisorConfig.patch.maxRepairAttempts;
+    const rawOutputs: string[] = [];
+    let lastResult: CodeChangeResult | undefined;
+    let repairContext: string | undefined;
 
-    // 2. Validate the proposal against the schema.
-    if (!r.parsed || typeof r.json !== 'object' || r.json === null) {
-      return {
+    // The repair loop: ask → validate → apply → verify → (on failure, feed
+    // stderr back into the prompt for a targeted repair) → repeat.
+    // Each iteration produces a CodeChangeResult; we keep going until either
+    // verification passes or maxRepairAttempts is exhausted.
+    for (let attempt = 0; attempt <= maxRepairAttempts; attempt++) {
+      const isRepair = attempt > 0 && repairContext !== undefined;
+      const prompt =
+        isRepair && repairContext
+          ? this.buildRepairPrompt(req.objective, repairContext)
+          : `${SYSTEM_PROMPT}\n\n# Objective\n${req.objective}`;
+
+      // 1. Ask the analyst for a structured patch proposal.
+      const r = await this.backend.invoke({
+        model: this.analystModel,
+        prompt,
+        formatJson: true,
+        temperature: isRepair ? 0.0 : 0.1,
+        maxOutputTokens: 4096,
+      });
+      rawOutputs.push(r.content);
+
+      // 2. Validate the proposal against the schema.
+      if (!r.parsed || typeof r.json !== 'object' || r.json === null) {
+        lastResult = {
+          ok: false,
+          diff: '',
+          verifyResults: [],
+          rawOutput: r.content,
+          errors: ['model output is not a JSON object'],
+          error: 'model output is not a JSON object',
+        };
+        // Schema-failures don't have verification output to feed back,
+        // so there's no useful repair context to build. Continue the
+        // loop to let the model try again from scratch.
+        repairContext = undefined;
+        continue;
+      }
+      const parseResult = PatchProposalSchema.safeParse(r.json);
+      if (!parseResult.success) {
+        zodParseFailureCounter.add(1, { model: this.analystModel, schema: 'PatchProposalSchema' });
+        const errors = parseResult.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`);
+        lastResult = {
+          ok: false,
+          diff: '',
+          verifyResults: [],
+          rawOutput: r.content,
+          errors,
+          error: `patch proposal schema-invalid: ${errors.join('; ')}`,
+        };
+        // Feed the schema errors back so the model knows what was wrong.
+        repairContext = `Schema validation errors:\n${errors.map((e) => `- ${e}`).join('\n')}`;
+        continue;
+      }
+      const proposal = parseResult.data;
+
+      // 3. Apply + verify (extracted to a helper for clarity).
+      const applyResult = await this.applyAndVerify(req, proposal);
+      rawOutputs[rawOutputs.length - 1] = r.content; // keep the latest
+
+      lastResult = {
+        ...applyResult,
+        proposal,
+        rawOutput: r.content,
+        errors: [],
+      };
+
+      if (applyResult.ok) {
+        // Verification passed — return the successful result.
+        if (isRepair) {
+          logger.info({ runId: req.runId, attempt }, 'code-change: repair succeeded');
+        }
+        return lastResult;
+      }
+
+      // Verification failed — build repair context from the failing commands.
+      const failingCommands = applyResult.verifyResults.filter((v) => !v.ok);
+      if (failingCommands.length === 0) {
+        // No failing commands but patchResult.ok was false — likely a
+        // filesystem/git error. No useful repair context to build.
+        repairContext = applyResult.error;
+      } else {
+        repairContext = this.buildRepairContextFromFailures(proposal, failingCommands);
+      }
+
+      logger.warn(
+        { runId: req.runId, attempt, failingCount: failingCommands.length },
+        'code-change: verification failed, building repair context',
+      );
+    }
+
+    // All repair attempts exhausted — return the last failure.
+    return (
+      lastResult ?? {
         ok: false,
         diff: '',
         verifyResults: [],
-        rawOutput: r.content,
-        errors: ['model output is not a JSON object'],
-        error: 'model output is not a JSON object',
-      };
-    }
-    const parseResult = PatchProposalSchema.safeParse(r.json);
-    if (!parseResult.success) {
-      zodParseFailureCounter.add(1, { model: this.analystModel, schema: 'PatchProposalSchema' });
-      const errors = parseResult.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`);
-      return {
-        ok: false,
-        diff: '',
-        verifyResults: [],
-        rawOutput: r.content,
-        errors,
-        error: `patch proposal schema-invalid: ${errors.join('; ')}`,
-      };
-    }
-    const proposal = parseResult.data;
+        rawOutput: rawOutputs.join('\n---\n'),
+        errors: ['no attempts completed'],
+        error: 'no attempts completed',
+      }
+    );
+  }
 
-    // 3. Merge the model's verifyCommands with the configured defaults.
-    // The defaults ALWAYS run — the model cannot skip verification.
+  /**
+   * Apply a validated proposal via PatchWorkflow and run verification.
+   * Returns the diff, commitSha, verifyResults, and ok flag. Does NOT
+   * call the model — that's the caller's job. This is the "execute"
+   * half of the propose-execute-verify loop.
+   */
+  private async applyAndVerify(
+    req: CodeChangeRequest,
+    proposal: PatchProposal,
+  ): Promise<Omit<CodeChangeResult, 'proposal' | 'rawOutput' | 'errors'>> {
     const verifyCommands = [
       ...proposal.verifyCommands,
       ...supervisorConfig.patch.defaultVerifyCommands,
     ];
 
-    // 4. Apply the patch via PatchWorkflow in an isolated git worktree.
     logger.info(
       { runId: req.runId, fileCount: Object.keys(proposal.files).length, branch: proposal.branch },
       'code-change: applying patch proposal',
@@ -219,14 +299,12 @@ export class CodeChangeExecutor {
       commitMessage: proposal.commitMessage,
     });
 
-    // 5. Clean up the worktree (unless configured otherwise for debugging).
     if (supervisorConfig.patch.cleanupWorktree && patchResult.worktreePath) {
       await this.patchWorkflow
         .cleanup(patchResult.worktreePath, req.repoPath)
         .catch(() => undefined);
     }
 
-    // 6. Map the authoritative verification results.
     const verifyResults = patchResult.verifyResults.map((v) => ({
       command: v.command,
       ok: v.result.ok,
@@ -240,24 +318,77 @@ export class CodeChangeExecutor {
     if (!patchResult.ok) {
       return {
         ok: false,
-        proposal,
         diff: patchResult.diff,
         commitSha: patchResult.commitSha,
         verifyResults,
-        rawOutput: r.content,
-        errors: [],
         error: patchResult.error ?? 'patch verification failed',
       };
     }
 
     return {
       ok: true,
-      proposal,
       diff: patchResult.diff,
       commitSha: patchResult.commitSha,
       verifyResults,
-      rawOutput: r.content,
-      errors: [],
     };
+  }
+
+  /**
+   * Build a repair prompt that includes the original objective, the
+   * previous proposal's files, and the failing commands' stderr. The
+   * model sees exactly what went wrong and can produce a targeted
+   * revision rather than guessing from scratch.
+   */
+  private buildRepairPrompt(objective: string, repairContext: string): string {
+    return [
+      SYSTEM_PROMPT,
+      '',
+      '# Objective',
+      objective,
+      '',
+      '# Repair context',
+      'Your previous patch proposal failed verification. Here is what went wrong:',
+      '',
+      repairContext,
+      '',
+      '# Your task',
+      'Produce a REVISED patch proposal that addresses the failure above.',
+      'Keep the parts that worked; change only what needs to change to fix the error.',
+      'Output ONLY a JSON object conforming to the schema.',
+    ].join('\n');
+  }
+
+  /**
+   * Extract the failing commands' stderr into a compact repair-context string.
+   * Caps each command's stderr at 500 chars so the prompt doesn't blow up.
+   */
+  private buildRepairContextFromFailures(
+    proposal: PatchProposal,
+    failingCommands: NonNullable<CodeChangeResult['verifyResults']>,
+  ): string {
+    const lines: string[] = [];
+    lines.push('## Previous proposal files');
+    for (const [path, content] of Object.entries(proposal.files)) {
+      lines.push(`### ${path}`);
+      lines.push('```');
+      lines.push(content.slice(0, 500));
+      lines.push('```');
+    }
+    lines.push('');
+    lines.push('## Failing verification commands');
+    for (const cmd of failingCommands) {
+      lines.push(`### ${cmd.command} (exit ${cmd.exitCode})`);
+      if (cmd.stderr) {
+        lines.push('```');
+        lines.push(cmd.stderr.slice(0, 500));
+        lines.push('```');
+      } else if (cmd.stdout) {
+        lines.push('```');
+        lines.push(cmd.stdout.slice(0, 500));
+        lines.push('```');
+      }
+      lines.push('');
+    }
+    return lines.join('\n');
   }
 }
