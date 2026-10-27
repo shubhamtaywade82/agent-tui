@@ -28,6 +28,7 @@
  */
 
 import type { CodeChangeExecutor } from '../code/code-change-executor.js';
+import type { CodeIndexer } from '../code/indexer.js';
 import type { Supervisor } from '../engine.js';
 import { logger } from '../observability/logger.js';
 import type { AgentState } from '../state/models.js';
@@ -46,9 +47,11 @@ export interface AdvanceOptions {
   /** Context to inject into each task's objective (free-text). */
   context?: string;
   /**
-   * Phase 5 — absolute path to the repository root for CODE_CHANGE
-   * tasks. When omitted, CODE_CHANGE tasks fail with a clear error
-   * (the CodeChangeExecutor needs a real repo to apply patches against).
+   * Phase 5 — absolute path to the repository root. Required when the
+   * goal contains a CODE_CHANGE task (the CodeChangeExecutor needs a
+   * real repo to apply patches against). When supplied AND a
+   * CodeIndexer is wired, RETRIEVE / CODE_CHANGE / ANALYZE / TEST
+   * tasks also get relevant file snippets injected into their objective.
    */
   repoPath?: string;
 }
@@ -110,6 +113,14 @@ export class TaskOrchestrator {
      * output as the result without applying or verifying any patch).
      */
     private readonly codeChangeExecutor?: CodeChangeExecutor,
+    /**
+     * Phase 5 follow-up — code indexer. When supplied AND a task has
+     * `repoPath`, RETRIEVE / CODE_CHANGE / ANALYZE / TEST tasks get
+     * relevant file snippets injected into their objective via the
+     * indexer's symbol-aware chunking. When omitted, those task types
+     * proceed without code context (the pre-Phase-5 behaviour).
+     */
+    private readonly codeIndexer?: CodeIndexer,
   ) {}
 
   /**
@@ -355,7 +366,12 @@ export class TaskOrchestrator {
     // runs the full ROUTE → EXECUTE → VALIDATE loop; the orchestrator
     // only feeds it a prompt + the chain context.
     const dependencyOutputs = await this.collectDependencyOutputs(task);
-    const objective = this.buildObjective(task, goal, dependencyOutputs, opts.context);
+    // Phase 5 follow-up — for RETRIEVE and CODE_CHANGE tasks with a
+    // repoPath, index the repo and inject relevant file snippets so
+    // the model has symbol-aware code context without needing to
+    // retrieve it via a tool call.
+    const codeContext = await this.buildCodeContext(task, goal, opts);
+    const objective = this.buildObjective(task, goal, dependencyOutputs, opts.context, codeContext);
 
     // The Supervisor creates a fresh run for each task attempt. The runId
     // is recorded on the task so the audit trail links task ↔ run.
@@ -516,6 +532,107 @@ export class TaskOrchestrator {
     return outputs;
   }
 
+  /**
+   * Phase 5 follow-up — build code context for RETRIEVE and CODE_CHANGE tasks.
+   *
+   * When a CodeIndexer is wired AND `opts.repoPath` is supplied, indexes
+   * the repo and selects the most relevant file snippets by keyword
+   * matching against the task objective. Returns a formatted string
+   * containing the top-K snippets (by relevance score), or undefined
+   * when no indexer is wired, no repoPath is supplied, the task type
+   * doesn't warrant code context, or no relevant files were found.
+   *
+   * Token budget: the returned string is capped at ~4000 chars (~1000
+   * tokens) so it doesn't blow the context window. The orchestrator's
+   * `buildObjective` places it between the dependency outputs and the
+   * acceptance criteria.
+   */
+  private async buildCodeContext(
+    task: TaskNode,
+    goal: Goal,
+    opts: AdvanceOptions,
+  ): Promise<string | undefined> {
+    if (!this.codeIndexer || !opts.repoPath) return undefined;
+    // Only inject code context for task types that reason over code.
+    // PLAN/SUMMARIZE/VERIFY tasks typically don't need file snippets.
+    if (
+      task.type !== 'RETRIEVE' &&
+      task.type !== 'CODE_CHANGE' &&
+      task.type !== 'ANALYZE' &&
+      task.type !== 'TEST'
+    ) {
+      return undefined;
+    }
+
+    try {
+      const indexed = await this.codeIndexer.indexDirectory(opts.repoPath, {
+        projectId: opts.projectId ?? goal.projectId,
+      });
+      if (indexed.size === 0) return undefined;
+
+      // Select the most relevant snippets by keyword matching against
+      // the task objective + goal title. Simple Jaccard similarity on
+      // token sets — a cross-encoder reranker would be better but this
+      // is a deterministic, no-extra-inference-cost baseline.
+      const query = `${task.objective} ${task.title} ${goal.title}`.toLowerCase();
+      const queryTokens = new Set(query.split(/\W+/).filter((t) => t.length > 2));
+
+      const scored: Array<{ path: string; score: number; snippet: string }> = [];
+      for (const [path, file] of indexed) {
+        // Score by symbol name overlap + file path keyword overlap.
+        const symbolNames = file.symbols.map((s) => s.name.toLowerCase());
+        const pathTokens = path
+          .toLowerCase()
+          .split(/[/_.-]+/)
+          .filter((t) => t.length > 2);
+        const candidateTokens = new Set([...symbolNames, ...pathTokens]);
+        let overlap = 0;
+        for (const t of queryTokens) {
+          if (candidateTokens.has(t)) overlap++;
+        }
+        const score = queryTokens.size === 0 ? 0 : overlap / queryTokens.size;
+        // Take the first chunk (usually the file header / imports).
+        const firstChunk = file.chunks[0];
+        if (firstChunk && score > 0) {
+          scored.push({
+            path,
+            score,
+            snippet: firstChunk.content.slice(0, 800),
+          });
+        }
+      }
+
+      if (scored.length === 0) return undefined;
+
+      // Top-K by score, capped at ~4000 chars total.
+      scored.sort((a, b) => b.score - a.score);
+      const maxChars = 4000;
+      const lines: string[] = [];
+      let totalChars = 0;
+      for (const s of scored) {
+        if (totalChars + s.snippet.length > maxChars) break;
+        lines.push(`## ${s.path} (relevance: ${s.score.toFixed(2)})`);
+        lines.push('```');
+        lines.push(s.snippet);
+        lines.push('```');
+        lines.push('');
+        totalChars += s.snippet.length;
+      }
+
+      logger.info(
+        { taskId: task.taskId, fileCount: scored.length, injectedChars: totalChars },
+        'code context injected into objective',
+      );
+      return lines.join('\n');
+    } catch (e) {
+      logger.warn(
+        { err: e, taskId: task.taskId },
+        'code context injection failed — proceeding without',
+      );
+      return undefined;
+    }
+  }
+
   private buildObjective(
     task: TaskNode,
     goal: Goal,
@@ -527,6 +644,7 @@ export class TaskOrchestrator {
       output: Record<string, unknown> | null;
     }>,
     extraContext?: string,
+    codeContext?: string,
   ): string {
     const lines: string[] = [
       `# Goal: ${goal.title}`,
@@ -550,6 +668,9 @@ export class TaskOrchestrator {
         }
         lines.push('');
       }
+    }
+    if (codeContext) {
+      lines.push(`# Relevant code from the repository`, codeContext, '');
     }
     if (goal.acceptanceCriteria.length > 0) {
       lines.push(`# Goal acceptance criteria`);
