@@ -96,6 +96,38 @@ const schema = z.object({
     summarizerModel: z.string().default('minicpm5-summarizer'),
     defaultThinkMode: z.enum(['think', 'no-think']).default('no-think'),
     /**
+     * Per-task-type model override map. When a task type is mapped here,
+     * the orchestrator uses the mapped model for that task type's
+     * analyst step (and for CODE_CHANGE, for the patch-proposal step).
+     * Task types not in the map fall back to `analystModel` (the default).
+     *
+     * This is the multi-provider cost-optimisation knob: pair a cheap
+     * router with a capable code model and a strong analyst. Example
+     * production config:
+     *
+     *   TASK_MODEL_CODE_CHANGE=claude-3-5-sonnet-20241022
+     *   TASK_MODEL_ANALYZE=gpt-4o
+     *   TASK_MODEL_RETRIEVE=gpt-4o-mini
+     *   TASK_MODEL_TEST=gemini-2.0-flash
+     *
+     * The map is keyed by TaskType (PLAN / RETRIEVE / ANALYZE / TOOL /
+     * CODE_CHANGE / TEST / VERIFY / SUMMARIZE). All keys are optional.
+     *
+     * See docs/supervisor/adr/0010-per-task-model-selection.md.
+     */
+    taskModelMap: z
+      .object({
+        PLAN: z.string().optional(),
+        RETRIEVE: z.string().optional(),
+        ANALYZE: z.string().optional(),
+        TOOL: z.string().optional(),
+        CODE_CHANGE: z.string().optional(),
+        TEST: z.string().optional(),
+        VERIFY: z.string().optional(),
+        SUMMARIZE: z.string().optional(),
+      })
+      .default({}),
+    /**
      * Phase 2 — model residency manager. Only applies to the `ollama`
      * backend. The pool keeps at most `pool.maxResident` MiniCPM5 variants
      * loaded in Ollama at any time. Other applications loading models into
@@ -391,6 +423,16 @@ function loadConfig(): SupervisorConfig {
       analystModel: process.env.MINICPM5_ANALYST_MODEL,
       summarizerModel: process.env.MINICPM5_SUMMARIZER_MODEL,
       defaultThinkMode: process.env.MINICPM5_DEFAULT_THINK_MODE,
+      taskModelMap: {
+        PLAN: process.env.TASK_MODEL_PLAN,
+        RETRIEVE: process.env.TASK_MODEL_RETRIEVE,
+        ANALYZE: process.env.TASK_MODEL_ANALYZE,
+        TOOL: process.env.TASK_MODEL_TOOL,
+        CODE_CHANGE: process.env.TASK_MODEL_CODE_CHANGE,
+        TEST: process.env.TASK_MODEL_TEST,
+        VERIFY: process.env.TASK_MODEL_VERIFY,
+        SUMMARIZE: process.env.TASK_MODEL_SUMMARIZE,
+      },
       pool: {
         maxResident: process.env.MODEL_POOL_MAX_RESIDENT,
         keepAliveMs: process.env.MODEL_POOL_KEEP_ALIVE_MS,
