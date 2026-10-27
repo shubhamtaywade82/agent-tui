@@ -240,5 +240,22 @@ export class PatchWorkflow {
         // best effort
       }
     }
+    // Also delete the `-review` branch so a subsequent apply() on the
+    // same base branch doesn't fail with "branch already exists".
+    // The branch name is derived from the worktree path's last segment
+    // minus the `-review` suffix — but we don't have the base branch
+    // name here. Instead, try to detect and delete any `*-review`
+    // branches that no longer have a worktree. This is best-effort.
+    try {
+      const branches = await runGit(['-C', repoPath, 'branch', '--list', '*-review']);
+      for (const line of branches.split('\n').filter(Boolean)) {
+        const name = line.replace(/^[* ]+/, '').trim();
+        if (name) {
+          await runGit(['-C', repoPath, 'branch', '-D', name]).catch(() => undefined);
+        }
+      }
+    } catch {
+      // best effort
+    }
   }
 }
