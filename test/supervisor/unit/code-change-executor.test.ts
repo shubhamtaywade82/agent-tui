@@ -26,7 +26,7 @@ import { PatchWorkflow } from '../../../src/supervisor/code/patch.js';
 import { MockBackend } from '../../../src/supervisor/inference/mock.js';
 import type { SandboxExecutor, SandboxResult } from '../../../src/supervisor/sandbox/executor.js';
 
-function makeSandbox(results: 'pass' | 'fail' | ((cmd: string) => boolean)): {
+function makeSandbox(results: 'pass' | 'fail' | ((cmd: string) => boolean) | (() => boolean)): {
   sandbox: SandboxExecutor;
   calls: string[];
 } {
@@ -35,7 +35,13 @@ function makeSandbox(results: 'pass' | 'fail' | ((cmd: string) => boolean)): {
     run: async (req: { command: string }): Promise<SandboxResult> => {
       calls.push(req.command);
       const ok =
-        results === 'pass' ? true : typeof results === 'function' ? results(req.command) : false;
+        results === 'pass'
+          ? true
+          : results === 'fail'
+            ? false
+            : typeof results === 'function'
+              ? results(req.command)
+              : false;
       return {
         ok,
         exitCode: ok ? 0 : 1,
@@ -104,7 +110,9 @@ describe('CodeChangeExecutor — schema validation', () => {
 
   it('rejects free-form text output with errors', async () => {
     const backend = new MockBackend();
+    // Two free-text responses: original + 1 repair attempt (default maxRepairAttempts=1).
     backend.enqueue('minicpm5-analyst', () => 'I think you should change the file.');
+    backend.enqueue('minicpm5-analyst', () => 'Still not JSON, sorry.');
     const { sandbox } = makeSandbox('pass');
     const wf = new PatchWorkflow(sandbox);
     const executor = new CodeChangeExecutor(backend, 'minicpm5-analyst', wf);
@@ -123,6 +131,10 @@ describe('CodeChangeExecutor — schema validation', () => {
 
   it('rejects a proposal with no files', async () => {
     const backend = new MockBackend();
+    // Two invalid responses: original + 1 repair attempt.
+    backend.enqueue('minicpm5-analyst', () => ({
+      json: { files: {}, branch: 'feature', verifyCommands: [] },
+    }));
     backend.enqueue('minicpm5-analyst', () => ({
       json: { files: {}, branch: 'feature', verifyCommands: [] },
     }));
@@ -142,10 +154,18 @@ describe('CodeChangeExecutor — schema validation', () => {
 
   it('rejects an invalid git branch name', async () => {
     const backend = new MockBackend();
+    // Two invalid responses: original + 1 repair attempt.
     backend.enqueue('minicpm5-analyst', () => ({
       json: {
         files: { 'src/a.ts': 'export const a = 2;\n' },
         branch: '--evil', // starts with dash — option injection attempt
+        verifyCommands: [],
+      },
+    }));
+    backend.enqueue('minicpm5-analyst', () => ({
+      json: {
+        files: { 'src/a.ts': 'export const a = 2;\n' },
+        branch: '--evil',
         verifyCommands: [],
       },
     }));
@@ -167,9 +187,17 @@ describe('CodeChangeExecutor — schema validation', () => {
 describe('CodeChangeExecutor — verification is authoritative', () => {
   it('returns ok=false when a verification command fails', async () => {
     const backend = new MockBackend();
+    // Two proposals: original fails verification, repair also fails.
     backend.enqueue('minicpm5-analyst', () => ({
       json: {
         files: { 'src/a.ts': 'export const a = 2;\n' },
+        branch: 'feature',
+        verifyCommands: ['npm test'],
+      },
+    }));
+    backend.enqueue('minicpm5-analyst', () => ({
+      json: {
+        files: { 'src/a.ts': 'export const a = 3;\n' },
         branch: 'feature',
         verifyCommands: ['npm test'],
       },
@@ -189,8 +217,9 @@ describe('CodeChangeExecutor — verification is authoritative', () => {
     expect(r.error).toContain('verification');
     expect(r.verifyResults.length).toBeGreaterThan(0);
     expect(r.verifyResults.every((v) => !v.ok)).toBe(true);
-    // The default verify commands also ran (not just the model's).
-    expect(calls.length).toBe(4); // 1 model + 3 defaults
+    // Two attempts (original + 1 repair), each running 4 verify commands
+    // (1 model-proposed + 3 defaults). The repair loop runs both.
+    expect(calls.length).toBe(8);
   });
 
   it('runs the configured default verify commands even when the model proposes none', async () => {
@@ -221,12 +250,105 @@ describe('CodeChangeExecutor — verification is authoritative', () => {
   });
 });
 
+describe('CodeChangeExecutor — targeted repair loop', () => {
+  it('retries with a repair prompt when verification fails, then succeeds on the second attempt', async () => {
+    const backend = new MockBackend();
+    // First proposal fails verification (sandbox returns fail for first call).
+    backend.enqueue('minicpm5-analyst', () => ({
+      json: {
+        files: { 'src/a.ts': 'export const a = 2;\n' },
+        branch: 'feature',
+        verifyCommands: [],
+      },
+    }));
+    // Second proposal (the repair) — sandbox now passes.
+    backend.enqueue('minicpm5-analyst', () => ({
+      json: {
+        files: { 'src/a.ts': 'export const a = 2;\nexport const b = 3;\n' },
+        branch: 'feature',
+        verifyCommands: [],
+      },
+    }));
+
+    // Sandbox fails the first attempt's commands, passes the second's.
+    let callCount = 0;
+    const { sandbox } = makeSandbox(() => {
+      callCount++;
+      return callCount > 3; // first 3 calls (defaults for attempt 1) fail, rest pass
+    });
+    const wf = new PatchWorkflow(sandbox);
+    const executor = new CodeChangeExecutor(backend, 'minicpm5-analyst', wf);
+
+    const r = await executor.execute({
+      objective: 'Fix the build',
+      runId: 'r-repair',
+      repoPath: repo,
+    });
+
+    expect(r.ok).toBe(true);
+    // Two model calls: original + repair.
+    expect(backend.observedCalls()).toHaveLength(2);
+    // The repair prompt must contain the failing command's stderr.
+    const repairCall = backend.observedCalls()[1];
+    expect(repairCall?.prompt).toContain('Repair context');
+    expect(repairCall?.prompt).toContain('Previous proposal files');
+  });
+
+  it('feeds the failing command stderr into the repair prompt', async () => {
+    const backend = new MockBackend();
+    backend.enqueue('minicpm5-analyst', () => ({
+      json: {
+        files: { 'src/a.ts': 'broken syntax' },
+        branch: 'feature',
+        verifyCommands: [],
+      },
+    }));
+    // Repair also fails — we just want to inspect the repair prompt.
+    backend.enqueue('minicpm5-analyst', () => ({
+      json: {
+        files: { 'src/a.ts': 'still broken' },
+        branch: 'feature',
+        verifyCommands: [],
+      },
+    }));
+
+    // Sandbox returns a distinctive stderr message.
+    const failingSandbox = {
+      run: async () => ({
+        ok: false,
+        exitCode: 1,
+        stdout: '',
+        stderr: 'SYNTAX_ERROR_ON_LINE_1',
+        durationMs: 10,
+        timedOut: false,
+        containerId: 'test',
+      }),
+    } as unknown as SandboxExecutor;
+    const wf = new PatchWorkflow(failingSandbox);
+    const executor = new CodeChangeExecutor(backend, 'minicpm5-analyst', wf);
+
+    await executor.execute({
+      objective: 'Fix syntax',
+      runId: 'r-stderr',
+      repoPath: repo,
+    });
+
+    // The repair prompt (second call) must contain the stderr.
+    const repairCall = backend.observedCalls()[1];
+    expect(repairCall?.prompt).toContain('SYNTAX_ERROR_ON_LINE_1');
+  });
+});
+
 describe('CodeChangeExecutor — bounds enforcement', () => {
   it('rejects a patch that touches more than maxFilesPerPatch files', async () => {
     const backend = new MockBackend();
+    // Two invalid responses: original + 1 repair attempt.
     // Emit 25 files; default cap is 20.
     const files: Record<string, string> = {};
-    for (let i = 0; i < 25; i++) files[`src/file${i}.ts`] = `export const x${i} = ${i};\n`;
+    for (let i = 0; i < 25; i++) files[`src/file${i}.ts`] = `export function f${i}() {}\n`;
+    backend.enqueue('minicpm5-analyst', () => ({
+      json: { files, branch: 'feature', verifyCommands: [] },
+    }));
     backend.enqueue('minicpm5-analyst', () => ({
       json: { files, branch: 'feature', verifyCommands: [] },
     }));

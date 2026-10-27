@@ -219,6 +219,16 @@ const schema = z.object({
      * inspect the worktree's state after a failed verification.
      */
     cleanupWorktree: z.boolean().default(true),
+    /**
+     * Phase 5 follow-up — number of targeted repair attempts when
+     * verification fails. On each repair, the failing commands'
+     * stderr is fed back into the analyst's prompt alongside the
+     * original proposal, so the model can produce a revised patch
+     * that addresses the specific failure rather than re-asking
+     * from scratch. Default 1 — one repair, then terminal failure.
+     * Set to 0 to disable the repair loop entirely.
+     */
+    maxRepairAttempts: z.coerce.number().int().nonnegative().default(1),
   }),
   escalation: z.object({
     maxRetries: z.coerce.number().int().nonnegative().default(2),
@@ -333,6 +343,7 @@ function loadConfig(): SupervisorConfig {
       maxFilesPerPatch: process.env.PATCH_MAX_FILES,
       maxPatchBytes: process.env.PATCH_MAX_BYTES,
       cleanupWorktree: process.env.PATCH_CLEANUP_WORKTREE === 'false' ? false : undefined,
+      maxRepairAttempts: process.env.PATCH_MAX_REPAIR_ATTEMPTS,
     },
     escalation: {
       maxRetries: process.env.ESCALATION_MAX_RETRIES,
