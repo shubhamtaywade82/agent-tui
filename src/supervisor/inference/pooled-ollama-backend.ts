@@ -13,7 +13,7 @@
  * entirely.
  */
 import { logger } from '../observability/logger.js';
-import type { Backend, InferenceRequest, InferenceResponse } from './backend.js';
+import type { Backend, InferenceRequest, InferenceResponse, StreamChunk } from './backend.js';
 import type { ModelPool } from './model-pool.js';
 
 export class PooledOllamaBackend implements Backend {
@@ -35,6 +35,21 @@ export class PooledOllamaBackend implements Backend {
     const handle = await this.pool.acquire(req.model);
     try {
       return await this.inner.invoke(req);
+    } finally {
+      await handle.release();
+    }
+  }
+
+  /**
+   * Streaming variant — acquires the model once, then streams through the
+   * inner backend. The pin is held for the full duration of the stream
+   * (not just the first chunk) so the pool doesn't evict the model
+   * mid-generation. Released in the finally block.
+   */
+  async *stream(req: InferenceRequest): AsyncGenerator<StreamChunk, void, undefined> {
+    const handle = await this.pool.acquire(req.model);
+    try {
+      yield* this.inner.stream(req);
     } finally {
       await handle.release();
     }

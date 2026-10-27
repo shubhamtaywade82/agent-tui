@@ -269,6 +269,9 @@ export class TaskOrchestrator {
       projectId: opts.projectId ?? goal.projectId,
       allowedPaths: opts.allowedPaths ?? [],
       context: opts.context,
+      // Pass the goal ID so the CostTracker attributes per-task spend
+      // to the parent goal (ADR 0012).
+      goalId: goal.goalId,
     });
     await this.ledger.markRunning(task.taskId, run.runId);
 
@@ -399,6 +402,9 @@ export class TaskOrchestrator {
       allowedPaths: opts.allowedPaths ?? [],
       context: opts.context,
       analystModelOverride: this.resolveAnalystModel(task.type),
+      // Pass the goal ID so the CostTracker attributes per-task spend
+      // to the parent goal (ADR 0012).
+      goalId: goal.goalId,
     });
 
     await this.ledger.markRunning(task.taskId, run.runId);

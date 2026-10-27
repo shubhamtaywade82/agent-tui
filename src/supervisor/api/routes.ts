@@ -4,6 +4,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { supervisorConfig } from '../config.js';
 import type { Supervisor } from '../engine.js';
 import type { StateStore } from '../state/store.js';
 import type { TaskLedger } from '../tasks/ledger.js';
@@ -277,11 +278,17 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   });
 
   // GET /v1/healthz — liveness probe. Reports retrieval mode so operators
-  // can see whether hybrid (vector + FTS) or keyword-only search is active.
+  // can see whether hybrid (vector + FTS) or keyword-only search is active,
+  // plus the cost-budget configuration (ADR 0012) so operators can verify
+  // caps are set in production cloud deployments.
   app.get('/v1/healthz', async () => ({
     ok: true,
     ts: new Date().toISOString(),
     retrievalMode: deps.retrievalMode ?? 'keyword-only',
+    costBudget: {
+      maxCostPerRunUsd: supervisorConfig.budget.maxCostPerRunUsd,
+      maxCostPerGoalUsd: supervisorConfig.budget.maxCostPerGoalUsd,
+    },
   }));
 
   // ── Task-ledger routes (Phase 1) ───────────────────────────────────────────

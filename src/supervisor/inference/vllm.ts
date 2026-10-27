@@ -10,13 +10,14 @@
  */
 import OpenAI from 'openai';
 import type { SupervisorConfig } from '../config.js';
-import type { Backend, InferenceRequest, InferenceResponse } from './backend.js';
+import type { Backend, InferenceRequest, InferenceResponse, StreamChunk } from './backend.js';
+import { buildOpenAIChatParams, consumeOpenAIStream } from './openai-stream.js';
 
 export class VllmBackend implements Backend {
   readonly name = 'vllm';
-  private readonly client: OpenAI;
+  protected readonly client: OpenAI;
 
-  constructor(private readonly config: SupervisorConfig) {
+  constructor(protected readonly config: SupervisorConfig) {
     this.client = new OpenAI({
       baseURL: config.inference.vllmBaseUrl,
       apiKey: config.inference.vllmApiKey,
@@ -39,11 +40,7 @@ export class VllmBackend implements Backend {
     // doing so to request a small JSON output, not to constrain generation
     // length.
     const completion = await this.client.chat.completions.create({
-      model: req.model,
-      messages: [{ role: 'user', content: req.prompt }],
-      temperature,
-      ...(req.maxOutputTokens !== undefined ? { max_tokens: req.maxOutputTokens } : {}),
-      response_format: req.formatJson ? { type: 'json_object' } : undefined,
+      ...buildOpenAIChatParams(req, temperature),
       // @ts-expect-error - chat_template_kwargs is supported by vLLM but not in the OpenAI SDK types
       chat_template_kwargs: { enable_thinking: thinkMode === 'think' },
     });
@@ -71,6 +68,27 @@ export class VllmBackend implements Backend {
       latencyMs: Date.now() - started,
       model: completion.model ?? req.model,
     };
+  }
+
+  /**
+   * Streaming variant — uses the OpenAI SDK's `stream: true` overload.
+   * vLLM streams via SSE; the SDK exposes the chunks as an async iterable.
+   *
+   * JSON mode is forwarded via `response_format`; vLLM forwards it to the
+   * served model's chat template. Reasoning content (o-series or models that
+   * emit `delta.reasoning_content`) is surfaced as `thinking` chunks.
+   */
+  async *stream(req: InferenceRequest): AsyncGenerator<StreamChunk, void, undefined> {
+    const started = Date.now();
+    const temperature = req.temperature ?? 0.1;
+    const stream = await this.client.chat.completions.create({
+      ...buildOpenAIChatParams(req, temperature),
+      stream: true,
+      // Include usage on the final chunk — without this the OpenAI SDK
+      // omits `usage` from streamed responses and we'd report 0 tokens.
+      stream_options: { include_usage: true },
+    });
+    yield* consumeOpenAIStream(stream, req, started);
   }
 
   async health(): Promise<boolean> {

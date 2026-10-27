@@ -28,7 +28,12 @@ import { ContextBuilder } from './context/builder.js';
 import type { MemoryRecord, MemoryService } from './context/memory.js';
 import type { RetrievalResult } from './context/retrieval.js';
 import { MetricsCollector } from './evals/metrics.js';
-import type { Backend } from './inference/backend.js';
+import type { Backend, InferenceRequest, InferenceResponse } from './inference/backend.js';
+import {
+  BudgetExceededError,
+  type CostTracker,
+  createCostTrackerFromEnv,
+} from './observability/cost-tracker.js';
 import { logger } from './observability/logger.js';
 import { withSpan, zodParseFailureCounter } from './observability/telemetry.js';
 import { RouterClassifier } from './router/classifier.js';
@@ -106,6 +111,14 @@ export interface SupervisorDeps {
    * invoked).
    */
   fallback?: Backend;
+  /**
+   * Cost tracker — ADR 0012. When supplied, every model invocation is
+   * recorded against the run + goal (when supplied). Throws
+   * `BudgetExceededError` when the cumulative cost exceeds the configured
+   * cap. Defaults to a tracker constructed from env vars
+   * (`BUDGET_MAX_COST_USD_PER_RUN`, etc.).
+   */
+  costTracker?: CostTracker;
 }
 
 export class Supervisor {
@@ -149,6 +162,22 @@ export class Supervisor {
    * model is used regardless.
    */
   private readonly runAnalystModelOverride = new Map<string, string>();
+  /**
+   * Per-run goal ID — used by the CostTracker to attribute spend to the
+   * parent goal. Stored transiently (not on AgentState) to keep the
+   * persisted schema unchanged.
+   */
+  private readonly runGoalId = new Map<string, string | undefined>();
+  /**
+   * Per-run stream flag — when true, the analyst step uses
+   * `Backend.stream()` instead of `Backend.invoke()` (ADR 0011).
+   */
+  private readonly runStreamAnalyst = new Map<string, boolean>();
+  /**
+   * Cost tracker — ADR 0012. Defaults to a tracker constructed from env
+   * vars; callers can supply a custom one (e.g. tests with a low cap).
+   */
+  private readonly costTracker: CostTracker;
 
   constructor(private readonly deps: SupervisorDeps) {
     this.permissions = deps.permissions ?? new PermissionService();
@@ -161,6 +190,7 @@ export class Supervisor {
       this.validator,
       supervisorConfig.inference.toolModel,
     );
+    this.costTracker = deps.costTracker ?? createCostTrackerFromEnv();
 
     // Persist every domain event to the events table (§9.2)
     this.bus.subscribe(async (e: DomainEvent) => {
@@ -190,6 +220,21 @@ export class Supervisor {
      * Escalation (if the router chose to escalate) still wins.
      */
     analystModelOverride?: string;
+    /**
+     * Goal ID — used by the CostTracker (ADR 0012) to attribute
+     * per-task spend to the parent goal. When omitted, only the
+     * per-run cap applies.
+     */
+    goalId?: string;
+    /**
+     * When true, the analyst step streams tokens via `Backend.stream()`
+     * instead of awaiting the full response via `Backend.invoke()`. The
+     * engine emits `model_token` events as deltas arrive. The final
+     * `InferenceResponse` is reconstructed from the accumulated chunks
+     * — consumers see the same shape either way. Default false (keeps
+     * latency-optimal for batch workloads).
+     */
+    streamAnalyst?: boolean;
   }): Promise<AgentState> {
     const startedAt = Date.now();
     const state = newAgentState(params.objective, {
@@ -207,6 +252,10 @@ export class Supervisor {
     }
     if (params.analystModelOverride) {
       this.runAnalystModelOverride.set(state.runId, params.analystModelOverride);
+    }
+    this.runGoalId.set(state.runId, params.goalId);
+    if (params.streamAnalyst) {
+      this.runStreamAnalyst.set(state.runId, true);
     }
     await this.deps.store.saveRun(state);
     await this.bus.publish({
@@ -333,6 +382,11 @@ export class Supervisor {
       this.runMemory.delete(state.runId);
       this.runModelChoice.delete(state.runId);
       this.runAnalystModelOverride.delete(state.runId);
+      this.runGoalId.delete(state.runId);
+      this.runStreamAnalyst.delete(state.runId);
+      // Clean up the per-run cost ledger (the per-goal ledger persists
+      // until the orchestrator's goal completes — see TaskOrchestrator).
+      this.costTracker.clearRun(state.runId);
     }
     return state;
   }
@@ -361,6 +415,79 @@ export class Supervisor {
       return { backend: this.deps.fallback, model: choice.fallbackModel };
     }
     return { backend: this.deps.backend, model: defaultLocalModel };
+  }
+
+  /**
+   * Consume a `Backend.stream()` async iterable into an `InferenceResponse`,
+   * emitting `model_token` events for each delta (ADR 0011). Used when the
+   * run opted into streaming via `Supervisor.run({ streamAnalyst: true })`.
+   *
+   * The accumulated result has the same shape as `Backend.invoke()`, so
+   * downstream consumers don't need to branch on streaming vs non-streaming.
+   */
+  private async invokeStreaming(
+    backend: Backend,
+    req: InferenceRequest,
+    runId: string,
+  ): Promise<InferenceResponse> {
+    const parts: string[] = [];
+    let tokens = { prompt: 0, completion: 0 };
+    let model = req.model;
+    let latencyMs = 0;
+    let error: Error | undefined;
+
+    try {
+      for await (const chunk of backend.stream(req)) {
+        switch (chunk.type) {
+          case 'delta':
+            parts.push(chunk.text);
+            await this.bus.publish({
+              type: 'model_token',
+              runId,
+              payload: { text: chunk.text },
+              occurredAt: new Date().toISOString(),
+            });
+            break;
+          case 'thinking':
+            await this.bus.publish({
+              type: 'model_thinking',
+              runId,
+              payload: { text: chunk.text },
+              occurredAt: new Date().toISOString(),
+            });
+            break;
+          case 'done':
+            tokens = chunk.tokens;
+            model = chunk.model;
+            latencyMs = chunk.latencyMs;
+            break;
+          case 'error':
+            error = chunk.error;
+            break;
+        }
+      }
+    } catch (e) {
+      // Backend threw during iteration — surface as a stream error.
+      error = e instanceof Error ? e : new Error(String(e));
+    }
+
+    if (error) {
+      throw error;
+    }
+
+    const content = parts.join('').trim();
+    let json: unknown;
+    let parsed = false;
+    if (req.formatJson) {
+      try {
+        json = JSON.parse(content);
+        parsed = true;
+      } catch {
+        parsed = false;
+      }
+    }
+
+    return { content, json, parsed, tokens, latencyMs, model };
   }
 
   // ─── Steps ──────────────────────────────────────────────────────────────
@@ -735,7 +862,7 @@ export class Supervisor {
       const defaultAnalystModel =
         this.runAnalystModelOverride.get(state.runId) ?? supervisorConfig.inference.analystModel;
       const { backend, model } = this.selectBackend(state, defaultAnalystModel);
-      const r = await backend.invoke({
+      const inferenceReq = {
         model,
         prompt: built.prompt,
         thinkMode: state.thinkMode,
@@ -743,8 +870,39 @@ export class Supervisor {
         // redundant with the backend default. Leaving it unset lets the
         // Modelfile's generation defaults apply and the configured
         // `context.budgetTokens` drive the context window.
-      });
+      };
+
+      // ADR 0011 — when the run opted into streaming (e.g. a TUI driving
+      // live token display), use Backend.stream() instead of invoke().
+      // The accumulated result is reshaped into the same InferenceResponse.
+      const useStream = this.runStreamAnalyst.get(state.runId) === true;
+      const r = useStream
+        ? await this.invokeStreaming(backend, inferenceReq, state.runId)
+        : await backend.invoke(inferenceReq);
+
+      // ADR 0012 — record cost. Throws BudgetExceededError when the
+      // cumulative spend exceeds the configured cap.
+      const goalId = this.runGoalId.get(state.runId);
+      try {
+        this.costTracker.recordUsage({
+          runId: state.runId,
+          goalId,
+          model: r.model,
+          promptTokens: r.tokens.prompt,
+          completionTokens: r.tokens.completion,
+        });
+      } catch (e) {
+        if (e instanceof BudgetExceededError) {
+          state.errorTrace = [...state.errorTrace, e.message];
+          throw e;
+        }
+        // Other errors from the tracker are non-fatal — log and continue.
+        logger.warn({ err: e, runId: state.runId }, 'cost tracker failed to record usage');
+      }
       state.executionResult = r.content;
+      // ADR 0012 — surface the cumulative cost so consumers (TUI, log
+      // scrapers) can show the running spend alongside the model output.
+      const costSnapshot = this.costTracker.getRunCost(state.runId);
       await this.bus.publish({
         type: 'model_invoked',
         runId: state.runId,
@@ -753,6 +911,7 @@ export class Supervisor {
           thinkMode: state.thinkMode,
           latencyMs: r.latencyMs,
           tokens: r.tokens.prompt + r.tokens.completion,
+          costUsd: costSnapshot.totalCostUsd,
         },
         occurredAt: new Date().toISOString(),
       });

@@ -47,7 +47,39 @@ export type DomainEvent =
         thinkMode: 'think' | 'no-think';
         latencyMs: number;
         tokens: number;
+        /**
+         * Cumulative USD cost for this run, post-invocation (ADR 0012).
+         * Includes all model invocations recorded against this runId.
+         * Undefined when cost tracking is disabled (default local-only
+         * deployments where the cap is Infinity and pricing is 0).
+         */
+        costUsd?: number;
       };
+      occurredAt: string;
+    }
+  | {
+      /**
+       * Streaming token event — emitted per-delta when the run opted into
+       * streaming via `Supervisor.run({ streamAnalyst: true })` (ADR 0011).
+       * Subscribers (TUIs, log scrapers) accumulate `text` to display
+       * the assistant's output token-by-token as it arrives.
+       */
+      type: 'model_token';
+      runId: string;
+      payload: { text: string };
+      occurredAt: string;
+    }
+  | {
+      /**
+       * Reasoning-trace event — emitted per thinking delta on reasoning
+       * models (Anthropic thinking, Gemini thinkingConfig, Ollama
+       * ThinkingEvent, OpenAI o-series reasoning_content) when streaming
+       * is enabled. Surfaced separately from `model_token` so consumers
+       * can choose to display or hide the reasoning trace.
+       */
+      type: 'model_thinking';
+      runId: string;
+      payload: { text: string };
       occurredAt: string;
     }
   | {

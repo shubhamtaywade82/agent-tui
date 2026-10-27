@@ -185,6 +185,26 @@ const schema = z.object({
     budgetTokens: z.coerce.number().int().positive().default(8192),
     reserveTokens: z.coerce.number().int().positive().default(512),
   }),
+  /**
+   * Cost budget — ADR 0012. The cost tracker accumulates USD per run and
+   * per goal from a built-in pricing table. When the cumulative spend
+   * exceeds the configured cap, the run aborts with a `BudgetExceededError`.
+   * Defaults are Infinity (no cap) — production deployments should set
+   * these to prevent runaway costs.
+   *
+   * Per-model pricing overrides via `BUDGET_PRICING_<MODEL>=<in>|<out>|<cached>`
+   * env vars — see `loadPricingOverridesFromEnv()`.
+   */
+  budget: z.object({
+    /** Hard cap per run in USD. Default Infinity (no cap). */
+    maxCostPerRunUsd: z.coerce.number().positive().default(Number.POSITIVE_INFINITY),
+    /** Hard cap per goal in USD. Default Infinity (no cap). */
+    maxCostPerGoalUsd: z.coerce.number().positive().default(Number.POSITIVE_INFINITY),
+    /** Fallback input price ($/1M tokens) for models not in the pricing table. Default $1.00. */
+    fallbackInputPer1M: z.coerce.number().nonnegative().default(1.0),
+    /** Fallback output price ($/1M tokens) for models not in the pricing table. Default $3.00. */
+    fallbackOutputPer1M: z.coerce.number().nonnegative().default(3.0),
+  }),
   retrieval: z.object({
     topK: z.coerce.number().int().positive().default(5),
     rerank: z.boolean().default(true),
@@ -463,6 +483,12 @@ function loadConfig(): SupervisorConfig {
     context: {
       budgetTokens: process.env.CONTEXT_BUDGET_TOKENS,
       reserveTokens: process.env.CONTEXT_RESERVE_TOKENS,
+    },
+    budget: {
+      maxCostPerRunUsd: process.env.BUDGET_MAX_COST_USD_PER_RUN,
+      maxCostPerGoalUsd: process.env.BUDGET_MAX_COST_USD_PER_GOAL,
+      fallbackInputPer1M: process.env.BUDGET_FALLBACK_INPUT_PER_1M,
+      fallbackOutputPer1M: process.env.BUDGET_FALLBACK_OUTPUT_PER_1M,
     },
     retrieval: {
       topK: process.env.RETRIEVAL_TOP_K,
