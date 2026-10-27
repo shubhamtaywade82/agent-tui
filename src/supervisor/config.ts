@@ -31,22 +31,80 @@ const schema = z.object({
     format: z.enum(['pretty', 'json']).default('pretty'),
   }),
   inference: z.object({
-    backend: z.enum(['ollama', 'vllm', 'mock']).default('ollama'),
+    /**
+     * Inference backend selector. The supervisor engine never calls a model
+     * directly — it calls a `Backend` implementation selected here.
+     *
+     *   - `ollama`     — local Ollama daemon (default; original target).
+     *   - `vllm`       — any OpenAI-compatible endpoint: vLLM, LM Studio,
+     *                    LocalAI, Together, Anyscale, Z.ai, etc. Set
+     *                    `vllmBaseUrl` + `vllmApiKey` + `*Model` env vars.
+     *   - `openai`     — OpenAI hosted (gpt-4o, gpt-4o-mini, o1, etc.).
+     *                    Set `OPENAI_API_KEY` + `*Model` env vars.
+     *   - `anthropic`  — Anthropic hosted (claude-3-5-sonnet, claude-3-5-haiku,
+     *                    claude-opus-4, etc.). Set `ANTHROPIC_API_KEY`.
+     *   - `gemini`     — Google Gemini hosted (gemini-1.5-pro, gemini-1.5-flash,
+     *                    gemini-2.0-flash). Set `GEMINI_API_KEY`.
+     *   - `mock`       — deterministic stub for tests; no network.
+     *
+     * See docs/supervisor/adr/0009-multi-provider-inference.md for the full
+     * capability matrix per provider (think mode, JSON mode, embeddings,
+     * escalation, etc.).
+     */
+    backend: z.enum(['ollama', 'vllm', 'openai', 'anthropic', 'gemini', 'mock']).default('ollama'),
     ollamaHost: z.string().url().default('http://localhost:11434'),
     vllmBaseUrl: z.string().url().default('http://localhost:8000/v1'),
     vllmApiKey: z.string().default('local'),
+    /**
+     * OpenAI provider config. Used when `INFERENCE_BACKEND=openai`.
+     * Override `OPENAI_BASE_URL` to point at an Azure OpenAI or compatible
+     * proxy; otherwise the official `api.openai.com/v1` endpoint is used.
+     */
+    openai: z.object({
+      baseUrl: z.string().url().default('https://api.openai.com/v1'),
+      apiKey: z.string().optional(),
+      /** Optional organisation header (OpenAI multi-org accounts). */
+      organization: z.string().optional(),
+      /** Optional project header (OpenAI platform projects). */
+      project: z.string().optional(),
+    }),
+    /**
+     * Anthropic provider config. Used when `INFERENCE_BACKEND=anthropic`.
+     * The Anthropic SDK exposes `/v1/messages`, not `/v1/chat/completions`,
+     * so a dedicated backend (`anthropic.ts`) wraps it.
+     */
+    anthropic: z.object({
+      apiKey: z.string().optional(),
+      /** Optional API version header. Defaults to the SDK's current pinned version. */
+      version: z.string().optional(),
+      /** Optional base URL override (Anthropic-compatible proxies). */
+      baseUrl: z.string().url().optional(),
+    }),
+    /**
+     * Gemini provider config. Used when `INFERENCE_BACKEND=gemini`.
+     * The Google GenAI SDK exposes a different request/response shape
+     * than OpenAI, so a dedicated backend (`gemini.ts`) wraps it.
+     */
+    gemini: z.object({
+      apiKey: z.string().optional(),
+      /** Override the default Generative Language API endpoint. */
+      baseUrl: z.string().url().optional(),
+    }),
     routerModel: z.string().default('minicpm5-router'),
     toolModel: z.string().default('minicpm5-toolagent'),
     analystModel: z.string().default('minicpm5-analyst'),
     summarizerModel: z.string().default('minicpm5-summarizer'),
     defaultThinkMode: z.enum(['think', 'no-think']).default('no-think'),
     /**
-     * Phase 2 — model residency manager. The pool keeps at most
-     * `pool.maxResident` MiniCPM5 variants loaded in Ollama at any time.
-     * Other applications loading models into the same Ollama server can
-     * break the cap; route all model-loading traffic through agent-tui or
-     * give it a dedicated Ollama instance to enforce it (see
-     * docs/supervisor/adr/0006-model-pool.md).
+     * Phase 2 — model residency manager. Only applies to the `ollama`
+     * backend. The pool keeps at most `pool.maxResident` MiniCPM5 variants
+     * loaded in Ollama at any time. Other applications loading models into
+     * the same Ollama server can break the cap; route all model-loading
+     * traffic through agent-tui or give it a dedicated Ollama instance to
+     * enforce it (see docs/supervisor/adr/0006-model-pool.md).
+     *
+     * Cloud backends (vllm/openai/anthropic/gemini) ignore the pool — they
+     * don't have a notion of resident models.
      */
     pool: z.object({
       /** Hard upper bound on resident MiniCPM5 variants. Default 3. */
@@ -115,24 +173,48 @@ const schema = z.object({
    */
   embedding: z.object({
     /**
-     * Ollama embedding model name, e.g. `nomic-embed-text`,
-     * `bge-m3`, `mxbai-embed-large`. MUST be a model the configured
-     * Ollama instance has pulled. Defaults to `nomic-embed-text`
-     * (768-dim, matches the existing chunks schema).
+     * Embedding provider selector.
+     *
+     *   - `ollama`  — uses OllamaEmbedder against `/api/embed`. Used when
+     *                 `INFERENCE_BACKEND=ollama` AND a local Ollama instance
+     *                 has the embedding model pulled.
+     *   - `openai`  — uses OpenAIEmbedder against `/v1/embeddings`. Works
+     *                 for OpenAI (`text-embedding-3-small/large`), Voyage,
+     *                 Cohere, Jina, Nomic, and any OpenAI-compatible embeddings
+     *                 endpoint (Azure OpenAI, Ollama's OpenAI-compat layer, etc.).
+     *   - `none`    — no embedder; the retriever falls back to keyword-only
+     *                 search. This is the safe default when no embedding
+     *                 provider is reachable. `GET /v1/healthz` reports
+     *                 `retrievalMode: 'keyword-only'`.
+     *
+     * Default `ollama` — preserves the existing Phase 4 behaviour. When the
+     * primary inference backend is a cloud provider (openai/anthropic/gemini),
+     * set `EMBEDDING_PROVIDER=openai` (or use a separate Ollama instance
+     * just for embeddings).
+     */
+    provider: z.enum(['ollama', 'openai', 'none']).default('ollama'),
+    /**
+     * Embedding model name, e.g. `nomic-embed-text` (Ollama),
+     * `text-embedding-3-small` (OpenAI), `voyage-3` (Voyage via OpenAI-compat),
+     * `bge-m3`, `mxbai-embed-large`. MUST be a model the configured embedder
+     * instance can serve.
      */
     model: z.string().default('nomic-embed-text'),
     /**
      * Vector dimension the embedder produces. MUST match the
      * `vector(N)` declaration in the chunks table DDL. Default 768
-     * (nomic-embed-text). Override for bge-m3 (1024) or
-     * mxbai-embed-large (1024). The retriever validates this on
-     * init() against the live schema and refuses to start on mismatch.
+     * (nomic-embed-text). Override for bge-m3 (1024),
+     * mxbai-embed-large (1024), text-embedding-3-small (1536),
+     * text-embedding-3-large (3072), voyage-3 (1024). The retriever
+     * validates this on init() against the live schema and refuses
+     * to start on mismatch.
      */
     dimension: z.coerce.number().int().positive().default(768),
     /**
      * Max texts per /api/embed call. Ollama batches embeddings
      * server-side; larger batches are more efficient but use more
-     * VRAM. Default 32.
+     * VRAM. Default 32. OpenAI's /v1/embeddings accepts up to 2048
+     * texts per call — same batch logic applies.
      */
     batchSize: z.coerce.number().int().positive().default(32),
     /**
@@ -147,6 +229,16 @@ const schema = z.object({
      * so old chunks can be identified and re-indexed.
      */
     modelVersion: z.string().default('nomic-embed-text-v1'),
+    /**
+     * OpenAI embeddings endpoint override. When `EMBEDDING_PROVIDER=openai`,
+     * defaults to the same base URL as the OpenAI inference backend. Set
+     * this to use a different OpenAI-compatible embeddings host (Voyage,
+     * Cohere, Jina, your own embeddings service). The OpenAIEmbedder uses
+     * `/embeddings` under this base URL.
+     */
+    openaiBaseUrl: z.string().url().optional(),
+    /** API key for the OpenAI-compatible embeddings endpoint. Inherits OPENAI_API_KEY by default. */
+    openaiApiKey: z.string().optional(),
   }),
   memory: z.object({
     episodicTtlDays: z.coerce.number().int().positive().default(30),
@@ -279,6 +371,21 @@ function loadConfig(): SupervisorConfig {
       ollamaHost: process.env.OLLAMA_HOST,
       vllmBaseUrl: process.env.VLLM_BASE_URL,
       vllmApiKey: process.env.VLLM_API_KEY,
+      openai: {
+        baseUrl: process.env.OPENAI_BASE_URL,
+        apiKey: process.env.OPENAI_API_KEY,
+        organization: process.env.OPENAI_ORGANIZATION,
+        project: process.env.OPENAI_PROJECT,
+      },
+      anthropic: {
+        apiKey: process.env.ANTHROPIC_API_KEY,
+        version: process.env.ANTHROPIC_VERSION,
+        baseUrl: process.env.ANTHROPIC_BASE_URL,
+      },
+      gemini: {
+        apiKey: process.env.GEMINI_API_KEY,
+        baseUrl: process.env.GEMINI_BASE_URL,
+      },
       routerModel: process.env.MINICPM5_ROUTER_MODEL,
       toolModel: process.env.MINICPM5_TOOL_MODEL,
       analystModel: process.env.MINICPM5_ANALYST_MODEL,
@@ -321,11 +428,14 @@ function loadConfig(): SupervisorConfig {
       minScore: process.env.RETRIEVAL_MIN_SCORE,
     },
     embedding: {
+      provider: process.env.EMBEDDING_PROVIDER,
       model: process.env.EMBEDDING_MODEL,
       dimension: process.env.EMBEDDING_DIMENSION,
       batchSize: process.env.EMBEDDING_BATCH_SIZE,
       truncate: process.env.EMBEDDING_TRUNCATE === 'false' ? false : undefined,
       modelVersion: process.env.EMBEDDING_MODEL_VERSION,
+      openaiBaseUrl: process.env.EMBEDDING_OPENAI_BASE_URL,
+      openaiApiKey: process.env.EMBEDDING_OPENAI_API_KEY,
     },
     memory: {
       episodicTtlDays: process.env.MEMORY_EPISODIC_TTL_DAYS,
