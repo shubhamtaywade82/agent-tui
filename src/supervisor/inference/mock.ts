@@ -77,4 +77,28 @@ export class MockBackend implements Backend {
   async health(): Promise<boolean> {
     return true;
   }
+
+  /**
+   * Streaming variant — yields a single `delta` chunk with the full content
+   * (the mock backend doesn't have real token-by-token generation), then a
+   * `done` chunk. The supervisor engine treats this the same as a real
+   * stream — useful for testing streaming consumers without a live provider.
+   */
+  async *stream(
+    req: InferenceRequest,
+  ): AsyncGenerator<import('./backend.js').StreamChunk, void, undefined> {
+    // Reuse the non-streaming invoke() to compute the response, then yield it
+    // as a single delta + done pair. The mock's deterministic behaviour is
+    // preserved.
+    const r = await this.invoke(req);
+    if (r.content) {
+      yield { type: 'delta', text: r.content };
+    }
+    yield {
+      type: 'done',
+      tokens: r.tokens,
+      model: r.model,
+      latencyMs: r.latencyMs,
+    };
+  }
 }

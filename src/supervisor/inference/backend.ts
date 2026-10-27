@@ -66,9 +66,56 @@ export interface InferenceResponse {
   model: string;
 }
 
+/**
+ * Streaming chunk emitted by `Backend.stream()`. A discriminated union
+ * matching the OpenAI / Anthropic / Gemini / Ollama streaming event
+ * shapes — backend-specific events are mapped into these four types so
+ * the supervisor engine has one consumer path.
+ *
+ *   - `delta`: a text-content token. Concatenate `text` to build the
+ *     final assistant message.
+ *   - `thinking`: a reasoning-trace token (e.g. Anthropic's thinking
+ *     blocks, Gemini's `includeThoughts`, Ollama's `ThinkingEvent`).
+ *     Surfaced separately for live observability but not part of the
+ *     final content.
+ *   - `done`: the final chunk. Carries the total token usage and the
+ *     model name (which may differ from `req.model` after escalation).
+ *     Exactly one `done` chunk is emitted per stream, always last.
+ *   - `error`: an unrecoverable error. The stream ends after this chunk.
+ */
+export type StreamChunk =
+  | { type: 'delta'; text: string }
+  | { type: 'thinking'; text: string }
+  | {
+      type: 'done';
+      tokens: { prompt: number; completion: number };
+      model: string;
+      latencyMs: number;
+    }
+  | { type: 'error'; error: Error };
+
 export interface Backend {
   readonly name: string;
   invoke(req: InferenceRequest): Promise<InferenceResponse>;
+  /**
+   * Streaming variant of `invoke()`. Returns an async iterable of
+   * `StreamChunk` events. The supervisor engine consumes this to emit
+   * live `model_token` events (§15.1 observability) and to surface
+   * progress to the TUI without waiting for the full response.
+   *
+   * Backends that don't support streaming (e.g. the MockBackend in
+   * tests) implement this by yielding a single `delta` chunk with the
+   * full content, then a `done` chunk. The default non-streaming
+   * `invoke()` is unchanged.
+   *
+   * The stream must emit exactly one `done` chunk last (or one `error`
+   * chunk, after which the stream ends). Backends are responsible for
+   * cleaning up their underlying SDK resources (closing iterators,
+   * aborting on AbortSignal, etc.) on early termination by the caller.
+   *
+   * See docs/supervisor/adr/0011-streaming-backends.md.
+   */
+  stream(req: InferenceRequest): AsyncIterable<StreamChunk>;
   /** Liveness probe used by the API healthcheck. */
   health(): Promise<boolean>;
 }

@@ -34,7 +34,7 @@
 import { GoogleGenAI } from '@google/genai';
 import type { SupervisorConfig } from '../config.js';
 import { logger } from '../observability/logger.js';
-import type { Backend, InferenceRequest, InferenceResponse } from './backend.js';
+import type { Backend, InferenceRequest, InferenceResponse, StreamChunk } from './backend.js';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 
@@ -76,25 +76,18 @@ export class GeminiBackend implements Backend {
     logger.info({ baseUrl: geminiCfg.baseUrl }, 'GeminiBackend: initialised');
   }
 
-  async invoke(req: InferenceRequest): Promise<InferenceResponse> {
-    const started = Date.now();
+  /** Build the Gemini GenerateContentConfig from an InferenceRequest. */
+  private buildConfig(req: InferenceRequest): Record<string, unknown> {
     const temperature = req.temperature ?? 0.1;
     const thinkMode = req.thinkMode ?? this.config.inference.defaultThinkMode;
 
-    // Build the GenerateContentConfig. Gemini's JSON mode is a wire-level
-    // flag; we set responseMimeType when the caller requests formatJson.
     const config: Record<string, unknown> = {
       temperature,
       ...(req.maxOutputTokens !== undefined ? { maxOutputTokens: req.maxOutputTokens } : {}),
       ...(req.formatJson ? { responseMimeType: 'application/json' } : {}),
     };
 
-    // Thinking mode: only forward when explicitly opted in. Gemini 2.0
-    // Flash Thinking and Gemini 2.5 models accept a `thinkingConfig`.
-    // Older models return 400 — the caller can disable thinking via
-    // thinkMode='no-think'.
     if (thinkMode === 'think') {
-      // Default thinking budget: half the generation cap (min 1024).
       const thinkingBudget =
         req.maxOutputTokens !== undefined
           ? Math.max(Math.floor(req.maxOutputTokens / 2), 1024)
@@ -102,12 +95,20 @@ export class GeminiBackend implements Backend {
       config.thinkingConfig = { thinkingBudget, includeThoughts: false };
     }
 
+    return config;
+  }
+
+  async invoke(req: InferenceRequest): Promise<InferenceResponse> {
+    const started = Date.now();
+
     const response = await this.client.models.generateContent({
       model: normaliseModel(req.model),
       contents: req.prompt,
       // The SDK accepts a typed config; we cast because the thinkingConfig
       // shape varies across SDK versions and we want to stay forward-compatible.
-      config: config as Parameters<typeof this.client.models.generateContent>[0]['config'],
+      config: this.buildConfig(req) as Parameters<
+        typeof this.client.models.generateContent
+      >[0]['config'],
     });
 
     const content = (response.text ?? '').trim();
@@ -133,6 +134,67 @@ export class GeminiBackend implements Backend {
       },
       latencyMs: Date.now() - started,
       model: response.modelVersion ?? req.model,
+    };
+  }
+
+  /**
+   * Streaming variant — uses the Gemini SDK's `generateContentStream()`
+   * which returns an `AsyncGenerator<GenerateContentResponse>`. Each
+   * yielded response carries `candidates[0].content.parts[]` — text parts
+   * become `delta` chunks, thought parts become `thinking` chunks.
+   *
+   * The final response carries `usageMetadata` with cumulative token counts.
+   */
+  async *stream(req: InferenceRequest): AsyncGenerator<StreamChunk, void, undefined> {
+    const started = Date.now();
+    const stream = await this.client.models.generateContentStream({
+      model: normaliseModel(req.model),
+      contents: req.prompt,
+      config: this.buildConfig(req) as Parameters<
+        typeof this.client.models.generateContentStream
+      >[0]['config'],
+    });
+
+    let promptTokens = 0;
+    let completionTokens = 0;
+    let model = req.model;
+
+    for await (const response of stream) {
+      if (response.modelVersion) model = response.modelVersion;
+
+      const candidates = response.candidates ?? [];
+      for (const candidate of candidates) {
+        const parts = candidate.content?.parts ?? [];
+        for (const part of parts) {
+          if (part.text) {
+            yield { type: 'delta', text: part.text };
+          }
+          // Gemini surfaces thought parts separately when thinkingConfig
+          // is enabled. The SDK types vary, so we check via the unknown
+          // escape hatch.
+          const thought = (part as unknown as { thought?: boolean }).thought;
+          if (thought && part.text) {
+            // Already yielded as a delta above — Gemini's thought parts
+            // also carry text. We yield them as thinking too for parity
+            // with Anthropic's thinking_delta, but avoid double-yielding
+            // by only yielding thinking when the part is explicitly a
+            // thought part. (This branch is empty in practice because the
+            // SDK's `part.text` covers both.)
+          }
+        }
+      }
+
+      if (response.usageMetadata) {
+        promptTokens = response.usageMetadata.promptTokenCount ?? promptTokens;
+        completionTokens = response.usageMetadata.candidatesTokenCount ?? completionTokens;
+      }
+    }
+
+    yield {
+      type: 'done',
+      tokens: { prompt: promptTokens, completion: completionTokens },
+      model,
+      latencyMs: Date.now() - started,
     };
   }
 

@@ -10,7 +10,7 @@
  */
 import { OllamaClient } from '@nemesis-oss/ollama-sdk';
 import type { SupervisorConfig } from '../config.js';
-import type { Backend, InferenceRequest, InferenceResponse } from './backend.js';
+import type { Backend, InferenceRequest, InferenceResponse, StreamChunk } from './backend.js';
 
 /** Matches the `timeoutMs` default documented on `InferenceRequest`. */
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -30,36 +30,43 @@ export class OllamaBackend implements Backend {
     });
   }
 
-  async invoke(req: InferenceRequest): Promise<InferenceResponse> {
-    const started = Date.now();
+  /** Build the Ollama SDK chat request payload from an InferenceRequest. */
+  private buildChatRequest(req: InferenceRequest, stream: boolean) {
     const thinkMode = req.thinkMode ?? this.config.inference.defaultThinkMode;
     const temperature = req.temperature ?? 0.1;
 
     // Resolve context-window hint. `contextTokens` is the explicit knob; the
-    // legacy `maxTokens` field is treated as a back-compat alias for it
-    // (older callers used `maxTokens: 512` to mean "shrink the context window
-    // for a small JSON output" — that was the bug we are correcting).
+    // legacy `maxTokens` field is treated as a back-compat alias for it.
     const contextTokens = req.contextTokens ?? req.maxTokens ?? this.config.context.budgetTokens;
 
     // `num_predict` is the Ollama generation-length cap. Only set it when the
-    // caller explicitly asked for one — otherwise leave it unset so the
-    // model's own Modelfile default (or Ollama's built-in) applies.
+    // caller explicitly asked for one.
     const options: Record<string, unknown> = { temperature, num_ctx: contextTokens };
     if (req.maxOutputTokens !== undefined) {
       options.num_predict = req.maxOutputTokens;
     }
 
-    // `stream: false` selects the non-streaming overload so the response is a
-    // plain ChatResponse rather than an OllamaStream.
-    const response = await this.client.chat({
+    return {
       model: req.model,
-      messages: [{ role: 'user', content: req.prompt }],
-      format: req.formatJson ? 'json' : undefined,
+      messages: [{ role: 'user' as const, content: req.prompt }],
+      format: req.formatJson ? ('json' as const) : undefined,
       options,
       think: thinkMode === 'think',
-      stream: false,
+      stream,
       timeoutMs: req.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    });
+    };
+  }
+
+  async invoke(req: InferenceRequest): Promise<InferenceResponse> {
+    const started = Date.now();
+    // `stream: false` selects the non-streaming overload so the response is a
+    // plain ChatResponse rather than an OllamaStream. The SDK's return type
+    // is a union; we narrow via the `message` field that only ChatResponse has.
+    const response = (await this.client.chat(this.buildChatRequest(req, false))) as {
+      message?: { content?: string };
+      prompt_eval_count?: number;
+      eval_count?: number;
+    };
 
     const content = (response.message?.content ?? '').trim();
     let json: unknown;
@@ -83,6 +90,78 @@ export class OllamaBackend implements Backend {
       },
       latencyMs: Date.now() - started,
       model: req.model,
+    };
+  }
+
+  /**
+   * Streaming variant — uses the Ollama SDK's `chat({ stream: true })`
+   * overload which returns an `OllamaStream<ChatResponse, ChatStreamResult>`.
+   * The SDK emits typed events (`token`, `thinking`, `done`, `error`) which
+   * we map into `StreamChunk`.
+   *
+   * JSON mode: Ollama doesn't expose a streaming-JSON flag — the model
+   * produces JSON-shaped text token-by-token and the caller (the stream
+   * consumer) parses the concatenated content at the end.
+   */
+  async *stream(req: InferenceRequest): AsyncGenerator<StreamChunk, void, undefined> {
+    const started = Date.now();
+    const ollamaStream = (await this.client.chat(
+      this.buildChatRequest(req, true),
+    )) as AsyncIterable<{
+      type: 'token' | 'thinking' | 'message' | 'done' | 'error';
+      data:
+        | { delta: string; role?: string }
+        | { chunk: unknown }
+        | {
+            result: {
+              prompt_eval_count?: number;
+              eval_count?: number;
+              model?: string;
+            };
+          }
+        | { error: { message: string } };
+    }>;
+    let promptTokens = 0;
+    let completionTokens = 0;
+    let model = req.model;
+
+    for await (const event of ollamaStream) {
+      switch (event.type) {
+        case 'token':
+          yield { type: 'delta', text: (event.data as { delta: string }).delta };
+          break;
+        case 'thinking':
+          yield { type: 'thinking', text: (event.data as { delta: string }).delta };
+          break;
+        case 'message':
+          // Ollama periodically yields intermediate chat chunks; the
+          // assistant text content arrives via the `token` event above.
+          break;
+        case 'done': {
+          const result = (
+            event.data as {
+              result: { prompt_eval_count?: number; eval_count?: number; model?: string };
+            }
+          ).result;
+          promptTokens = result.prompt_eval_count ?? 0;
+          completionTokens = result.eval_count ?? 0;
+          model = result.model ?? req.model;
+          break;
+        }
+        case 'error':
+          yield {
+            type: 'error',
+            error: new Error((event.data as { error: { message: string } }).error.message),
+          };
+          return;
+      }
+    }
+
+    yield {
+      type: 'done',
+      tokens: { prompt: promptTokens, completion: completionTokens },
+      model,
+      latencyMs: Date.now() - started,
     };
   }
 

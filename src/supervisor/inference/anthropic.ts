@@ -31,7 +31,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { SupervisorConfig } from '../config.js';
 import { logger } from '../observability/logger.js';
-import type { Backend, InferenceRequest, InferenceResponse } from './backend.js';
+import type { Backend, InferenceRequest, InferenceResponse, StreamChunk } from './backend.js';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_TOKENS = 4096;
@@ -144,6 +144,78 @@ export class AnthropicBackend implements Backend {
       },
       latencyMs: Date.now() - started,
       model: message.model,
+    };
+  }
+
+  /**
+   * Streaming variant — uses `messages.create({ stream: true })` which
+   * returns a `Stream<RawMessageStreamEvent>`. Each `content_block_delta`
+   * event carries either a `text_delta` (assistant content) or a
+   * `thinking_delta` (reasoning trace) — we surface them as `delta` /
+   * `thinking` chunks respectively.
+   *
+   * JSON mode: same as `invoke()` — prompt-level prefill of `{`. The
+   * caller (stream consumer) reassembles the JSON from concatenated
+   * delta chunks. The prefill brace is added by the consumer, not by the
+   * stream (the SDK doesn't emit a chunk for the prefilled text).
+   */
+  async *stream(req: InferenceRequest): AsyncGenerator<StreamChunk, void, undefined> {
+    const started = Date.now();
+    const thinkMode = req.thinkMode ?? this.config.inference.defaultThinkMode;
+    const maxTokens = req.maxOutputTokens ?? DEFAULT_MAX_TOKENS;
+
+    const params: Anthropic.MessageCreateParamsStreaming = {
+      model: req.model,
+      max_tokens: maxTokens,
+      messages: [{ role: 'user', content: req.prompt }],
+      stream: true,
+    };
+
+    if (req.formatJson) {
+      params.messages = [
+        { role: 'user', content: req.prompt },
+        { role: 'assistant', content: '{' },
+      ];
+    }
+
+    if (thinkMode === 'think') {
+      const thinkingBudget = Math.min(maxTokens / 2, 2048);
+      params.thinking = { type: 'enabled', budget_tokens: Math.max(thinkingBudget, 1024) };
+    }
+
+    let promptTokens = 0;
+    let completionTokens = 0;
+    let model = req.model;
+
+    const eventStream = await this.client.messages.create(params);
+    for await (const event of eventStream) {
+      switch (event.type) {
+        case 'message_start':
+          model = event.message.model;
+          promptTokens = event.message.usage.input_tokens ?? 0;
+          break;
+        case 'content_block_delta':
+          if (event.delta.type === 'text_delta') {
+            yield { type: 'delta', text: event.delta.text };
+          } else if (event.delta.type === 'thinking_delta') {
+            yield { type: 'thinking', text: event.delta.thinking };
+          }
+          break;
+        case 'message_delta':
+          // The final usage is on message_delta.usage (output_tokens only —
+          // input_tokens was reported on message_start).
+          if (event.usage) {
+            completionTokens = event.usage.output_tokens ?? completionTokens;
+          }
+          break;
+      }
+    }
+
+    yield {
+      type: 'done',
+      tokens: { prompt: promptTokens, completion: completionTokens },
+      model,
+      latencyMs: Date.now() - started,
     };
   }
 

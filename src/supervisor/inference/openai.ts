@@ -25,7 +25,8 @@
 import OpenAI from 'openai';
 import type { SupervisorConfig } from '../config.js';
 import { logger } from '../observability/logger.js';
-import type { Backend, InferenceRequest, InferenceResponse } from './backend.js';
+import type { Backend, InferenceRequest, InferenceResponse, StreamChunk } from './backend.js';
+import { buildOpenAIChatParams, consumeOpenAIStream } from './openai-stream.js';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 
@@ -64,13 +65,9 @@ export class OpenAIBackend implements Backend {
     // OpenAI's chat.completions.create accepts a max_tokens field that caps
     // generation length (NOT the context window — that's derived from the
     // model). Only forward when the caller explicitly set it.
-    const completion = await this.client.chat.completions.create({
-      model: req.model,
-      messages: [{ role: 'user', content: req.prompt }],
-      temperature,
-      ...(req.maxOutputTokens !== undefined ? { max_tokens: req.maxOutputTokens } : {}),
-      response_format: req.formatJson ? { type: 'json_object' } : undefined,
-    });
+    const completion = await this.client.chat.completions.create(
+      buildOpenAIChatParams(req, temperature),
+    );
 
     const content = (completion.choices[0]?.message?.content ?? '').trim();
     let json: unknown;
@@ -95,6 +92,23 @@ export class OpenAIBackend implements Backend {
       latencyMs: Date.now() - started,
       model: completion.model ?? req.model,
     };
+  }
+
+  /**
+   * Streaming variant — uses the OpenAI SDK's `stream: true` overload.
+   * Sets `stream_options.include_usage: true` so the final chunk carries
+   * the token usage. Reasoning models (o1, o3, gpt-5-thinking) emit
+   * `delta.reasoning_content` which we surface as `thinking` chunks.
+   */
+  async *stream(req: InferenceRequest): AsyncGenerator<StreamChunk, void, undefined> {
+    const started = Date.now();
+    const temperature = req.temperature ?? 0.1;
+    const stream = await this.client.chat.completions.create({
+      ...buildOpenAIChatParams(req, temperature),
+      stream: true,
+      stream_options: { include_usage: true },
+    });
+    yield* consumeOpenAIStream(stream, req, started);
   }
 
   async health(): Promise<boolean> {
