@@ -169,10 +169,20 @@ export class InMemoryTaskStore implements TaskStore {
 
   async createTask(task: TaskNode): Promise<void> {
     if (this.tasks.has(task.taskId)) throw new Error(`task already exists: ${task.taskId}`);
-    this.tasks.set(task.taskId, task);
-    const g = this.goals.get(task.goalId);
+    // Parity with PgTaskStore.createTask: when every dependency is
+    // already SUCCEEDED at creation time (e.g. a task appended to a goal
+    // whose earlier tasks have since committed), the task starts READY
+    // rather than PENDING — otherwise it would never be unblocked, since
+    // commitTaskOutput only unblocks tasks that exist at commit time.
+    // Caught by the §10 acceptance suite (crash-recovery test).
+    let stored = task;
+    if (task.status === 'PENDING' && this.areDependenciesSatisfied(task)) {
+      stored = { ...task, status: 'READY' };
+    }
+    this.tasks.set(stored.taskId, stored);
+    const g = this.goals.get(stored.goalId);
     if (g) {
-      this.goals.set(task.goalId, {
+      this.goals.set(stored.goalId, {
         ...g,
         taskCount: g.taskCount + 1,
         updatedAt: new Date().toISOString(),
@@ -188,8 +198,16 @@ export class InMemoryTaskStore implements TaskStore {
       .sort((a, b) => a.sequence - b.sequence);
   }
   async listReadyTasks(goalId: string): Promise<TaskNode[]> {
+    // "Ready to run" includes RETRYING tasks — markRunning accepts both,
+    // and the bounded-recovery contract (§10 no-progress test) requires
+    // that a RETRYING task is picked up again on the next advance().
+    // Before this fix, only status === 'READY' was returned, so a
+    // RETRYING task was silently never retried — bounded recovery stalled.
+    // ESCALATED tasks are deliberately NOT included: the orchestrator
+    // stops on ESCALATED outcomes and an explicit policy decides whether
+    // to re-run them.
     return [...this.tasks.values()]
-      .filter((t) => t.goalId === goalId && t.status === 'READY')
+      .filter((t) => t.goalId === goalId && (t.status === 'READY' || t.status === 'RETRYING'))
       .sort((a, b) => a.sequence - b.sequence);
   }
   async updateTaskStatus(
@@ -592,8 +610,12 @@ export class PgTaskStore implements TaskStore {
   }
 
   async listReadyTasks(goalId: string): Promise<TaskNode[]> {
+    // "Ready to run" includes RETRYING tasks — parity with
+    // InMemoryTaskStore. See the comment there for the rationale:
+    // bounded recovery requires RETRYING tasks to be re-picked-up on
+    // the next advance().
     const r = await this.pool.query(
-      `SELECT * FROM tasks WHERE goal_id = $1 AND status = 'READY' ORDER BY sequence`,
+      `SELECT * FROM tasks WHERE goal_id = $1 AND status IN ('READY', 'RETRYING') ORDER BY sequence`,
       [goalId],
     );
     return r.rows.map(rowToTask);
