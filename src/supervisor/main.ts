@@ -20,11 +20,15 @@ import { CacheService } from './context/cache.js';
 import { MemoryService } from './context/memory.js';
 import { HybridRetriever } from './context/retrieval.js';
 import { Supervisor } from './engine.js';
+import { AnthropicBackend } from './inference/anthropic.js';
 import type { Backend } from './inference/backend.js';
 import { OllamaEmbedder } from './inference/embedder.js';
+import { GeminiBackend } from './inference/gemini.js';
 import { MockBackend } from './inference/mock.js';
 import { ModelPool } from './inference/model-pool.js';
 import { OllamaBackend } from './inference/ollama.js';
+import { OpenAIBackend } from './inference/openai.js';
+import { OpenAIEmbedder } from './inference/openai-embedder.js';
 import { PooledOllamaBackend } from './inference/pooled-ollama-backend.js';
 import { VllmBackend } from './inference/vllm.js';
 import { logger } from './observability/logger.js';
@@ -67,6 +71,12 @@ async function makeBackend(): Promise<Backend> {
     }
     case 'vllm':
       return new VllmBackend(supervisorConfig);
+    case 'openai':
+      return new OpenAIBackend(supervisorConfig);
+    case 'anthropic':
+      return new AnthropicBackend(supervisorConfig);
+    case 'gemini':
+      return new GeminiBackend(supervisorConfig);
     case 'mock':
       return new MockBackend();
     default:
@@ -117,27 +127,73 @@ async function main() {
     logger.warn({ err: e }, 'retriever init failed — continuing without retrieval');
   }
 
-  // Phase 4 — embedding provider. Only constructed when the inference
-  // backend is Ollama (the vLLM/mock paths don't have an embed endpoint).
-  // When omitted, the retriever silently degrades to keyword-only search
-  // — the pre-Phase-4 behaviour. The health endpoint reports the mode.
-  let embedder: OllamaEmbedder | undefined;
-  if (supervisorConfig.inference.backend === 'ollama') {
+  // Phase 4 — embedding provider. Decoupled from the inference backend:
+  // pick the embedder via EMBEDDING_PROVIDER (defaults to `ollama` when
+  // INFERENCE_BACKEND=ollama, otherwise `none`). When the chosen embedder
+  // is unhealthy or unset, the retriever silently degrades to keyword-only
+  // search — the pre-Phase-4 behaviour. The health endpoint reports the mode.
+  const embedderProvider = supervisorConfig.embedding.provider;
+  let embedder: OllamaEmbedder | OpenAIEmbedder | undefined;
+  let retrievalMode: 'hybrid' | 'keyword-only' = 'keyword-only';
+
+  const shouldUseOllamaEmbedder =
+    embedderProvider === 'ollama' ||
+    (embedderProvider === undefined && supervisorConfig.inference.backend === 'ollama');
+  const shouldUseOpenAIEmbedder =
+    embedderProvider === 'openai' ||
+    (embedderProvider === undefined &&
+      supervisorConfig.inference.backend === 'openai' &&
+      !!supervisorConfig.inference.openai.apiKey);
+
+  if (shouldUseOllamaEmbedder) {
     embedder = new OllamaEmbedder({ config: supervisorConfig });
     const h = await embedder.health();
     if (h.ok) {
+      retrievalMode = 'hybrid';
       logger.info(
         { model: embedder.modelName, dimension: h.dimension, latencyMs: h.latencyMs },
-        'embedding provider healthy — hybrid retrieval active',
+        'OllamaEmbedder healthy — hybrid retrieval active',
       );
     } else {
       logger.warn(
         { model: embedder.modelName, latencyMs: h.latencyMs },
-        'embedding provider health check failed — retriever will degrade to keyword-only search. ' +
+        'OllamaEmbedder health check failed — retriever will degrade to keyword-only search. ' +
           `Pull the model with \`ollama pull ${embedder.modelName}\` or set EMBEDDING_MODEL to a model that is pulled.`,
       );
       embedder = undefined;
     }
+  } else if (shouldUseOpenAIEmbedder) {
+    try {
+      embedder = new OpenAIEmbedder({ config: supervisorConfig });
+      const h = await embedder.health();
+      if (h.ok) {
+        retrievalMode = 'hybrid';
+        logger.info(
+          { model: embedder.modelName, dimension: h.dimension, latencyMs: h.latencyMs },
+          'OpenAIEmbedder healthy — hybrid retrieval active',
+        );
+      } else {
+        logger.warn(
+          { model: embedder.modelName, latencyMs: h.latencyMs },
+          'OpenAIEmbedder health check failed — retriever will degrade to keyword-only search. ' +
+            'Set EMBEDDING_MODEL to a valid OpenAI embeddings model (text-embedding-3-small, etc.) or set EMBEDDING_PROVIDER=none to silence this warning.',
+        );
+        embedder = undefined;
+      }
+    } catch (e) {
+      logger.warn(
+        { err: e },
+        'OpenAIEmbedder construction failed — retriever will degrade to keyword-only search. ' +
+          'Set EMBEDDING_OPENAI_API_KEY (or OPENAI_API_KEY) to use OpenAI-compatible embeddings.',
+      );
+      embedder = undefined;
+    }
+  } else {
+    logger.info(
+      { provider: embedderProvider, inferenceBackend: supervisorConfig.inference.backend },
+      'no embedding provider configured — keyword-only retrieval active. ' +
+        'Set EMBEDDING_PROVIDER=ollama|openai to enable hybrid retrieval.',
+    );
   }
 
   const memory = new MemoryService();
@@ -249,7 +305,7 @@ async function main() {
     taskLedger,
     taskOrchestrator,
     taskPlanner,
-    retrievalMode: embedder ? 'hybrid' : 'keyword-only',
+    retrievalMode,
   });
 
   const shutdown = async (signal: string) => {
