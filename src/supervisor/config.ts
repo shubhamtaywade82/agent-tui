@@ -127,6 +127,51 @@ const schema = z.object({
      */
     maxRepairAttempts: z.coerce.number().int().nonnegative().default(1),
   }),
+  /**
+   * Phase 5 — patch workflow configuration. When a CODE_CHANGE task
+   * is run, the orchestrator asks the analyst model for a structured
+   * patch proposal, validates it against PatchProposalSchema, applies
+   * it via PatchWorkflow in an isolated git worktree, and runs the
+   * configured verifyCommands. The task can only be SUCCEEDED if
+   * verification passes — the model's claim that "tests passed" is
+   * not accepted as evidence.
+   */
+  patch: z.object({
+    /**
+     * Default verification commands run after applying a patch. These
+     * are appended to any commands the model proposes in its
+     * PatchProposal. Override per-task via the task's objective.
+     */
+    defaultVerifyCommands: z
+      .array(z.string())
+      .default([
+        'npm run supervisor:typecheck',
+        'npm run supervisor:lint',
+        'npm run supervisor:test',
+      ]),
+    /**
+     * Hard cap on the number of files a single patch may touch.
+     * Prevents the model from emitting a "fix everything" patch that
+     * would be unreviewable. Default 20.
+     */
+    maxFilesPerPatch: z.coerce.number().int().positive().default(20),
+    /**
+     * Hard cap on the total bytes of file content in a single patch.
+     * Prevents the model from emitting a huge generated file that
+     * would blow up the worktree or the diff. Default 1 MB.
+     */
+    maxPatchBytes: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(1024 * 1024),
+    /**
+     * Whether to clean up the worktree after the patch is applied
+     * and verified. Default true — set to false for debugging to
+     * inspect the worktree's state after a failed verification.
+     */
+    cleanupWorktree: z.boolean().default(true),
+  }),
   escalation: z.object({
     maxRetries: z.coerce.number().int().nonnegative().default(2),
     fallbackModel: z.string().optional(),
@@ -225,6 +270,14 @@ function loadConfig(): SupervisorConfig {
       maxTasksPerGoal: process.env.PLANNER_MAX_TASKS_PER_GOAL,
       maxDepth: process.env.PLANNER_MAX_DEPTH,
       maxRepairAttempts: process.env.PLANNER_MAX_REPAIR_ATTEMPTS,
+    },
+    patch: {
+      defaultVerifyCommands: process.env.PATCH_DEFAULT_VERIFY_COMMANDS?.split('||')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      maxFilesPerPatch: process.env.PATCH_MAX_FILES,
+      maxPatchBytes: process.env.PATCH_MAX_BYTES,
+      cleanupWorktree: process.env.PATCH_CLEANUP_WORKTREE === 'false' ? false : undefined,
     },
     escalation: {
       maxRetries: process.env.ESCALATION_MAX_RETRIES,

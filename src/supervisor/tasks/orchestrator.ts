@@ -26,6 +26,8 @@
  * Recovery: on boot, call `orchestrator.recover(goalId)` to reconcile
  * any task left in RUNNING by a crashed process.
  */
+
+import type { CodeChangeExecutor } from '../code/code-change-executor.js';
 import type { Supervisor } from '../engine.js';
 import { logger } from '../observability/logger.js';
 import type { AgentState } from '../state/models.js';
@@ -43,6 +45,12 @@ export interface AdvanceOptions {
   projectId?: string;
   /** Context to inject into each task's objective (free-text). */
   context?: string;
+  /**
+   * Phase 5 — absolute path to the repository root for CODE_CHANGE
+   * tasks. When omitted, CODE_CHANGE tasks fail with a clear error
+   * (the CodeChangeExecutor needs a real repo to apply patches against).
+   */
+  repoPath?: string;
 }
 
 export interface AdvanceStepResult {
@@ -95,6 +103,13 @@ export class TaskOrchestrator {
     private readonly ledger: TaskLedger,
     private readonly supervisor: Supervisor,
     private readonly store: TaskStore,
+    /**
+     * Phase 5 — code-change executor. When omitted, CODE_CHANGE tasks
+     * fail with a clear error rather than silently routing through
+     * the generic Supervisor.run path (which would accept the model's
+     * output as the result without applying or verifying any patch).
+     */
+    private readonly codeChangeExecutor?: CodeChangeExecutor,
   ) {}
 
   /**
@@ -162,6 +177,176 @@ export class TaskOrchestrator {
   }
 
   private async runOneTask(
+    task: TaskNode,
+    goal: Goal,
+    opts: AdvanceOptions,
+  ): Promise<AdvanceStepResult> {
+    // Phase 5 — CODE_CHANGE tasks route through the CodeChangeExecutor,
+    // which applies a structured patch in an isolated git worktree and
+    // runs verification commands. The generic Supervisor.run path would
+    // accept the model's output as the result without applying or
+    // verifying any patch — that's the failure mode this branch prevents.
+    if (task.type === 'CODE_CHANGE') {
+      return this.runCodeChangeTask(task, goal, opts);
+    }
+    return this.runGenericTask(task, goal, opts);
+  }
+
+  private async runCodeChangeTask(
+    task: TaskNode,
+    goal: Goal,
+    opts: AdvanceOptions,
+  ): Promise<AdvanceStepResult> {
+    if (!this.codeChangeExecutor) {
+      logger.error(
+        { taskId: task.taskId, goalId: goal.goalId },
+        'CODE_CHANGE task but no CodeChangeExecutor wired — failing loudly',
+      );
+      await this.ledger.failTask(task.taskId, 'CODE_CHANGE task but no CodeChangeExecutor wired');
+      return {
+        taskId: task.taskId,
+        taskType: task.type,
+        runId: '(none)',
+        runStatus: 'FAILED',
+        outcome: 'FAILED',
+        advanced: false,
+        finalResponsePreview: 'CODE_CHANGE task but no CodeChangeExecutor wired',
+      };
+    }
+    if (!opts.repoPath) {
+      logger.error(
+        { taskId: task.taskId, goalId: goal.goalId },
+        'CODE_CHANGE task but no repoPath supplied — failing loudly',
+      );
+      await this.ledger.failTask(task.taskId, 'CODE_CHANGE task but no repoPath supplied');
+      return {
+        taskId: task.taskId,
+        taskType: task.type,
+        runId: '(none)',
+        runStatus: 'FAILED',
+        outcome: 'FAILED',
+        advanced: false,
+        finalResponsePreview: 'CODE_CHANGE task but no repoPath supplied',
+      };
+    }
+
+    const dependencyOutputs = await this.collectDependencyOutputs(task);
+    const objective = this.buildObjective(task, goal, dependencyOutputs, opts.context);
+
+    // Use the Supervisor engine to create a run record (for audit) but
+    // don't run inference through it — the CodeChangeExecutor calls the
+    // analyst model directly to get the structured patch proposal.
+    const run = await this.supervisor.run({
+      objective: `(code-change task setup) ${task.title}`,
+      userId: opts.userId ?? goal.userId,
+      projectId: opts.projectId ?? goal.projectId,
+      allowedPaths: opts.allowedPaths ?? [],
+      context: opts.context,
+    });
+    await this.ledger.markRunning(task.taskId, run.runId);
+
+    const result = await this.codeChangeExecutor.execute({
+      objective,
+      runId: run.runId,
+      repoPath: opts.repoPath,
+      allowedPaths: opts.allowedPaths,
+      userId: opts.userId ?? goal.userId,
+      projectId: opts.projectId ?? goal.projectId,
+    });
+
+    // Map the CodeChangeExecutor's result to an AttemptOutcome + validationReport.
+    const outcome: AttemptOutcome = result.ok ? 'SUCCEEDED' : 'FAILED_EXECUTION';
+    const validationReport = {
+      passed: result.ok,
+      checks: [
+        {
+          id: 'patch-proposal-schema',
+          required: true,
+          status: (result.errors.length === 0 ? 'PASSED' : 'FAILED') as 'PASSED' | 'FAILED',
+          message:
+            result.errors.length === 0 ? 'patch proposal schema-valid' : result.errors.join('; '),
+        },
+        {
+          id: 'patch-applied',
+          required: true,
+          status: (result.diff.length > 0 || result.ok ? 'PASSED' : 'FAILED') as
+            | 'PASSED'
+            | 'FAILED',
+          message:
+            result.diff.length > 0
+              ? `diff produced (${result.diff.length} chars)`
+              : (result.error ?? 'no diff'),
+        },
+        ...result.verifyResults.map((v) => ({
+          id: `verify:${v.command}`,
+          required: true,
+          status: (v.ok ? 'PASSED' : 'FAILED') as 'PASSED' | 'FAILED',
+          message: `exit ${v.exitCode}: ${v.stderr.slice(0, 120) || v.stdout.slice(0, 120)}`,
+        })),
+      ],
+      failureCodes: result.ok ? [] : [result.error ?? 'verification failed'],
+    };
+
+    await this.ledger.appendAttempt(task.taskId, {
+      taskId: task.taskId,
+      modelUsed: this.codeChangeExecutor.constructor.name,
+      providerUsed: undefined,
+      rawOutput: result.rawOutput,
+      parsedProposal: result.proposal as Record<string, unknown> | undefined,
+      proposalValid: result.errors.length === 0,
+      executionResult: result.ok
+        ? `Patch applied. Diff: ${result.diff.length} chars. Commit: ${result.commitSha ?? '(none)'}`
+        : (result.error ?? 'patch failed'),
+      validationReport,
+      outcome,
+      latencyMs: 0,
+      tokens: { prompt: 0, completion: 0 },
+    });
+
+    if (result.ok) {
+      const output: Record<string, unknown> = {
+        diff: result.diff,
+        commitSha: result.commitSha,
+        verifyResults: result.verifyResults,
+        proposal: result.proposal,
+      };
+      await this.ledger.commitTaskOutput(
+        task.taskId,
+        output,
+        `Patch applied: ${Object.keys(result.proposal?.files ?? {}).length} files, diff ${result.diff.length} chars`,
+        [],
+        [],
+      );
+      return {
+        taskId: task.taskId,
+        taskType: task.type,
+        runId: run.runId,
+        runStatus: run.status,
+        outcome,
+        advanced: true,
+        finalResponsePreview: result.diff.slice(0, 200),
+      };
+    }
+
+    // Failed — retry if budget allows, else fail terminally.
+    const updated = await this.ledger.getTask(task.taskId);
+    if (updated && updated.attemptCount >= updated.maxAttempts) {
+      await this.ledger.failTask(task.taskId, `maxAttempts reached: ${result.error}`);
+    } else {
+      await this.ledger.markRetrying(task.taskId, result.error ?? 'patch failed');
+    }
+    return {
+      taskId: task.taskId,
+      taskType: task.type,
+      runId: run.runId,
+      runStatus: run.status,
+      outcome,
+      advanced: false,
+      finalResponsePreview: result.error?.slice(0, 200),
+    };
+  }
+
+  private async runGenericTask(
     task: TaskNode,
     goal: Goal,
     opts: AdvanceOptions,
