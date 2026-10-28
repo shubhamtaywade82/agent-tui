@@ -1,7 +1,12 @@
-# MiniCPM5 Supervisor — API Reference
+# Agentic Supervisor — API Reference
 
 Base URL: `http://localhost:7480` (or `SUPERVISOR_HTTP_PORT`).
 OpenAPI spec: <http://localhost:7480/docs>.
+
+The supervisor serves **any of five inference providers** (Ollama, vLLM /
+OpenAI-compatible, OpenAI, Anthropic, Gemini — ADR 0009). The API surface
+below is identical across providers; the backend is a config choice
+(`INFERENCE_BACKEND`), not an API concern.
 
 ## Authentication
 
@@ -113,4 +118,11 @@ schemas, permissions, risk level, and timeout.
 
 ## GET `/v1/healthz`
 
-Liveness probe. Always returns `{ "ok": true, "ts": "<iso>" }`.
+Liveness probe. Returns `{ "ok": true, "ts": "<iso>", "retrievalMode": "hybrid" | "keyword-only", "costBudget": { "maxCostPerRunUsd": <num>, "maxCostPerGoalUsd": <num> } }`.
+
+- `retrievalMode` (ADR 0008) — `hybrid` when a healthy embedding provider
+  is wired (OllamaEmbedder or OpenAIEmbedder); `keyword-only` when
+  retrieval silently degraded.
+- `costBudget` (ADR 0012) — the configured USD caps. `Infinity` means no
+  cap; production cloud deployments should set
+  `BUDGET_MAX_COST_USD_PER_RUN` / `BUDGET_MAX_COST_USD_PER_GOAL`.

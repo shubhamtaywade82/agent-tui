@@ -45,6 +45,15 @@ COMMANDS:
   bootstrap              Clone all skill packs (ruby, react, node) into .agent/skills/.
   serve [port]           Start the HTTP API server (default 8787).
 
+SUPERVISOR (orchestration layer — see docs/supervisor/):
+  supervisor serve                Start the supervisor HTTP API (:7480).
+  supervisor health               Liveness + retrieval mode + cost caps.
+  supervisor runs list            Recent supervisor runs.
+  supervisor runs show <id>       One run: state, steps, and errors.
+  supervisor runs events <id>     A run's event-sourcing trail.
+  supervisor goals list           Goal chains with task statuses.
+  supervisor goals show <id>     One goal's task chain.
+
 OPTIONS (apply to run/repl/batch):
   -p, --provider <name>   Provider: ollama | openai | anthropic
   -m, --model <name>      Override the model
@@ -364,6 +373,191 @@ async function cmdBootstrap(): Promise<number> {
   return 0;
 }
 
+// ─── Supervisor subcommands ─────────────────────────────────────────────────
+//
+// Thin CLI over the running Agentic Supervisor's HTTP API (see
+// docs/supervisor/). `supervisor serve` spawns the supervisor process in
+// this same repo; every other subcommand is a read-mostly HTTP call to an
+// already-running supervisor.
+
+const SUPERVISOR_HELP = `
+Agentic TUI — supervisor subcommands
+====================================
+
+USAGE:
+  agent-tui supervisor <subcommand> [args]
+
+SUBCOMMANDS:
+  serve                      Start the supervisor HTTP API (:7480). Blocks.
+                             Same as: npm run supervisor:serve
+  health                     Liveness probe + retrieval mode + cost caps.
+  runs list                  Recent runs (up to 20).
+  runs show <runId>          One run: status, intent, response, errors.
+  runs events <runId>        The run's event-sourcing trail.
+  goals list                 Goal chains with task statuses.
+  goals show <goalId>        One goal's task chain.
+
+ENV:
+  SUPERVISOR_HTTP_HOST   default 127.0.0.1
+  SUPERVISOR_HTTP_PORT   default 7480
+  SUPERVISOR_API_KEY     bearer token (required when the supervisor binds non-loopback)
+
+The supervisor must already be running for every subcommand except 'serve'.
+Start it with 'agent-tui supervisor serve' (or npm run supervisor:serve).
+Setup guide: docs/supervisor/usage.md
+`;
+
+async function cmdSupervisor(positional: string[]): Promise<number> {
+  const sub = positional[0] ?? '';
+
+  if (sub === '' || sub === 'help' || sub === '--help' || sub === '-h') {
+    console.log(SUPERVISOR_HELP);
+    return 0;
+  }
+
+  if (sub === 'serve') {
+    // Spawn the supervisor entrypoint. We do NOT import it directly — the
+    // supervisor reads its own env at module-load time (zod config), and
+    // mixing it into this process would double-register shutdown handlers.
+    const { spawn } = await import('node:child_process');
+    const child = spawn(
+      process.execPath,
+      ['--import', 'tsx', new URL('./supervisor/main.ts', import.meta.url).pathname],
+      { stdio: 'inherit', env: { ...process.env } },
+    );
+    child.on('exit', (code) => process.exit(code ?? 0));
+    // Forward signals so Ctrl+C stops the supervisor cleanly.
+    const stop = (sig: string) => child.kill(sig as NodeJS.Signals);
+    process.on('SIGINT', () => stop('SIGINT'));
+    process.on('SIGTERM', () => stop('SIGTERM'));
+    return new Promise<number>(() => {});
+  }
+
+  // Everything else is an HTTP call — import the client lazily so a missing
+  // supervisor doesn't slow down unrelated CLI commands.
+  const sup = await import('./cli-supervisor.js');
+
+  switch (sub) {
+    case 'health': {
+      const h = await sup.getHealth();
+      console.log(`supervisor  ${sup.supervisorBaseUrl()}`);
+      console.log(`ok          ${h.ok}`);
+      console.log(`ts          ${h.ts}`);
+      console.log(`retrieval   ${h.retrievalMode ?? '(unreported)'}`);
+      if (h.costBudget) {
+        const runCap = Number.isFinite(h.costBudget.maxCostPerRunUsd)
+          ? `$${h.costBudget.maxCostPerRunUsd}`
+          : 'no cap';
+        const goalCap = Number.isFinite(h.costBudget.maxCostPerGoalUsd)
+          ? `$${h.costBudget.maxCostPerGoalUsd}`
+          : 'no cap';
+        console.log(`cost caps   run=${runCap}  goal=${goalCap}`);
+      }
+      return 0;
+    }
+
+    case 'runs': {
+      const action = positional[1] ?? 'list';
+      if (action === 'list') {
+        const { runs } = await sup.listRuns(20);
+        if (runs.length === 0) {
+          console.log('No runs yet. Start one with:');
+          console.log(`  curl -sS ${sup.supervisorBaseUrl()}/v1/runs \\`);
+          console.log("    -H 'content-type: application/json' \\");
+          console.log("    -d '{\"objective\":\"Summarize these logs:\\nERROR db refused\"}'");
+          return 0;
+        }
+        console.log(`${'RUN ID'.padEnd(38)}  ${'STATUS'.padEnd(12)}  ${'INTENT'.padEnd(18)}  UPDATED`);
+        for (const r of runs) {
+          console.log(
+            `${r.runId.padEnd(38)}  ${(r.status ?? '').padEnd(12)}  ${(r.intent ?? '-').padEnd(18)}  ${r.updatedAt}`,
+          );
+        }
+        return 0;
+      }
+      if (action === 'show') {
+        const id = positional[2];
+        if (!id) { console.error('usage: agent-tui supervisor runs show <runId>'); return 1; }
+        const r = await sup.getRun(id);
+        console.log(`runId        ${r.runId}`);
+        console.log(`status       ${r.status}`);
+        console.log(`intent       ${r.intent ?? '-'}`);
+        console.log(`created      ${r.createdAt}`);
+        console.log(`updated      ${r.updatedAt}`);
+        if (r.finalResponse) {
+          console.log('\n— final response —');
+          console.log(r.finalResponse);
+        }
+        if (r.errorTrace && r.errorTrace.length > 0) {
+          console.log('\n— error trace —');
+          for (const e of r.errorTrace) console.log(`  ${e}`);
+        }
+        return 0;
+      }
+      if (action === 'events') {
+        const id = positional[2];
+        if (!id) { console.error('usage: agent-tui supervisor runs events <runId>'); return 1; }
+        const { events } = await sup.getRunEvents(id);
+        if (events.length === 0) { console.log('(no events)'); return 0; }
+        for (const e of events) {
+          const payload = JSON.stringify(e.payload);
+          const short = payload.length > 90 ? `${payload.slice(0, 87)}…` : payload;
+          console.log(`${e.occurredAt}  ${e.type.padEnd(22)}  ${short}`);
+        }
+        return 0;
+      }
+      console.error(`Unknown 'runs' action: ${action}\n${SUPERVISOR_HELP}`);
+      return 1;
+    }
+
+    case 'goals': {
+      const action = positional[1] ?? 'list';
+      if (action === 'list') {
+        const { goals } = await sup.listGoals(20);
+        if (goals.length === 0) {
+          console.log('No goals yet. Create one with:');
+          console.log(`  curl -sS ${sup.supervisorBaseUrl()}/v1/goals \\`);
+          console.log("    -H 'content-type: application/json' \\");
+          console.log("    -d '{\"title\":\"…\",\"objective\":\"…\"}'");
+          return 0;
+        }
+        console.log(`${'GOAL ID'.padEnd(38)}  ${'STATUS'.padEnd(10)}  TITLE`);
+        for (const g of goals) {
+          console.log(`${g.goalId.padEnd(38)}  ${(g.status ?? '').padEnd(10)}  ${g.title}`);
+        }
+        return 0;
+      }
+      if (action === 'show') {
+        const id = positional[2];
+        if (!id) { console.error('usage: agent-tui supervisor goals show <goalId>'); return 1; }
+        const { goal, tasks } = await sup.getGoal(id);
+        console.log(`goalId        ${goal.goalId}`);
+        console.log(`title         ${goal.title}`);
+        console.log(`status        ${goal.status}`);
+        if (goal.objective) console.log(`objective     ${goal.objective}`);
+        if (goal.acceptanceCriteria && goal.acceptanceCriteria.length > 0) {
+          console.log('acceptance   ');
+          for (const c of goal.acceptanceCriteria) console.log(`  - ${c}`);
+        }
+        console.log(`\ntasks (${tasks.length}):`);
+        for (const t of tasks) {
+          const attempts = t.attemptCount !== undefined ? ` (×${t.attemptCount})` : '';
+          console.log(
+            `  ${String(t.sequence).padStart(2)}  ${(t.status ?? '').padEnd(12)}  ${t.type.padEnd(14)}  ${t.title}${attempts}`,
+          );
+        }
+        return 0;
+      }
+      console.error(`Unknown 'goals' action: ${action}\n${SUPERVISOR_HELP}`);
+      return 1;
+    }
+
+    default:
+      console.error(`Unknown supervisor subcommand: ${sub}\n${SUPERVISOR_HELP}`);
+      return 1;
+  }
+}
+
 /** Main CLI entry — returns exit code. */
 export async function runCli(argv: string[]): Promise<number> {
   const { command, positional, flags } = parseArgs(argv);
@@ -381,6 +575,7 @@ export async function runCli(argv: string[]): Promise<number> {
       case 'models': exit = await cmdModels(); break;
       case 'doctor': exit = await cmdDoctor(); break;
       case 'bootstrap': exit = await cmdBootstrap(); break;
+      case 'supervisor': exit = await cmdSupervisor(positional); break;
       case 'serve': {
         const { startServer } = await import('./server.js');
         const port = Number(positional[0] ?? 8787);
@@ -397,7 +592,11 @@ export async function runCli(argv: string[]): Promise<number> {
     log.error('CLI error', { error: e.message, stack: e.stack });
     exit = 1;
   } finally {
-    if (command !== 'repl' && command !== 'serve') {
+    // `serve` blocks forever (the server's signal handlers exit); `supervisor
+    // serve` has the same contract. Everything else shuts the agent down.
+    const blocking = command === 'repl' || command === 'serve' ||
+      (command === 'supervisor' && positional[0] === 'serve');
+    if (!blocking) {
       await shutdownAgent().catch(() => {});
     }
   }
