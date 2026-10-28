@@ -227,18 +227,32 @@ src/
 | `npm test` | Run the unit suites: tasks, context guard, Ollama routing, OpenAI provider, media tools, web tools |
 | `npm run build` | Compile TypeScript to `dist/` |
 
-## MiniCPM5 Supervisor (orchestration layer)
+## Agentic Supervisor (orchestration layer)
 
 A second entry point in this repo: a deterministic orchestration layer that
-wraps local MiniCPM5-2B sub-agents (router / tool-agent / analyst / summarizer)
-with state machine, retrieval, memory, sandboxed execution and an HTTP API on
-`:7480`.
+wraps **any LLM** — local MiniCPM5 / Llama / Qwen via Ollama or vLLM, or
+hosted OpenAI GPT-4o / Anthropic Claude / Google Gemini — with a state
+machine, durable goal→task chains, retrieval, memory, sandboxed execution,
+per-task model selection, streaming, and cost budgets. Served on `:7480`
+with OpenAPI docs at `/docs`.
+
+**Local Ollama (default):**
 
 ```bash
 npm install
-bash supervisor/scripts/seed-models.sh              # create the four sub-agent models
+bash supervisor/scripts/seed-models.sh              # create the MiniCPM5 sub-agent models (local only)
 npm run supervisor:migrate                          # schema (needs Postgres + pgvector)
 npm run supervisor:serve                            # API + OpenAPI docs at /docs
+```
+
+**Cloud (OpenAI / Anthropic / Gemini / any OpenAI-compatible endpoint) — no
+local models, no seed script:**
+
+```bash
+bash supervisor/scripts/bootstrap-cloud.sh openai sk-...   # writes .env.supervisor.cloud
+cat .env.supervisor.cloud >> .env
+npm run supervisor:migrate
+npm run supervisor:serve
 ```
 
 > `DATABASE_URL` defaults to `localhost:5432`. If your Postgres isn't that one, or
@@ -246,7 +260,28 @@ npm run supervisor:serve                            # API + OpenAPI docs at /doc
 > `migrate` fails with `extension "vector" is not available` while `serve` boots
 > in a degraded "retriever init failed" state.
 
-Full instructions, prerequisites and troubleshooting:
+### Supervisor from the main CLI
+
+The supervisor is also wired into the main `agent-tui` entry point:
+
+```bash
+agent-tui supervisor serve                 # start the supervisor (same as npm run supervisor:serve)
+agent-tui supervisor health                # liveness + retrieval mode + cost caps
+agent-tui supervisor runs list             # recent runs
+agent-tui supervisor runs show <id>        # one run with final response + errors
+agent-tui supervisor runs events <id>       # the run's event-sourcing trail
+agent-tui supervisor goals list             # goal chains
+agent-tui supervisor goals show <id>        # one goal's task chain
+```
+
+### Supervisor in the TUI
+
+The TUI's fourth tab (**⚡ Supervisor**, key `4` or `Ctrl+T` to cycle) polls
+the running supervisor's health, recent runs, and goal chains every 5s. When
+the supervisor is down the tab shows a start hint instead of erroring — the
+rest of the TUI is unaffected.
+
+Full instructions, prerequisites, provider selection and troubleshooting:
 [docs/supervisor/usage.md](docs/supervisor/usage.md).
 
 ## License
