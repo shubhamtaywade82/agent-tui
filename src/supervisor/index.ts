@@ -1,9 +1,10 @@
 /**
- * MiniCPM5 Supervisor — Module Barrel.
+ * Agentic Supervisor — Module Barrel.
  *
  * Public entry point for the orchestration layer (§1, §3 of the reference
  * architecture). The supervisor is a deterministic state machine wrapped
- * around a probabilistic MiniCPM5-2B inference engine. All state, memory,
+ * around a probabilistic inference engine — any provider on the ADR 0009
+ * matrix (Ollama, vLLM, OpenAI, Anthropic, Gemini, mock). All state, memory,
  * retrieval, file abstraction, and validation live OUTSIDE the model — the
  * LLM is treated strictly as a bounded reasoning worker.
  *
