@@ -5,6 +5,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { supervisorConfig } from '../config.js';
+import type { MemoryService } from '../context/memory.js';
 import type { Supervisor } from '../engine.js';
 import type { StateStore } from '../state/store.js';
 import type { TaskLedger } from '../tasks/ledger.js';
@@ -30,6 +31,15 @@ export interface RouteDeps {
    * health check passed.
    */
   retrievalMode?: 'hybrid' | 'keyword-only';
+  /**
+   * Memory service — backs the run-introspection routes
+   * (GET /v1/runs/:id/checkpoints, GET /v1/runs/:id/snapshots) used
+   * for crash recovery (§8) and prompt-assembly audit (§4.5).
+   * Optional: when omitted, those routes return 501, keeping the API
+   * honest about what is reachable. main.ts passes it only when the
+   * memory service init succeeded (no Postgres → keyword-only dev).
+   */
+  memoryService?: MemoryService;
 }
 
 // ── Task-ledger request schemas ────────────────────────────────────────────
@@ -254,27 +264,33 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     });
   });
 
-  // GET /v1/runs/:id/checkpoints — list checkpoints for crash recovery (Part 2 §8)
+  // GET /v1/runs/:id/checkpoints — list checkpoints for crash recovery (Part 2 §8).
+  // Newest first so operators can pick the latest recovery point.
   app.get('/v1/runs/:id/checkpoints', async (req, reply) => {
     const id = (req.params as { id: string }).id;
-    // The store interface doesn't expose checkpoints; the memory service
-    // does. In production wire this through. For now return 501 if no
-    // memory service is attached.
-    return reply.code(501).send({
-      error:
-        'checkpoint listing not wired through store; query the memories.checkpoints table directly',
-      runId: id,
-    });
+    if (!deps.memoryService) {
+      return reply.code(501).send({
+        error: 'memory service not configured — checkpoints are unavailable',
+        runId: id,
+      });
+    }
+    const checkpoints = await deps.memoryService.listCheckpoints(id);
+    return reply.send({ runId: id, checkpoints });
   });
 
-  // GET /v1/runs/:id/snapshots — list context snapshots (Part 2 §4.5)
+  // GET /v1/runs/:id/snapshots — list context snapshots (Part 2 §4.5).
+  // Ascending by creation time so the prompt-assembly timeline reads
+  // chronologically.
   app.get('/v1/runs/:id/snapshots', async (req, reply) => {
     const id = (req.params as { id: string }).id;
-    return reply.code(501).send({
-      error:
-        'snapshot listing not wired through store; query the memories.context_snapshots table directly',
-      runId: id,
-    });
+    if (!deps.memoryService) {
+      return reply.code(501).send({
+        error: 'memory service not configured — snapshots are unavailable',
+        runId: id,
+      });
+    }
+    const snapshots = await deps.memoryService.listContextSnapshots(id);
+    return reply.send({ runId: id, snapshots });
   });
 
   // GET /v1/healthz — liveness probe. Reports retrieval mode so operators

@@ -86,6 +86,65 @@ Returns the set of states reachable from the run's current status
 
 ---
 
+## GET `/v1/runs/:id/checkpoints`
+
+List the crash-recovery checkpoints recorded for a run (§8), newest
+first. Requires the memory service (backed by Postgres). When the
+supervisor boots without a reachable database the route returns
+`501` rather than an empty lie — same honest-unavailable contract as
+the other optional-dependency surfaces.
+
+```json
+{
+  "runId": "...",
+  "checkpoints": [
+    {
+      "checkpointId": "...",
+      "stepId": "...",
+      "status": "SUCCEEDED",
+      "currentPlan": "...",
+      "completedSteps": ["tool", "validate"],
+      "activeConstraints": [],
+      "workingFiles": ["src/a.ts"],
+      "lastToolResultSummary": "...",
+      "nextActions": ["summarize"],
+      "tokenBudget": 8192,
+      "createdAt": "..."
+    }
+  ]
+}
+```
+
+---
+
+## GET `/v1/runs/:id/snapshots`
+
+List the context-assembly snapshots for a run (§4.5), oldest first —
+the audit trail for what went into each prompt (token budget vs.
+used, prompt hash, included memory/chunk ids). Same `501` contract
+as above when the memory service is not configured.
+
+```json
+{
+  "runId": "...",
+  "snapshots": [
+    {
+      "snapshotId": "...",
+      "stepId": "...",
+      "tokenBudget": 8192,
+      "usedTokens": 4096,
+      "promptHash": "sha256:...",
+      "includedMemoryIds": ["..."],
+      "includedChunkIds": ["..."],
+      "excludedChunkIds": [],
+      "createdAt": "..."
+    }
+  ]
+}
+```
+
+---
+
 ## POST `/v1/runs/:id/approve`
 
 Human approval gate (§9.4). Required for any action listed in

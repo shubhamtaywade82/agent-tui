@@ -20,6 +20,7 @@ import swaggerUi from '@fastify/swagger-ui';
 import Fastify from 'fastify';
 import { isBearerAuthorized, resolveBearerToken } from '../../utils/auth.js';
 import { supervisorConfig } from '../config.js';
+import type { MemoryService } from '../context/memory.js';
 import type { Supervisor } from '../engine.js';
 import { logger } from '../observability/logger.js';
 import type { StateStore } from '../state/store.js';
@@ -45,6 +46,12 @@ export interface ServerDeps {
   taskPlanner?: TaskPlanner;
   /** Phase 4 — retrieval mode surfaced on GET /v1/healthz. */
   retrievalMode?: 'hybrid' | 'keyword-only';
+  /**
+   * Memory service — backs GET /v1/runs/:id/checkpoints and
+   * GET /v1/runs/:id/snapshots. Optional: when omitted those routes
+   * return 501 (e.g. memory init failed at boot → keyword-only dev).
+   */
+  memoryService?: MemoryService;
 }
 
 /** Routes that need no credentials: the liveness probe and the OpenAPI docs. */
@@ -74,9 +81,9 @@ export async function createServer(deps: ServerDeps) {
   await app.register(swagger, {
     openapi: {
       info: {
-        title: 'MiniCPM5 Supervisor API',
+        title: 'Agentic Supervisor API',
         description:
-          'Deterministic orchestration layer over MiniCPM5-2B sub-agents. See docs/supervisor/README.md.',
+          'Deterministic orchestration layer over any LLM — local (Ollama, vLLM) or hosted (OpenAI, Anthropic, Gemini). See docs/supervisor/README.md and ADR 0009.',
         version: '1.0.0',
       },
       servers: [{ url: `http://localhost:${supervisorConfig.http.port}` }],
@@ -95,6 +102,7 @@ export async function startServer(
     taskOrchestrator?: TaskOrchestrator;
     taskPlanner?: TaskPlanner;
     retrievalMode?: 'hybrid' | 'keyword-only';
+    memoryService?: MemoryService;
   },
 ) {
   const { host, port, apiKey: configuredKey, corsOrigins } = supervisorConfig.http;
@@ -108,11 +116,11 @@ export async function startServer(
   await app.listen({ host, port });
   logger.info(
     { host, port },
-    'MiniCPM5 Supervisor API listening — OpenAPI docs at /docs (bearer auth required)',
+    'Agentic Supervisor API listening — OpenAPI docs at /docs (bearer auth required)',
   );
   if (auth.generated) {
     // The generated token goes to stderr only, never to the structured log.
-    process.stderr.write(`MiniCPM5 Supervisor API bearer token for this run: ${auth.token}\n`);
+    process.stderr.write(`Agentic Supervisor API bearer token for this run: ${auth.token}\n`);
   }
   return app;
 }

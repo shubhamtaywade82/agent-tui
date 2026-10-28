@@ -112,7 +112,8 @@ async function main() {
       db: supervisorConfig.database.url.replace(/:[^:@]+@/, ':***@'),
       http: `${supervisorConfig.http.host}:${supervisorConfig.http.port}`,
     },
-    'booting MiniCPM5 Supervisor',
+    'booting Agentic Supervisor (backend: %s)',
+    supervisorConfig.inference.backend,
   );
 
   const store = new PgStateStore(supervisorConfig.database.url);
@@ -197,8 +198,10 @@ async function main() {
   }
 
   const memory = new MemoryService();
+  let memoryReady = false;
   try {
     await memory.init();
+    memoryReady = true;
   } catch (e) {
     logger.warn({ err: e }, 'memory init failed — continuing without memory');
   }
@@ -306,6 +309,11 @@ async function main() {
     taskOrchestrator,
     taskPlanner,
     retrievalMode,
+    // Run-introspection routes (checkpoints + snapshots) are only honest
+    // when the backing tables actually exist — pass the service only if
+    // its init succeeded; otherwise those routes serve 501 like the
+    // other optional-dep surfaces.
+    memoryService: memoryReady ? memory : undefined,
   });
 
   const shutdown = async (signal: string) => {

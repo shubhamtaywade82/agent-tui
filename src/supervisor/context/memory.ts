@@ -592,6 +592,45 @@ export class MemoryService {
     };
   }
 
+  /**
+   * List every checkpoint recorded for a run, newest first — the
+   * ordering operators want when picking a crash-recovery point
+   * (§8). Mirrors getLatestCheckpoint's row mapping.
+   */
+  async listCheckpoints(runId: string): Promise<
+    Array<{
+      checkpointId: string;
+      stepId?: string;
+      status: string;
+      currentPlan?: string;
+      completedSteps: string[];
+      activeConstraints: string[];
+      workingFiles: string[];
+      lastToolResultSummary?: string;
+      nextActions: string[];
+      tokenBudget: number;
+      createdAt: string;
+    }>
+  > {
+    const r = await this.pool.query(
+      'SELECT * FROM checkpoints WHERE run_id = $1 ORDER BY created_at DESC',
+      [runId],
+    );
+    return r.rows.map((row) => ({
+      checkpointId: row.checkpoint_id,
+      stepId: row.step_id ?? undefined,
+      status: row.status,
+      currentPlan: row.current_plan ?? undefined,
+      completedSteps: row.completed_steps ?? [],
+      activeConstraints: row.active_constraints ?? [],
+      workingFiles: row.working_files ?? [],
+      lastToolResultSummary: row.last_tool_result_summary ?? undefined,
+      nextActions: row.next_actions ?? [],
+      tokenBudget: row.token_budget,
+      createdAt: row.created_at.toISOString(),
+    }));
+  }
+
   // ─── §4.5 Context snapshots ─────────────────────────────────────────────
 
   async saveContextSnapshot(snap: {
