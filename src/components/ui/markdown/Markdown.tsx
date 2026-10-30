@@ -85,6 +85,13 @@ function renderInline(tokens: InlineToken[], theme: InkUITheme): React.ReactElem
   );
 }
 
+/** Table cells render as plain strings, so flatten inline markers instead of leaking them. */
+function inlineToPlain(line: string): string {
+  return parseInline(line)
+    .map((tok) => (tok.type === 'link' ? `${tok.text} (${tok.url})` : tok.text))
+    .join('');
+}
+
 function isTableSeparator(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed.includes('-')) return false;
@@ -182,7 +189,7 @@ function parseTableBlock(
   theme: InkUITheme,
   maxWidth: number,
 ): BlockResult {
-  const headers = lines[startIdx]!.replace(/^\|/, '').replace(/\|$/, '').split('|').map((h) => h.trim());
+  const headers = lines[startIdx]!.replace(/^\|/, '').replace(/\|$/, '').split('|').map((h) => inlineToPlain(h.trim()));
   const aligns = lines[startIdx + 1]!.replace(/^\|/, '').replace(/\|$/, '').split('|').map(parseTableAlign);
   const columns = headers.map((header, ci) => ({
     key: `col_${ci}`,
@@ -195,7 +202,7 @@ function parseTableBlock(
   while (i < lines.length && lines[i]!.trim().length > 0 && lines[i]!.includes('|')) {
     const cells = lines[i]!.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
     const row: Record<string, string> = {};
-    columns.forEach((col, ci) => { row[col.key] = cells[ci] ?? ''; });
+    columns.forEach((col, ci) => { row[col.key] = inlineToPlain(cells[ci] ?? ''); });
     data.push(row);
     i++;
   }
