@@ -59,6 +59,12 @@ export interface HarnessConfig {
   /** Ollama Cloud API key (only needed for `:cloud` models). */
   readonly apiKey?: string;
   /**
+   * Per-request timeout in milliseconds. Local models can take well over
+   * the SDK's 30s default to cold-load from disk, especially under host
+   * memory pressure — the first turn should not fail for that.
+   */
+  readonly requestTimeoutMs: number;
+  /**
    * Additional endpoints for HA failover. When set, the SDK's
    * `EndpointRegistry` round-robins on failure. Order = priority.
    */
@@ -93,6 +99,7 @@ export const DEFAULT_CONFIG: HarnessConfig = {
   systemTwoCatalog: DEFAULT_SYSTEM_TWO_CATALOG,
   baseUrl: process.env.OLLAMA_HOST ?? 'http://localhost:11434',
   apiKey: process.env.OLLAMA_API_KEY,
+  requestTimeoutMs: 120_000,
   minRouteConfidence: 0.65,
   minRouteProbability: 0.6,
   minVerifyProbability: 0.85,
@@ -114,6 +121,7 @@ export const DEFAULT_CONFIG: HarnessConfig = {
  *   SYSTEM_TWO_CATALOG       — comma-separated S2 candidates (overrides default)
  *   OLLAMA_HOST              — base URL
  *   OLLAMA_API_KEY           — cloud API key
+ *   OLLAMA_TIMEOUT_MS        — per-request timeout (default 120000)
  *   OLLAMA_ENDPOINTS         — comma-separated HA endpoints
  *   MIN_ROUTE_CONFIDENCE     — float 0–1
  *   MIN_ROUTE_PROBABILITY    — float 0–1
@@ -153,6 +161,7 @@ export function loadHarnessConfigFromEnv(overrides?: Partial<HarnessConfig>): Ha
     systemTwoCatalog: list('SYSTEM_TWO_CATALOG', DEFAULT_CONFIG.systemTwoCatalog),
     baseUrl: env.OLLAMA_HOST ?? DEFAULT_CONFIG.baseUrl,
     apiKey: env.OLLAMA_API_KEY ?? DEFAULT_CONFIG.apiKey,
+    requestTimeoutMs: num('OLLAMA_TIMEOUT_MS', DEFAULT_CONFIG.requestTimeoutMs),
     endpoints: endpoints && endpoints.length > 0 ? endpoints : undefined,
     minRouteConfidence: num('MIN_ROUTE_CONFIDENCE', DEFAULT_CONFIG.minRouteConfidence),
     minRouteProbability: num('MIN_ROUTE_PROBABILITY', DEFAULT_CONFIG.minRouteProbability),

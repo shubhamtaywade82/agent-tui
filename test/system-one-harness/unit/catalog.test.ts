@@ -55,7 +55,7 @@ describe('catalog', () => {
         rawBody: JSON.stringify({ version: '0.40.5' }),
         headers: { 'content-type': 'application/json' },
       });
-      server.register('/api/ps', {
+      server.register('/api/tags', {
         rawBody: JSON.stringify({
           models: [{ name: 'tev1:0.8b' }, { name: 'qwen3:8b' }],
         }),
@@ -69,7 +69,7 @@ describe('catalog', () => {
       await server.stop();
     });
 
-    it('listLocalModels returns the model names from /api/ps', async () => {
+    it('listLocalModels returns the installed model names from /api/tags', async () => {
       const names = await listLocalModels(client);
       expect(names).toEqual(['tev1:0.8b', 'qwen3:8b']);
     });
@@ -96,7 +96,7 @@ describe('catalog', () => {
 
     it('resolveModels walks past unavailable catalog entries', async () => {
       const { systemOne } = await resolveModels(client, {
-        // tev1:0.8b is NOT in the mock's /api/ps; qwen3:8b IS (but it's an S2 model)
+        // tev1:0.8b is NOT in the mock's /api/tags; qwen3:8b IS (but it's an S2 model)
         systemOneCatalog: ['qwen2.5:1.5b', 'tev1:0.8b'],
         systemTwoCatalog: ['qwen3:8b'],
       });

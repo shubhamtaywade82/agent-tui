@@ -51,6 +51,17 @@ export OLLAMA_ENDPOINTS=http://gpu-1:11434,http://gpu-2:11434
 
 ## Troubleshooting
 
+### `OllamaTimeoutError: Request timed out after 120000ms`
+
+The first turn cold-loads both models. On a slow disk or under host memory
+pressure that can exceed the SDK's default 30s request timeout, even for a
+small System 2. The harness sets `OLLAMA_TIMEOUT_MS` (default `120000`);
+raise it if your first turn still times out.
+
+Do not warm `tev1:0.8b` with `ollama run` — it exposes only the `decision`
+capability and rejects `/api/generate`. Use a `/v1/systemone` call, or let
+the harness's route stage load it.
+
 ### `NoModelAvailableError`
 
 ```

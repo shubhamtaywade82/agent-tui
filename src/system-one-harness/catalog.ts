@@ -1,7 +1,7 @@
 /**
  * Model catalog + auto-pick logic. The harness walks an ordered catalog
- * and selects the first model that is locally available via `ollama list`
- * (`client.models.ps()`). This lets the same code run on any operator's
+ * and selects the first model installed on the daemon via `ollama list`
+ * (`client.models.list()`). This lets the same code run on any operator's
  * machine without code changes — they just `ollama pull` whichever <4B
  * controller they prefer and the harness picks it up.
  */
@@ -9,14 +9,15 @@
 import type { OllamaClient } from '@nemesis-oss/ollama-sdk';
 
 /**
- * List the model names currently loaded/available in the local Ollama
- * daemon. Returns an empty array when the daemon is unreachable so the
- * auto-pick falls through to a helpful error rather than crashing.
+ * List the model tags installed on the local Ollama daemon (`/api/tags`),
+ * not just the ones currently resident in VRAM. Returns an empty array
+ * when the daemon is unreachable so the auto-pick falls through to a
+ * helpful error rather than crashing.
  */
 export async function listLocalModels(client: OllamaClient): Promise<string[]> {
   try {
-    const res = await client.models.ps();
-    return res.models.map((m) => m.name);
+    const models = await client.models.list();
+    return models.map((m) => m.name);
   } catch {
     return [];
   }

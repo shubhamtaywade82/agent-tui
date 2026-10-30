@@ -14,7 +14,7 @@
 
 import { defineTool, OllamaClient, ToolRegistry } from '@nemesis-oss/ollama-sdk';
 import { createMockOllamaServer } from '@nemesis-oss/ollama-sdk/testing';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { HarnessConfig } from '../../../src/system-one-harness/config.js';
 import { DEFAULT_CONFIG } from '../../../src/system-one-harness/config.js';
@@ -66,6 +66,10 @@ function makeMockServer(setup: MockSetup) {
   const server = createMockOllamaServer();
   server.register('/api/version', {
     rawBody: JSON.stringify({ version: '0.40.5' }),
+    headers: { 'content-type': 'application/json' },
+  });
+  server.register('/api/tags', {
+    rawBody: JSON.stringify({ models: [{ name: S1 }, { name: S2 }] }),
     headers: { 'content-type': 'application/json' },
   });
   server.register('/api/ps', {

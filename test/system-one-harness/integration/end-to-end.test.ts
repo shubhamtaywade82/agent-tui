@@ -12,8 +12,9 @@
  *   OLLAMA_INTEGRATION=1 npm run supervisor:test -- test/system-one-harness/integration
  */
 
-import type { OllamaClient } from '@nemesis-oss/ollama-sdk';
+import { KEEP_ALIVE_INDEFINITE, type OllamaClient } from '@nemesis-oss/ollama-sdk';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { resolveModels } from '../../../src/system-one-harness/catalog.js';
 import { createHarnessClient } from '../../../src/system-one-harness/client.js';
 import { loadHarnessConfigFromEnv } from '../../../src/system-one-harness/config.js';
 import { CoHostedAgentHarness } from '../../../src/system-one-harness/harness.js';
@@ -41,7 +42,36 @@ describe('System One harness — end-to-end', () => {
     if (!reachable) {
       throw new Error('OLLAMA_INTEGRATION=1 but ollama is not reachable');
     }
-  }, 15_000);
+
+    // Cold-loading a local model can take tens of seconds. Pin both in VRAM
+    // before the tests, otherwise the first turn races the model load and
+    // can hit the per-request timeout.
+    const { systemOne, systemTwo } = await resolveModels(client, config);
+
+    // A previous run may have left an unrelated model resident. With
+    // OLLAMA_MAX_LOADED_MODELS=2 that model takes the slot the harness needs
+    // for its co-hosted pair, so evict anything that is not S1 or S2.
+    const ps = await client.models.ps();
+    const keep = new Set([systemOne, systemTwo]);
+    for (const loaded of ps.models) {
+      if (!keep.has(loaded.name)) {
+        await client.models.unload(loaded.name).catch(() => {});
+      }
+    }
+
+    await client.decision.noul({
+      model: systemOne,
+      state: '1+1=2',
+      instructions: 'Is the state true?',
+      keepAlive: KEEP_ALIVE_INDEFINITE,
+    });
+    await client.chatText({
+      model: systemTwo,
+      keep_alive: KEEP_ALIVE_INDEFINITE,
+      messages: [{ role: 'user', content: 'Reply with OK.' }],
+      options: { num_ctx: config.contextWindow },
+    });
+  }, 300_000);
 
   afterAll(async () => {
     if (client) {
@@ -59,7 +89,8 @@ describe('System One harness — end-to-end', () => {
       const config = loadHarnessConfigFromEnv();
       const harness = new CoHostedAgentHarness(client, config, createDomainRegistries());
       const status = await harness.verifyCoHosting();
-      expect(status.systemOneLoaded || status.systemTwoLoaded).toBe(true);
+      expect(status.systemOneLoaded, `loaded: ${status.loaded.join(', ')}`).toBe(true);
+      expect(status.systemTwoLoaded, `loaded: ${status.loaded.join(', ')}`).toBe(true);
     },
     30_000,
   );

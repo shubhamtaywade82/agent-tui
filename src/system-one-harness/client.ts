@@ -31,10 +31,11 @@ export function createHarnessClient(config: HarnessConfig): OllamaClient {
       baseUrl: url,
       apiKey: config.apiKey,
     }));
-    return new OllamaClient({ endpoints });
+    return new OllamaClient({ endpoints, timeoutMs: config.requestTimeoutMs });
   }
   return new OllamaClient({
     baseUrl: config.baseUrl,
     apiKey: config.apiKey,
+    timeoutMs: config.requestTimeoutMs,
   });
 }
