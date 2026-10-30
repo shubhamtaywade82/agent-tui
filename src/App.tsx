@@ -215,7 +215,13 @@ const App: React.FC = () => {
         <Divider width={columns} theme={myTheme} style={activeModal ? 'bold' : 'single'} />
 
         {activeModal ? (
-          <Box height={Math.max(6, rows - 4)} width={columns} alignItems="center" paddingTop={Math.max(1, Math.floor((rows - 16) / 2))}>
+          <Box
+            height={rows - 4}
+            width={columns}
+            flexDirection="column"
+            alignItems="center"
+            justifyContent="center"
+          >
             {activeModal === 'model' && (
               <Box flexDirection="column" borderStyle="round" borderColor={myTheme.colors.primary} paddingX={2} paddingY={1} width={Math.min(64, columns - 4)}>
                 <Text bold color={myTheme.colors.primary}>Select Ollama Model</Text>

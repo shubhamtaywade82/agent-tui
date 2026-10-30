@@ -21,8 +21,10 @@
  *   - onSelect:      called when a row is clicked OR Enter is pressed
  *   - onActiveChange: called when the user hovers a row with the mouse
  *   - isDisabled:    greys out all rows
- *   - visibleOptionCount: max rows to show (scrolling not implemented —
- *                    use a ScrollBox wrapper if you need it)
+ *   - visibleOptionCount: max rows to show at once. The list scrolls a
+ *                    sliding window so the active (highlighted) row is
+ *                    always visible — navigation past the bottom is no
+ *                    longer truncated.
  *   - color, theme:  standard styling
  *
  * Usage:
@@ -81,12 +83,35 @@ export const ClickableSelect: React.FC<ClickableSelectProps> = ({
   theme = darkTheme,
   width,
 }) => {
-  const visible = visibleOptionCount ? options.slice(0, visibleOptionCount) : options;
+  // Sliding window: when there are more options than `visibleOptionCount`,
+  // scroll the window so the active row stays visible. The window clamps to
+  // [0, options.length - visibleCount] and centres the active row when
+  // possible, so navigation past the bottom is no longer truncated.
+  const total = options.length;
+  const maxVisible = visibleOptionCount ? Math.min(visibleOptionCount, total) : total;
+  const clampedActive = activeIndex < 0 ? 0 : Math.min(activeIndex, total - 1);
+  let start = 0;
+  if (visibleOptionCount && total > maxVisible) {
+    // Centre the active row, then clamp into the valid range.
+    start = clampedActive - Math.floor(maxVisible / 2);
+    if (start < 0) start = 0;
+    const maxStart = total - maxVisible;
+    if (start > maxStart) start = maxStart;
+  }
+  const visible = options.slice(start, start + maxVisible);
+  const hiddenAbove = start > 0 ? start : 0;
+  const hiddenBelow = total - (start + maxVisible);
 
   return (
     <Box flexDirection="column" width={width}>
+      {hiddenAbove > 0 && (
+        <Text color={theme.colors.muted} dimColor>
+          ▲ {hiddenAbove} more above
+        </Text>
+      )}
       {visible.map((opt, i) => {
-        const isActive = i === activeIndex && !isDisabled;
+        const realIndex = start + i;
+        const isActive = realIndex === activeIndex && !isDisabled;
         const rowDisabled = isDisabled || opt.isDisabled;
         const labelColor = rowDisabled
           ? theme.colors.muted
@@ -102,13 +127,13 @@ export const ClickableSelect: React.FC<ClickableSelectProps> = ({
 
         const handleClick = (_event: MouseEvent) => {
           if (rowDisabled) return;
-          onActiveChange?.(i);
-          onSelect?.(opt.value, i);
+          onActiveChange?.(realIndex);
+          onSelect?.(opt.value, realIndex);
         };
 
         return (
           <Box
-            key={`${opt.value}-${i}`}
+            key={`${opt.value}-${realIndex}`}
             width={width}
             onClick={handleClick}
             backgroundColor={bgColor}
@@ -135,6 +160,11 @@ export const ClickableSelect: React.FC<ClickableSelectProps> = ({
           </Box>
         );
       })}
+      {hiddenBelow > 0 && (
+        <Text color={theme.colors.muted} dimColor>
+          ▼ {hiddenBelow} more below
+        </Text>
+      )}
     </Box>
   );
 };
