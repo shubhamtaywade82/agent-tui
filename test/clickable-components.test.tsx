@@ -360,6 +360,113 @@ describe('ClickableSelect component', () => {
     const snap = render(ClickableSelect, { options: opts, onSelect: () => {} });
     assert.ok(snap.length > 0);
   });
+
+  /* ---------------------------------------------------------------- *
+   * Sliding-window scroll behaviour (visibleOptionCount).
+   * Before the fix, the component did options.slice(0, n), which
+   * truncated the list and made items beyond index n unreachable.
+   * Now it scrolls a window so the active row is always visible.
+   * ---------------------------------------------------------------- */
+  describe('sliding-window scroll', () => {
+    const manyOpts = Array.from({ length: 10 }, (_, i) => ({
+      label: `option-${i}`,
+      value: `v${i}`,
+    }));
+
+    test('shows only visibleOptionCount rows when the list is longer', () => {
+      const snap = render(ClickableSelect, {
+        options: manyOpts,
+        activeIndex: 0,
+        visibleOptionCount: 4,
+        onSelect: () => {},
+      });
+      const text = allText(snap);
+      // First 4 should be visible (indices 0-3)
+      assert.ok(text.includes('option-0'));
+      assert.ok(text.includes('option-3'));
+      // Options 4-9 should NOT be visible when active is at the top
+      assert.ok(!text.includes('option-4'), 'option-4 should be scrolled out');
+      assert.ok(!text.includes('option-9'), 'option-9 should be scrolled out');
+    });
+
+    test('scrolls down so the active row stays visible past the initial window', () => {
+      const snap = render(ClickableSelect, {
+        options: manyOpts,
+        activeIndex: 7, // past the initial 4-row window
+        visibleOptionCount: 4,
+        onSelect: () => {},
+      });
+      const text = allText(snap);
+      // The window should have scrolled to include index 7. With a
+      // centred window of 4, active=7 → start=5 → visible 5,6,7,8.
+      assert.ok(text.includes('option-7'), 'active row must be visible');
+      assert.ok(text.includes('option-5'), 'window start should be visible');
+      assert.ok(!text.includes('option-0'), 'top of list should be scrolled out');
+      assert.ok(!text.includes('option-9') || text.includes('option-8'),
+        'window should not extend past the list');
+    });
+
+    test('clicking a scrolled-in row fires onSelect with the correct value', () => {
+      let selected = '';
+      const snap = render(ClickableSelect, {
+        options: manyOpts,
+        activeIndex: 8,
+        visibleOptionCount: 4,
+        onSelect: (v) => { selected = v; },
+      });
+      const boxes = snap.filter((n) => n.tag === 'Box' && typeof n.props.onClick === 'function');
+      // The first visible box is now option-6 (centred window around active=8).
+      (boxes[0]!.props.onClick as (e: unknown) => void)({});
+      assert.ok(selected.startsWith('v'), `expected a value, got "${selected}"`);
+    });
+
+    test('clamps the window at the bottom of the list', () => {
+      const snap = render(ClickableSelect, {
+        options: manyOpts,
+        activeIndex: 9, // last item
+        visibleOptionCount: 4,
+        onSelect: () => {},
+      });
+      const text = allText(snap);
+      // Window should be [6,7,8,9] — clamped so it doesn't overflow.
+      assert.ok(text.includes('option-9'), 'last item must be visible');
+      assert.ok(text.includes('option-6'), 'window start should be 6');
+      assert.ok(!text.includes('option-5'), 'item before window should be hidden');
+    });
+
+    test('shows all options when visibleOptionCount is not set', () => {
+      const snap = render(ClickableSelect, {
+        options: manyOpts,
+        activeIndex: 0,
+        onSelect: () => {},
+      });
+      const text = allText(snap);
+      assert.ok(text.includes('option-0'));
+      assert.ok(text.includes('option-9'));
+    });
+
+    test('shows "more below" indicator when items are scrolled out', () => {
+      const snap = render(ClickableSelect, {
+        options: manyOpts,
+        activeIndex: 0,
+        visibleOptionCount: 4,
+        onSelect: () => {},
+      });
+      const text = allText(snap);
+      assert.ok(text.includes('more below'), 'should indicate hidden items below');
+    });
+
+    test('shows "more above" indicator when scrolled past the top', () => {
+      const snap = render(ClickableSelect, {
+        options: manyOpts,
+        activeIndex: 7,
+        visibleOptionCount: 4,
+        onSelect: () => {},
+      });
+      const text = allText(snap);
+      assert.ok(text.includes('more above'), 'should indicate hidden items above');
+    });
+  });
 });
 
 /* ------------------------------------------------------------------ *
