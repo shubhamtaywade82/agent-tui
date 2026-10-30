@@ -109,27 +109,6 @@ export function findSkillFile(name: string): string {
   return '';
 }
 
-export function matchBestSkill(query: string): { name: string; family: string; pack: string } | null {
-  const words = query.toLowerCase().split(/[\s,]+/).filter((w) => w.length > 2);
-  if (!words.length) return null;
-  let best: { name: string; family: string; pack: string; score: number } | null = null;
-  for (const s of loadAvailableSkills()) {
-    let score = 0;
-    const n = s.name.toLowerCase();
-    const f = s.family.toLowerCase();
-    const t = s.triggers.toLowerCase();
-    for (const w of words) {
-      if (n.includes(w)) score += 3;
-      if (f.includes(w)) score += 2;
-      if (t.includes(w)) score += 1;
-    }
-    if (score > 3 && (!best || score > best.score)) {
-      best = { name: s.name, family: s.family, pack: s.pack, score };
-    }
-  }
-  return best;
-}
-
 export interface UserConfig { model?: string; systemPrompt?: string; inputStyle?: 'box' | 'line'; }
 const CONFIG_FILE = '.config.json';
 /** Parse the config file. Returns undefined when it exists but cannot be parsed. */

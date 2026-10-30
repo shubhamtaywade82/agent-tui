@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs'; import { Box, Text
 import { TextInput } from './ui/text-input/index.js'; import { Divider } from './ui/divider/index.js';
 import { OllamaClient, Message } from '@nemesis-oss/ollama-sdk'; import { ToastStack, useToast } from './ui/toast/index.js'; import { ScrollArea } from './ui/scroll-area/index.js';
 import { useFocusManager, useTerminalSize } from './ui/hooks/index.js';
-import { getActiveToolRegistry, consumeStream, dispatchSlashCommand, SLASH_COMMANDS, executeMcpCalls, loadAvailableSkills, loadUserConfig, saveUserConfig, matchBestSkill, findSkillFile } from '../tools.js';
+import { getActiveToolRegistry, consumeStream, dispatchSlashCommand, SLASH_COMMANDS, executeMcpCalls, loadAvailableSkills, loadUserConfig, saveUserConfig, findSkillFile } from '../tools.js';
 import { ChatAccordion, renderSingleTurn, renderStreamingRows } from './ChatAccordion.js';
 import { parseTextToolCalls } from '../utils/text-tool-calls.js';
 import { GENUI_SYSTEM_INSTRUCTIONS } from '../toolbox/genui.js';
@@ -274,11 +274,8 @@ const Chat: React.FC<ChatProps> = ({
       return;
     }
     runModelRef.current = await pickModelForRun(text, registry?.definitions?.()?.length ?? 0);
-    const match = matchBestSkill(text);
-    if (match) { setActiveSkill(match.name); show(`Matched skill: ${match.name}`, 'info', 2000); }
     onSendMessage(text); resetStream('thinking');
-    if (match) setActiveSkill(match.name);
-    await runAgentLoop([...messages, { role: 'user', content: text, timestamp: Date.now() }], match?.name);
+    await runAgentLoop([...messages, { role: 'user', content: text, timestamp: Date.now() }]);
   };
 
   /**
@@ -892,11 +889,8 @@ const Chat: React.FC<ChatProps> = ({
       return;
     }
     runModelRef.current = await pickModelForRun(trimmed, registry?.definitions?.()?.length ?? 0);
-    const match = matchBestSkill(trimmed);
-    if (match) { setActiveSkill(match.name); show(`Matched skill: ${match.name}`, 'info', 2000); }
     saveEntry(trimmed); setInput(''); setScrollOffset(Infinity); onSendMessage(trimmed); resetStream('thinking');
-    if (match) setActiveSkill(match.name);
-    await runAgentLoop([...messages, { role: 'user', content: trimmed, timestamp: Date.now() }], match?.name);
+    await runAgentLoop([...messages, { role: 'user', content: trimmed, timestamp: Date.now() }]);
   };
 
   const handleArrow = (d: -1 | 1): boolean => !activeMenu.length ? false : (setSelectedCmdIndex((p) => (d === 1 ? (p + 1) % activeMenu.length : p <= 0 ? activeMenu.length - 1 : p - 1)), true);
