@@ -6,7 +6,9 @@
       "src/supervisor/**/*.ts",
       "test/supervisor/**/*.ts",
       "supervisor/**/*.ts",
-      "supervisor/scripts/**/*.sh"
+      "supervisor/scripts/**/*.sh",
+      "src/system-one-harness/**/*.ts",
+      "test/system-one-harness/**/*.ts"
     ]
   },
   "formatter": {
