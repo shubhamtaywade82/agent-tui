@@ -43,9 +43,11 @@ export OLLAMA_ENDPOINTS=http://gpu-1:11434,http://gpu-2:11434
 
 | Check | How | Expected |
 |---|---|---|
-| Daemon reachable | `curl $OLLAMA_HOST/api/version` | `{"version":"0.40.5"}` or higher |
+| Daemon version | `curl $OLLAMA_HOST/api/version` | `>= 0.35.0` for `/v1/systemone`; `>= 0.40.4` for `tev1:0.8b` |
 | Both models loaded | `harness.verifyCoHosting()` | `systemOneLoaded: true, systemTwoLoaded: true` |
-| System One works | `curl -X POST $OLLAMA_HOST/v1/systemone -d '{"model":"tev1:0.8b","state":"test","questions":{"q":{"type":"noul","instructions":"is 1+1=2?"}}}'` | `{"answers":{"q":{"type":"noul","noul":0.99}}}` |
+| System One works | `curl -X POST $OLLAMA_HOST/v1/systemone -d '{"model":"tev1:0.8b","state":"1+1=2","questions":{"q":{"type":"noul","instructions":"Is the state true?"}}}'` | `{"answers":{"q":{"type":"noul","noul":0.96...}}}` |
+
+`state` is the content the decision model judges; `instructions` is the question about that state. Putting the question in `instructions` while `state` is a dummy value (for example `"state":"test"`) makes `tev1:0.8b` score the dummy value and return a misleading ~0.35.
 
 ## Troubleshooting
 
