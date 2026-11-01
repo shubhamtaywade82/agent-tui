@@ -17,7 +17,11 @@ function manifests(version, { range = `^${version}`, extra = {} } = {}) {
     lockfileVersion: 3,
     packages: {
       "": { name: "app", dependencies: { [SDK]: range, react: "^18.0.0" } },
-      [SDK_KEY]: { version, resolved: `https://registry.npmjs.org/${SDK}/-/x-${version}.tgz`, integrity: `sha-${version}` },
+      [SDK_KEY]: {
+        version,
+        resolved: `https://registry.npmjs.org/${SDK}/-/x-${version}.tgz`,
+        integrity: `sha-${version}`,
+      },
       "node_modules/react": { version: "18.3.1" },
     },
   };

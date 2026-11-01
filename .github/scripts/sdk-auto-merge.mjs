@@ -43,9 +43,7 @@ export function changedLockKeys(baseLock, headLock) {
   const basePackages = baseLock.packages ?? {};
   const headPackages = headLock.packages ?? {};
   const keys = new Set([...Object.keys(basePackages), ...Object.keys(headPackages)]);
-  return [...keys].filter(
-    (key) => JSON.stringify(basePackages[key]) !== JSON.stringify(headPackages[key]),
-  );
+  return [...keys].filter((key) => JSON.stringify(basePackages[key]) !== JSON.stringify(headPackages[key]));
 }
 
 // `base` and `head` are { packageJson, lock } at each commit. `lock` may be null.
@@ -125,7 +123,9 @@ export function main(env = process.env) {
   const expectedHeadSha = required(env, "HEAD_SHA");
   const defaultBranch = required(env, "DEFAULT_BRANCH");
 
-  const open = JSON.parse(gh(["pr", "list", "--repo", repo, "--state", "open", "--head", headBranch, "--json", "number"]));
+  const open = JSON.parse(
+    gh(["pr", "list", "--repo", repo, "--state", "open", "--head", headBranch, "--json", "number"]),
+  );
   if (open.length === 0) {
     console.log(`No open PR for ${headBranch}; nothing to merge.`);
     return 0;
